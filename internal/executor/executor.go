@@ -107,7 +107,7 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 		}
 		return "agy --print - --print-timeout 30m --sandbox --dangerously-skip-permissions"
 	case "aider", "ollama":
-		return "aider --message-file <prompt> --yes-always --no-auto-commits"
+		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore"
 	default:
 		if isCustomScript(runner) {
 			return runner + " <stdin>"
@@ -1015,7 +1015,8 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			"--message-file", promptFile,
 			"--yes-always",
 			"--no-auto-commits",
-			"--add-gitignore-files",
+			"--no-dirty-commits",
+			"--no-gitignore",
 		}
 		var model string
 		if runner == "aider" {
@@ -1406,7 +1407,8 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 		"--message-file", promptFile,
 		"--yes-always",
 		"--no-auto-commits",
-		"--add-gitignore-files",
+		"--no-dirty-commits",
+		"--no-gitignore",
 	}
 	var model string
 	if runner == "aider" {
