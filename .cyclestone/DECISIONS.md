@@ -68,3 +68,17 @@ To guarantee environment independence and portability of the project configurati
 - Milestone: 0022-just-create-test-milestone
 
 The test milestone "0022-just-create-test-milestone" has been completed. Its goal was simply to create a test milestone without content, which has been achieved. The invalid QA output in cycle 1 doesn't indicate incomplete work on the milestone itself, but rather an issue with the QA agent's output format. Since the milestone has no acceptance criteria to verify, no additional cycles are needed for this milestone.
+
+## YAML Agent Cycle Reports
+
+- Date: 2026-07-02
+- Milestone: 0023-transition-cycle-reports-to-yaml
+
+Built-in PM, Developer, QA, and Recommender agents now emit final structured
+YAML documents for their output contracts. Contract extraction accepts raw YAML
+documents and fenced `yaml`/`yml` blocks, with fenced `json` retained only as a
+YAML-compatible legacy input. Main cycle report files are generated with the
+`.yaml` extension and store cycle metadata as YAML fields with detailed phase
+logs nested under a block scalar. Internal phase handoff artifacts and
+`.cyclestone/state.json` remain JSON for compatibility with existing state and
+TUI integration.

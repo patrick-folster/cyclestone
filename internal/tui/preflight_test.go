@@ -47,7 +47,7 @@ func TestPreflightRenderingAndConfirmCancelFlow(t *testing.T) {
 		"Agent group: Solo",
 		"Runner/model: manual",
 		"Branch changes: disabled",
-		"0015-cycle-preflight-review-cycle-002.md",
+		"0015-cycle-preflight-review-cycle-002.yaml",
 		"Cycle note: present",
 	} {
 		if !strings.Contains(view, want) {

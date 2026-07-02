@@ -24,28 +24,28 @@ type phaseCostMetrics struct {
 }
 
 func writePhaseReportExcerpt(reportFile *os.File, phaseName, outputPath, runner string, exitCode int, maxChars int) {
-	fmt.Fprintf(reportFile, "\n## %s Phase\n\n", phaseName)
-	fmt.Fprintf(reportFile, "- Output log: `%s`\n", outputPath)
-	fmt.Fprintf(reportFile, "- Exit status: %d\n\n", exitCode)
+	writeReportDetailf(reportFile, "\n## %s Phase\n\n", phaseName)
+	writeReportDetailf(reportFile, "- Output log: `%s`\n", outputPath)
+	writeReportDetailf(reportFile, "- Exit status: %d\n\n", exitCode)
 	writeLogExcerpt(reportFile, "### Output Excerpt", outputPath, runner, maxChars)
 }
 
 func writeLogExcerpt(reportFile *os.File, heading, outputPath, runner string, maxChars int) {
-	fmt.Fprintf(reportFile, "%s\n\n```text\n", heading)
+	writeReportDetailf(reportFile, "%s\n\n```text\n", heading)
 	outBytes, err := os.ReadFile(outputPath)
 	if err != nil {
-		fmt.Fprintf(reportFile, "(failed to read output log: %v)\n", err)
-		fmt.Fprintf(reportFile, "```\n")
+		writeReportDetailf(reportFile, "(failed to read output log: %v)\n", err)
+		writeReportDetailf(reportFile, "```\n")
 		return
 	}
 	if len(outBytes) == 0 {
-		fmt.Fprintf(reportFile, "(No output recorded)\n")
-		fmt.Fprintf(reportFile, "```\n")
+		writeReportDetailf(reportFile, "(No output recorded)\n")
+		writeReportDetailf(reportFile, "```\n")
 		return
 	}
 	text := sanitizeRunnerLogForReport(string(outBytes), runner)
-	reportFile.WriteString(limitTextMiddle(text, maxChars, outputPath))
-	fmt.Fprintf(reportFile, "\n```\n")
+	writeReportDetailString(reportFile, limitTextMiddle(text, maxChars, outputPath))
+	writeReportDetailf(reportFile, "\n```\n")
 }
 
 func currentFileSize(file *os.File) int {
@@ -91,22 +91,43 @@ func collectPhaseCostMetrics(inputContent, outputPath string) phaseCostMetrics {
 }
 
 func writePhaseCostMetrics(reportFile *os.File, metrics phaseCostMetrics) {
-	fmt.Fprintf(reportFile, "\n### Phase Cost Metrics\n\n")
-	fmt.Fprintf(reportFile, "- Input chars: %d\n", metrics.InputChars)
-	fmt.Fprintf(reportFile, "- Output chars: %d\n", metrics.OutputChars)
-	fmt.Fprintf(reportFile, "- Report excerpt chars: %d\n", metrics.ReportChars)
-	fmt.Fprintf(reportFile, "- Estimated input tokens: %d\n", metrics.EstimatedTokens)
+	writeReportDetailf(reportFile, "\n### Phase Cost Metrics\n\n")
+	writeReportDetailf(reportFile, "- Input chars: %d\n", metrics.InputChars)
+	writeReportDetailf(reportFile, "- Output chars: %d\n", metrics.OutputChars)
+	writeReportDetailf(reportFile, "- Report excerpt chars: %d\n", metrics.ReportChars)
+	writeReportDetailf(reportFile, "- Estimated input tokens: %d\n", metrics.EstimatedTokens)
 	if metrics.PromptTokens > 0 || metrics.CompletionTokens > 0 {
-		fmt.Fprintf(reportFile, "- Actual prompt tokens: %d\n", metrics.PromptTokens)
-		fmt.Fprintf(reportFile, "- Actual completion tokens: %d\n", metrics.CompletionTokens)
-		fmt.Fprintf(reportFile, "- Actual total tokens: %d\n", metrics.PromptTokens+metrics.CompletionTokens)
+		writeReportDetailf(reportFile, "- Actual prompt tokens: %d\n", metrics.PromptTokens)
+		writeReportDetailf(reportFile, "- Actual completion tokens: %d\n", metrics.CompletionTokens)
+		writeReportDetailf(reportFile, "- Actual total tokens: %d\n", metrics.PromptTokens+metrics.CompletionTokens)
 	}
 	if metrics.ModelCalls > 0 || metrics.ModelOutputChars > 0 || metrics.ToolCalls > 0 || metrics.StopOrDoneReason != "" {
-		fmt.Fprintf(reportFile, "- Model calls: %d\n", metrics.ModelCalls)
-		fmt.Fprintf(reportFile, "- Model output chars: %d\n", metrics.ModelOutputChars)
-		fmt.Fprintf(reportFile, "- Tool calls: %d\n", metrics.ToolCalls)
+		writeReportDetailf(reportFile, "- Model calls: %d\n", metrics.ModelCalls)
+		writeReportDetailf(reportFile, "- Model output chars: %d\n", metrics.ModelOutputChars)
+		writeReportDetailf(reportFile, "- Tool calls: %d\n", metrics.ToolCalls)
 		if metrics.StopOrDoneReason != "" {
-			fmt.Fprintf(reportFile, "- Stop/done reason: %s\n", metrics.StopOrDoneReason)
+			writeReportDetailf(reportFile, "- Stop/done reason: %s\n", metrics.StopOrDoneReason)
+		}
+	}
+}
+
+func writeReportDetailf(reportFile *os.File, format string, args ...interface{}) {
+	writeReportDetailString(reportFile, fmt.Sprintf(format, args...))
+}
+
+func writeReportDetailString(reportFile *os.File, text string) {
+	if reportFile == nil || text == "" {
+		return
+	}
+	lines := strings.SplitAfter(text, "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		reportFile.WriteString("  ")
+		reportFile.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			reportFile.WriteString("\n")
 		}
 	}
 }

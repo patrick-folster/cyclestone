@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // AgentActionLog tracks an execution step.
@@ -389,28 +391,15 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 	sb.WriteString(fmt.Sprintf("- Updated: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700")))
 	sb.WriteString("\n## Cycle History\n\n")
 
-	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.md", milestoneID)))
+	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.yaml", milestoneID)))
 	if err == nil {
 		sort.Strings(files)
 		for _, file := range files {
 			baseName := filepath.Base(file)
 			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
-			cyclePart = strings.TrimSuffix(cyclePart, ".md")
+			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
 
-			var started, verdict string
-			data, err := os.ReadFile(file)
-			if err == nil {
-				lines := strings.Split(string(data), "\n")
-				for _, line := range lines {
-					if strings.HasPrefix(line, "- Started:") {
-						started = strings.TrimPrefix(line, "- Started:")
-						started = strings.TrimSpace(started)
-					}
-					if strings.HasPrefix(line, "Exit status:") || strings.Contains(line, "verdict:") {
-						verdict = line
-					}
-				}
-			}
+			started, verdict := cycleReportSummaryFields(file)
 
 			sb.WriteString(fmt.Sprintf("- Cycle %s: .cyclestone/reports/%s", cyclePart, baseName))
 			if started != "" {
@@ -428,4 +417,32 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 	sb.WriteString("Later cycles should focus on unresolved QA findings, incomplete acceptance criteria, changed-file verification, and current repository state rather than restarting the milestone from scratch.\n")
 
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
+}
+
+type cycleReportSummaryEnvelope struct {
+	Started string `yaml:"started"`
+	Details string `yaml:"details"`
+}
+
+func cycleReportSummaryFields(path string) (string, string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+
+	var report cycleReportSummaryEnvelope
+	if err := yaml.Unmarshal(data, &report); err != nil {
+		return "", firstCycleReportSignal(string(data))
+	}
+	return strings.TrimSpace(report.Started), firstCycleReportSignal(report.Details)
+}
+
+func firstCycleReportSignal(details string) string {
+	for _, line := range strings.Split(details, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Exit status:") || strings.Contains(trimmed, "verdict:") {
+			return trimmed
+		}
+	}
+	return ""
 }

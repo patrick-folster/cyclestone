@@ -73,7 +73,8 @@ Write a QA report with:
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- End with final fenced ```json block only.
-- JSON schema fields exactly: verdict, criteria_results, reviewed_files, failing_checks, required_fixes.
+- End with a single valid YAML document only. Do not wrap it in Markdown fences.
+- YAML schema fields exactly: verdict, criteria_results, reviewed_files, failing_checks, required_fixes.
 - `verdict` must be a string. `criteria_results` must be an array of objects with string `criterion` and `result` fields and optional string `notes`. The remaining fields must be arrays of strings, even when empty.
-- No text after the final JSON block.
+- Use YAML block scalars (`|`) for long string values, especially criterion notes and required-fix descriptions.
+- No text after the YAML document.

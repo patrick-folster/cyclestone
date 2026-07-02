@@ -38,7 +38,8 @@ Review the details of the latest cycle report below.
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- End with final fenced ```json block only.
-- JSON schema fields exactly: score, verdict, reason, next_cycle_focus.
+- End with a single valid YAML document only. Do not wrap it in Markdown fences.
+- YAML schema fields exactly: score, verdict, reason, next_cycle_focus.
 - `score` must be an integer from 0 to 10, `verdict` and `reason` must be strings, and `next_cycle_focus` must be an array of strings, even when empty.
-- No text after the final JSON block.
+- Use YAML block scalars (`|`) for long string values, especially `reason` and multi-sentence focus items.
+- No text after the YAML document.

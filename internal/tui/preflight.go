@@ -377,7 +377,7 @@ func (m PreflightModel) content() string {
 	sb.WriteString(fmt.Sprintf("Mode: %s\n", mode))
 	sb.WriteString(fmt.Sprintf("Branch changes: %s\n", branchSetting))
 	sb.WriteString(fmt.Sprintf("Expected branch: %s\n", expectedBranch))
-	sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s.md", m.Milestone.ID, cyclePadded))))
+	sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s.yaml", m.Milestone.ID, cyclePadded))))
 	sb.WriteString(fmt.Sprintf("Metadata: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-metadata.json", m.Milestone.ID, cyclePadded))))
 	sb.WriteString(fmt.Sprintf("State: %s\n", emptyFallback(m.StatePath, filepath.Join(".cyclestone", "state.json"))))
 	sb.WriteString(fmt.Sprintf("Config: %s\n", emptyFallback(m.ConfigPath, filepath.Join(".cyclestone", "milestone.yml"))))

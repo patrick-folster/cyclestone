@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
 	gitpkg "github.com/patrick-folster/cyclestone/internal/git"
+	"gopkg.in/yaml.v3"
 )
 
 func TestExecutionCeilingLimit(t *testing.T) {
@@ -116,7 +117,7 @@ func TestRunAgentPipelineCancellationDoesNotBlockWithoutListener(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(".cyclestone", "reports"), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
-	reportFile, err := os.Create(filepath.Join(".cyclestone", "reports", "MS-CANCEL-cycle-001.md"))
+	reportFile, err := os.Create(filepath.Join(".cyclestone", "reports", "MS-CANCEL-cycle-001.yaml"))
 	if err != nil {
 		t.Fatalf("failed to create report file: %v", err)
 	}
@@ -1013,7 +1014,7 @@ func TestAssembleInputLimitsPreviousCycleReport(t *testing.T) {
 		t.Fatalf("failed to write milestone spec: %v", err)
 	}
 
-	previousReportPath := filepath.Join(".cyclestone", "reports", "MS-LIMIT-cycle-001.md")
+	previousReportPath := filepath.Join(".cyclestone", "reports", "MS-LIMIT-cycle-001.yaml")
 	if err := os.MkdirAll(filepath.Dir(previousReportPath), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
@@ -1097,7 +1098,7 @@ func TestAssembleInputSummarizesCycleReportForRecommender(t *testing.T) {
 		_ = os.Chdir(origWd)
 	}()
 
-	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-cycle-002.md")
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-cycle-002.yaml")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
@@ -1174,19 +1175,19 @@ func TestSanitizeRunnerLogForReportStripsCodexPromptEcho(t *testing.T) {
 	}
 }
 
-func TestWritePhaseHandoffParsesJSONOrFallsBack(t *testing.T) {
+func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	tmpDir := t.TempDir()
-	jsonLog := filepath.Join(tmpDir, "pm.log")
-	jsonHandoff := filepath.Join(tmpDir, "pm-handoff.json")
-	if err := os.WriteFile(jsonLog, []byte("report\n```json\n{\"scope\":[\"one\"],\"risks\":[\"low\"]}\n```\n"), 0644); err != nil {
-		t.Fatalf("failed to write json log: %v", err)
+	yamlLog := filepath.Join(tmpDir, "pm.log")
+	yamlHandoff := filepath.Join(tmpDir, "pm-handoff.json")
+	if err := os.WriteFile(yamlLog, []byte("report\n```yaml\nscope:\n  - one\nrisks:\n  - low\n```\n"), 0644); err != nil {
+		t.Fatalf("failed to write yaml log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, jsonHandoff, "MS-H", 1, "pm", "", jsonLog, 1000, "Test human comment"); err != nil {
-		t.Fatalf("writePhaseHandoff JSON failed: %v", err)
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, yamlHandoff, "MS-H", 1, "pm", "", yamlLog, 1000, "Test human comment"); err != nil {
+		t.Fatalf("writePhaseHandoff YAML failed: %v", err)
 	}
-	jsonBytes, err := os.ReadFile(jsonHandoff)
+	jsonBytes, err := os.ReadFile(yamlHandoff)
 	if err != nil {
-		t.Fatalf("failed to read json handoff: %v", err)
+		t.Fatalf("failed to read handoff: %v", err)
 	}
 	if !strings.Contains(string(jsonBytes), "\"milestone_id\": \"MS-H\"") ||
 		!strings.Contains(string(jsonBytes), "\"agent_id\": \"pm\"") ||
@@ -1194,7 +1195,7 @@ func TestWritePhaseHandoffParsesJSONOrFallsBack(t *testing.T) {
 		!strings.Contains(string(jsonBytes), "\"summary\"") ||
 		!strings.Contains(string(jsonBytes), "\"scope\"") ||
 		strings.Contains(string(jsonBytes), "\"fallback\"") {
-		t.Fatalf("expected parsed json handoff, got:\n%s", string(jsonBytes))
+		t.Fatalf("expected parsed yaml handoff, got:\n%s", string(jsonBytes))
 	}
 
 	fallbackLog := filepath.Join(tmpDir, "custom.log")
@@ -1216,18 +1217,18 @@ func TestWritePhaseHandoffParsesJSONOrFallsBack(t *testing.T) {
 	}
 }
 
-func TestContractHandoffValidatesFinalFencedJSON(t *testing.T) {
+func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "developer.log")
 	handoffPath := filepath.Join(tmpDir, "developer-handoff.json")
 	text := strings.Join([]string{
 		"Earlier draft:",
-		"```json",
-		`{"changed_files":["old"],"implemented_behavior":[],"checks_run":[],"decisions":[],"risks":[]}`,
+		"```yaml",
+		"changed_files:\n  - old\nimplemented_behavior: []\nchecks_run: []\ndecisions: []\nrisks: []",
 		"```",
 		"Final:",
-		"```json",
-		`{"changed_files":["internal/executor/handoff.go"],"implemented_behavior":["validated output"],"checks_run":["go test"],"decisions":["use final fence"],"risks":[]}`,
+		"```yaml",
+		"changed_files:\n  - internal/executor/handoff.go\nimplemented_behavior:\n  - validated output\nchecks_run:\n  - go test\ndecisions:\n  - use final fence\nrisks: []",
 		"```",
 	}, "\n")
 	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
@@ -1284,17 +1285,17 @@ func TestContractHandoffReportsMalformedMissingAndWrongTypes(t *testing.T) {
 	}{
 		{
 			name:     "malformed",
-			body:     "```json\n{\"changed_files\": [\n```",
-			contains: "malformed final fenced json",
+			body:     "```yaml\nchanged_files:\n  - [\n```",
+			contains: "malformed yaml",
 		},
 		{
 			name:     "missing",
-			body:     "```json\n{\"changed_files\":[]}\n```",
+			body:     "```yaml\nchanged_files: []\n```",
 			contains: "missing required field \"implemented_behavior\"",
 		},
 		{
 			name:     "wrong type",
-			body:     "```json\n{\"changed_files\":\"file\",\"implemented_behavior\":[],\"checks_run\":[],\"decisions\":[],\"risks\":[]}\n```",
+			body:     "```yaml\nchanged_files: file\nimplemented_behavior: []\nchecks_run: []\ndecisions: []\nrisks: []\n```",
 			contains: "field \"changed_files\" must be an array of strings",
 		},
 	}
@@ -1311,6 +1312,25 @@ func TestContractHandoffReportsMalformedMissingAndWrongTypes(t *testing.T) {
 	}
 }
 
+func TestPMContractValidationAcceptsYAMLSchema(t *testing.T) {
+	body := strings.Join([]string{
+		"scope:",
+		"  - update prompts",
+		"non_goals: []",
+		"target_paths:",
+		"  - resources/agents",
+		"acceptance_map:",
+		"  Agent Prompts Updated: |",
+		"    Prompts require YAML output.",
+		"risks:",
+		"  - parser compatibility",
+	}, "\n")
+	result := parseAndValidateContract(body, "pm")
+	if result.Status != "valid" {
+		t.Fatalf("expected valid PM YAML contract, got %#v", result.Errors)
+	}
+}
+
 func TestRecommenderContractRequiresVerdict(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1319,12 +1339,12 @@ func TestRecommenderContractRequiresVerdict(t *testing.T) {
 	}{
 		{
 			name:     "missing verdict",
-			body:     "```json\n{\"score\":1,\"reason\":\"complete\",\"next_cycle_focus\":[]}\n```",
+			body:     "```yaml\nscore: 1\nreason: complete\nnext_cycle_focus: []\n```",
 			contains: "missing required field \"verdict\"",
 		},
 		{
 			name:     "wrong verdict type",
-			body:     "```json\n{\"score\":1,\"verdict\":true,\"reason\":\"complete\",\"next_cycle_focus\":[]}\n```",
+			body:     "```yaml\nscore: 1\nverdict: true\nreason: complete\nnext_cycle_focus: []\n```",
 			contains: "field \"verdict\" must be a string",
 		},
 	}
@@ -1341,11 +1361,24 @@ func TestRecommenderContractRequiresVerdict(t *testing.T) {
 	}
 }
 
+func TestRecommenderContractAcceptsYAMLIntegerScore(t *testing.T) {
+	body := strings.Join([]string{
+		"score: 1",
+		"verdict: approved",
+		"reason: complete",
+		"next_cycle_focus: []",
+	}, "\n")
+	result := parseAndValidateContract(body, "recommender")
+	if result.Status != "valid" {
+		t.Fatalf("expected valid recommender YAML contract, got %#v", result.Errors)
+	}
+}
+
 func TestRecommenderHandoffPersistsMissingVerdictValidationError(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "recommender.log")
 	handoffPath := filepath.Join(tmpDir, "recommender-handoff.json")
-	body := "```json\n{\"score\":1,\"reason\":\"complete\",\"next_cycle_focus\":[]}\n```"
+	body := "```yaml\nscore: 1\nreason: complete\nnext_cycle_focus: []\n```"
 	if err := os.WriteFile(logPath, []byte(body), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
@@ -1411,25 +1444,21 @@ func TestRecommenderScoreUsesStructuredThenLegacyFallback(t *testing.T) {
 	}
 }
 
-func TestExtractHandoffJSONParsesMultilineFencedBlock(t *testing.T) {
+func TestExtractHandoffYAMLParsesMultilineFencedBlock(t *testing.T) {
 	text := strings.Join([]string{
 		"PM report",
-		"```json",
-		"{",
-		`  "scope": [`,
-		`    "implement parser"`,
-		"  ],",
-		`  "target_paths": [`,
-		`    "internal/executor/executor.go"`,
-		"  ],",
-		`  "risks": []`,
-		"}",
+		"```yaml",
+		"scope:",
+		"  - implement parser",
+		"target_paths:",
+		"  - internal/executor/executor.go",
+		"risks: []",
 		"```",
 	}, "\n")
 
-	parsed, ok := extractHandoffJSON(text)
+	parsed, ok := extractHandoffYAML(text)
 	if !ok {
-		t.Fatalf("expected multiline fenced JSON to parse")
+		t.Fatalf("expected multiline fenced YAML to parse")
 	}
 	var summary map[string]interface{}
 	if err := json.Unmarshal(parsed, &summary); err != nil {
@@ -1440,23 +1469,25 @@ func TestExtractHandoffJSONParsesMultilineFencedBlock(t *testing.T) {
 	}
 }
 
-func TestExtractHandoffJSONSelectsLastValidHandoff(t *testing.T) {
+func TestExtractHandoffYAMLSelectsLastValidHandoff(t *testing.T) {
 	text := strings.Join([]string{
-		"```json",
-		`{"scope":["old"],"risks":["old"]}`,
+		"```yaml",
+		"scope:\n  - old\nrisks:\n  - old",
 		"```",
 		"```text",
 		`{"scope":["ignored text fence"]}`,
 		"```",
-		"```json",
-		`{"changed_files":["internal/executor/executor.go"],"checks_run":["PASS"]}`,
+		"```yaml",
+		"changed_files:\n  - internal/executor/executor.go\nchecks_run:\n  - PASS",
 		"```",
-		`{"verdict":"approved","required_fixes":[]}`,
+		"```yml",
+		"verdict: approved\nrequired_fixes: []",
+		"```",
 	}, "\n")
 
-	parsed, ok := extractHandoffJSON(text)
+	parsed, ok := extractHandoffYAML(text)
 	if !ok {
-		t.Fatalf("expected fenced JSON handoff to parse")
+		t.Fatalf("expected fenced YAML handoff to parse")
 	}
 	var summary map[string]interface{}
 	if err := json.Unmarshal(parsed, &summary); err != nil {
@@ -1521,7 +1552,7 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("AI-CONTEXT-SHOULD-BE-PM-ONLY\n"), 0644); err != nil {
 		t.Fatalf("failed to write AI context: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.md"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
 		t.Fatalf("failed to write prior report: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-01-pm-handoff.json"), []byte(`{"scope":["pm scope"],"target_paths":["internal/executor"]}`), 0644); err != nil {
@@ -1543,7 +1574,7 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 		config.Agent{ID: "developer", Name: "Developer", PromptBody: "dev role"},
 		2,
 		RunOptions{NoBranchChange: true},
-		filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.md"),
+		filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"),
 		"",
 		settings,
 		pipeline,
@@ -1785,6 +1816,165 @@ func TestWritePhaseReportExcerptBoundsLogContent(t *testing.T) {
 	}
 	if len([]rune(report)) > 3000 {
 		t.Fatalf("expected bounded report size, got %d chars", len([]rune(report)))
+	}
+}
+
+func TestCycleReportHeaderAndDetailsAreValidYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "cycle.yaml")
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to create report: %v", err)
+	}
+	writeReportHeader(reportFile, "MS-YAML", "develop", 1, "", ".cyclestone/reports/MS-YAML-cycle-001-metadata.json", RunOptions{NoBranchChange: true, CycleNote: "human note"}, nil)
+	writeReportDetailf(reportFile, "\n## Developer Phase\n\n- Output log: `%s`\n", "developer.log")
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("expected generated cycle report to be valid YAML: %v\n%s", err, string(content))
+	}
+	if parsed["milestone_id"] != "MS-YAML" || parsed["cycle"] != "001" {
+		t.Fatalf("unexpected YAML metadata: %#v", parsed)
+	}
+	details, ok := parsed["details"].(string)
+	if !ok || !strings.Contains(details, "## Developer Phase") {
+		t.Fatalf("expected report details block to preserve phase text, got %#v", parsed["details"])
+	}
+}
+
+func TestPrepareCycleEnvironmentUsesYAMLReportPaths(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get wd: %v", err)
+	}
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportsDir, "MS-YAML-cycle-001.yaml"), []byte("milestone_id: MS-YAML\n"), 0644); err != nil {
+		t.Fatalf("failed to write previous report: %v", err)
+	}
+
+	state := &config.State{}
+	state.SetMilestoneCycles("MS-YAML", 1)
+	_, _, previousReportPath, reportPath, _, _, _, err := prepareCycleEnvironment(RunOptions{NoBranchChange: true}, state, config.Milestone{ID: "MS-YAML"}, reportsDir)
+	if err != nil {
+		t.Fatalf("prepareCycleEnvironment failed: %v", err)
+	}
+	if !strings.HasSuffix(previousReportPath, "MS-YAML-cycle-001.yaml") {
+		t.Fatalf("expected previous YAML report path, got %q", previousReportPath)
+	}
+	if !strings.HasSuffix(reportPath, "MS-YAML-cycle-002.yaml") {
+		t.Fatalf("expected current YAML report path, got %q", reportPath)
+	}
+}
+
+func TestSummarizeCycleReportParsesYAMLEnvelope(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "MS-YAML-cycle-001.yaml")
+	report := strings.Join([]string{
+		`milestone_id: "MS-YAML"`,
+		`started: "2026-07-02 10:00:00 -0500"`,
+		`branch: "develop"`,
+		`branch_changes: "skipped by --no-branch-change"`,
+		`cycle: "001"`,
+		`cycle_mode: "continuation"`,
+		`details: |-`,
+		`  ## Developer Phase`,
+		``,
+		`  - Exit status: 0`,
+		``,
+		`  ## QA Phase`,
+		``,
+		`  verdict: blocked`,
+		`  unresolved: summary parser still scanned raw YAML`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		t.Fatalf("failed to write report: %v", err)
+	}
+
+	summary := summarizeCycleReport(reportPath)
+	for _, expected := range []string{
+		"milestone_id: MS-YAML",
+		"started: 2026-07-02 10:00:00 -0500",
+		"branch_changes: skipped by --no-branch-change",
+		"Developer Phase",
+		"QA Phase",
+		"verdict: blocked",
+		"unresolved: summary parser still scanned raw YAML",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected summary to contain %q, got:\n%s", expected, summary)
+		}
+	}
+}
+
+func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportsDir := filepath.Join(tmpDir, "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	reportPath := filepath.Join(reportsDir, "MS-YAML-cycle-001.yaml")
+	report := strings.Join([]string{
+		`milestone_id: "MS-YAML"`,
+		`started: "2026-07-02 10:00:00 -0500"`,
+		`details: |-`,
+		`  ## QA Phase`,
+		``,
+		`  verdict: approved`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		t.Fatalf("failed to write report: %v", err)
+	}
+
+	if err := updateCycleSummaryReport("MS-YAML", 1, reportsDir); err != nil {
+		t.Fatalf("updateCycleSummaryReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(reportsDir, "MS-YAML.md"))
+	if err != nil {
+		t.Fatalf("failed to read summary report: %v", err)
+	}
+	summary := string(content)
+	if !strings.Contains(summary, ".cyclestone/reports/MS-YAML-cycle-001.yaml (2026-07-02 10:00:00 -0500) - verdict: approved") {
+		t.Fatalf("expected YAML metadata and details verdict in cycle summary, got:\n%s", summary)
+	}
+}
+
+func TestSummarizeCycleReportMalformedYAMLFallsBack(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "MS-YAML-cycle-001.yaml")
+	report := strings.Join([]string{
+		`milestone_id: [`,
+		`details: |-`,
+		`  ## QA Phase`,
+		`  verdict: blocked`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		t.Fatalf("failed to write report: %v", err)
+	}
+
+	summary := summarizeCycleReport(reportPath)
+	if !strings.Contains(summary, "malformed YAML report:") {
+		t.Fatalf("expected malformed YAML warning, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "verdict: blocked") {
+		t.Fatalf("expected fallback text scan to preserve continuation signal, got:\n%s", summary)
 	}
 }
 

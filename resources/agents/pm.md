@@ -2,6 +2,7 @@
 name: "Project Manager"
 description: "Prepares a milestone so the Developer can implement it safely and narrowly"
 order: 1
+output_contract: "pm"
 ---
 # Project Manager Prompt
 
@@ -63,6 +64,9 @@ Write a PM report with:
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- End with final fenced ```json block only.
-- JSON schema fields exactly: scope, non_goals, target_paths, acceptance_map, risks.
-- No text after the final JSON block.
+- End with a single valid YAML document only. Do not wrap it in Markdown fences.
+- YAML schema fields exactly: scope, non_goals, target_paths, acceptance_map, risks.
+- `scope`, `non_goals`, `target_paths`, and `risks` must be arrays of strings.
+- `acceptance_map` must be an object whose keys are acceptance criteria and whose values are string implementation notes.
+- Use YAML block scalars (`|`) for long string values, especially multi-sentence notes.
+- No text after the YAML document.

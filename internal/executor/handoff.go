@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/patrick-folster/cyclestone/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // phaseHandoff defines the schema for the JSON handout written at the end of each agent's execution phase.
@@ -29,7 +30,7 @@ type phaseHandoff struct {
 	SourceLog        string                 `json:"source_log,omitempty"`
 }
 
-type handoffJSONCandidate struct {
+type handoffDocumentCandidate struct {
 	position int
 	text     string
 }
@@ -67,7 +68,7 @@ type contractValidationResult struct {
 	Summary  map[string]interface{}
 	Status   string
 	Errors   []string
-	RawJSON  []byte
+	RawYAML  []byte
 	Contract string
 }
 
@@ -84,7 +85,7 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 		validation := parseAndValidateContract(text, contract)
 		return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
 	}
-	if parsed, ok := extractHandoffJSON(text); ok {
+	if parsed, ok := extractHandoffYAML(text); ok {
 		return writeParsedPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, parsed, cycleNote)
 	}
 	if maxChars <= 0 {
@@ -165,11 +166,11 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 	return os.WriteFile(path, data, 0644)
 }
 
-// writeParsedPhaseHandoff serializes a parsed JSON block from the agent's output as the phase handout's summary,
+// writeParsedPhaseHandoff serializes a parsed YAML document from the agent's output as the phase handout's summary,
 // embedding it along with metadata and the optional human comment.
 func writeParsedPhaseHandoff(path, milestoneID string, cycleNum int, agentID string, outputPath string, parsed []byte, cycleNote string) error {
 	var summary map[string]interface{}
-	if err := json.Unmarshal(parsed, &summary); err != nil {
+	if err := unmarshalYAMLMap(parsed, &summary); err != nil {
 		return err
 	}
 	handoff := phaseHandoff{
@@ -222,15 +223,15 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 		Contract: contract,
 		Status:   "invalid",
 	}
-	raw, err := extractFinalFencedJSONBlock(text)
+	raw, err := extractFinalYAMLDocument(text)
 	if err != nil {
 		result.Errors = []string{err.Error()}
 		return result
 	}
-	result.RawJSON = raw
+	result.RawYAML = raw
 	var summary map[string]interface{}
-	if err := json.Unmarshal(raw, &summary); err != nil {
-		result.Errors = []string{fmt.Sprintf("malformed final fenced json for %s contract: %v", contract, err)}
+	if err := unmarshalYAMLMap(raw, &summary); err != nil {
+		result.Errors = []string{fmt.Sprintf("malformed yaml for %s contract: %v", contract, err)}
 		return result
 	}
 	result.Summary = summary
@@ -241,25 +242,15 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 	return result
 }
 
-func extractFinalFencedJSONBlock(text string) ([]byte, error) {
-	blocks := fencedJSONBlocks(text)
+func extractFinalYAMLDocument(text string) ([]byte, error) {
+	blocks := fencedYAMLBlocks(text)
 	if len(blocks) == 0 {
-		candidates := jsonObjectsFromText(text)
-		if len(candidates) > 0 {
-			sort.SliceStable(candidates, func(i, j int) bool {
-				return candidates[i].position < candidates[j].position
-			})
-			for i := len(candidates) - 1; i >= 0; i-- {
-				var decoded map[string]interface{}
-				if err := json.Unmarshal([]byte(candidates[i].text), &decoded); err == nil {
-					if hasKnownHandoffKey(decoded) {
-						return []byte(strings.TrimSpace(candidates[i].text)), nil
-					}
-				}
-			}
-			return []byte(strings.TrimSpace(candidates[len(candidates)-1].text)), nil
+		raw := []byte(strings.TrimSpace(text))
+		var decoded map[string]interface{}
+		if err := unmarshalYAMLMap(raw, &decoded); err == nil && hasKnownHandoffKey(decoded) {
+			return raw, nil
 		}
-		return nil, fmt.Errorf("missing final fenced json block")
+		return nil, fmt.Errorf("missing yaml document for output contract")
 	}
 	sort.SliceStable(blocks, func(i, j int) bool {
 		return blocks[i].position < blocks[j].position
@@ -269,6 +260,11 @@ func extractFinalFencedJSONBlock(text string) ([]byte, error) {
 
 func validateContractSummary(summary map[string]interface{}, contract string) []string {
 	switch contract {
+	case "pm":
+		var errs []string
+		errs = append(errs, validateRequiredStringArrays(summary, contract, []string{"scope", "non_goals", "target_paths", "risks"})...)
+		errs = append(errs, validateAcceptanceMap(summary, contract)...)
+		return errs
 	case "developer":
 		return validateRequiredStringArrays(summary, contract, []string{"changed_files", "implemented_behavior", "checks_run", "decisions", "risks"})
 	case "qa":
@@ -287,6 +283,24 @@ func validateContractSummary(summary map[string]interface{}, contract string) []
 	default:
 		return []string{fmt.Sprintf("unknown output contract %q", contract)}
 	}
+}
+
+func validateAcceptanceMap(summary map[string]interface{}, contract string) []string {
+	value, ok := summary["acceptance_map"]
+	if !ok {
+		return []string{fmt.Sprintf("%s contract missing required field %q", contract, "acceptance_map")}
+	}
+	items, ok := value.(map[string]interface{})
+	if !ok {
+		return []string{fmt.Sprintf("%s contract field %q must be an object with string values", contract, "acceptance_map")}
+	}
+	var errs []string
+	for key, item := range items {
+		if _, ok := item.(string); !ok {
+			errs = append(errs, fmt.Sprintf("%s contract field %q value for %q must be a string", contract, "acceptance_map", key))
+		}
+	}
+	return errs
 }
 
 func validateRequiredStringArrays(summary map[string]interface{}, contract string, fields []string) []string {
@@ -327,8 +341,8 @@ func requireNumberField(summary map[string]interface{}, contract, field string) 
 	if !ok {
 		return []string{fmt.Sprintf("%s contract missing required field %q", contract, field)}
 	}
-	number, ok := value.(float64)
-	if !ok {
+	number, ok := numericValueAsFloat(value)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
 		return []string{fmt.Sprintf("%s contract field %q must be a number", contract, field)}
 	}
 	if number < 0 || number > 10 || number != float64(int(number)) {
@@ -433,8 +447,8 @@ func applyQAVerdictToCycleStatus(verdict, current string) string {
 
 func parseRecommendationScore(handoffPath, outputPath string) int {
 	if handoff, err := loadPhaseHandoff(handoffPath); err == nil && handoff.Summary != nil && handoff.ValidationStatus != "invalid" {
-		if value, ok := handoff.Summary["score"].(float64); ok && value >= 0 && value <= 10 && value == float64(int(value)) {
-			return int(value)
+		if score, ok := numericValueAsIntInRange(handoff.Summary["score"], 0, 10); ok {
+			return score
 		}
 	}
 	outBytes, err := os.ReadFile(outputPath)
@@ -453,25 +467,18 @@ func parseRecommendationScore(handoffPath, outputPath string) int {
 	return score
 }
 
-func extractHandoffJSON(text string) ([]byte, bool) {
-	candidates := jsonObjectsFromText(text)
-	candidates = append(candidates, fencedJSONBlocks(text)...)
+func extractHandoffYAML(text string) ([]byte, bool) {
+	candidates := fencedYAMLBlocks(text)
+	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].position < candidates[j].position
 	})
-	var fallback []byte
 	for i := len(candidates) - 1; i >= 0; i-- {
-		if pretty, decoded, ok := parseHandoffJSONObject(candidates[i].text); ok {
-			if fallback == nil {
-				fallback = pretty
-			}
+		if pretty, decoded, ok := parseHandoffYAMLDocument(candidates[i].text); ok {
 			if hasKnownHandoffKey(decoded) {
 				return pretty, true
 			}
 		}
-	}
-	if fallback != nil {
-		return fallback, true
 	}
 	return nil, false
 }
@@ -490,29 +497,34 @@ func hasKnownHandoffKey(decoded map[string]interface{}) bool {
 	return false
 }
 
-func fencedJSONBlocks(text string) []handoffJSONCandidate {
-	var blocks []handoffJSONCandidate
+func fencedYAMLBlocks(text string) []handoffDocumentCandidate {
+	var blocks []handoffDocumentCandidate
 	var current strings.Builder
-	inJSONFence := false
+	inYAMLFence := false
 	fenceStart := 0
 	offset := 0
 	for _, line := range strings.Split(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			info := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
-			if inJSONFence {
-				blocks = append(blocks, handoffJSONCandidate{position: fenceStart, text: current.String()})
+			if inYAMLFence {
+				blocks = append(blocks, handoffDocumentCandidate{position: fenceStart, text: current.String()})
 				current.Reset()
-				inJSONFence = false
+				inYAMLFence = false
 				offset += len(line) + 1
 				continue
 			}
-			inJSONFence = strings.EqualFold(info, "json")
+			fields := strings.Fields(info)
+			if len(fields) == 0 {
+				fields = []string{""}
+			}
+			info = strings.ToLower(fields[0])
+			inYAMLFence = info == "yaml" || info == "yml" || info == "json"
 			fenceStart = offset
 			offset += len(line) + 1
 			continue
 		}
-		if inJSONFence {
+		if inYAMLFence {
 			current.WriteString(line)
 			current.WriteByte('\n')
 		}
@@ -521,31 +533,17 @@ func fencedJSONBlocks(text string) []handoffJSONCandidate {
 	return blocks
 }
 
-func jsonObjectsFromText(text string) []handoffJSONCandidate {
-	var objects []handoffJSONCandidate
-	for start, r := range text {
-		if r != '{' {
-			continue
-		}
-		decoder := json.NewDecoder(strings.NewReader(text[start:]))
-		var decoded map[string]interface{}
-		if err := decoder.Decode(&decoded); err != nil {
-			continue
-		}
-		end := start + int(decoder.InputOffset())
-		objects = append(objects, handoffJSONCandidate{position: start, text: text[start:end]})
+func handoffRawYAMLCandidate(text string) []handoffDocumentCandidate {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return nil
 	}
-	return objects
+	return []handoffDocumentCandidate{{position: 0, text: trimmed}}
 }
 
-func parseHandoffJSONObject(candidate string) ([]byte, map[string]interface{}, bool) {
-	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(candidate)))
+func parseHandoffYAMLDocument(candidate string) ([]byte, map[string]interface{}, bool) {
 	var decoded map[string]interface{}
-	if err := decoder.Decode(&decoded); err != nil {
-		return nil, nil, false
-	}
-	var extra interface{}
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := unmarshalYAMLMap([]byte(strings.TrimSpace(candidate)), &decoded); err != nil {
 		return nil, nil, false
 	}
 	pretty, err := json.MarshalIndent(decoded, "", "  ")
@@ -553,6 +551,88 @@ func parseHandoffJSONObject(candidate string) ([]byte, map[string]interface{}, b
 		return nil, nil, false
 	}
 	return pretty, decoded, true
+}
+
+func unmarshalYAMLMap(data []byte, out *map[string]interface{}) error {
+	var decoded interface{}
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	normalized := normalizeYAMLValue(decoded)
+	mapped, ok := normalized.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("expected YAML mapping at document root")
+	}
+	*out = mapped
+	return nil
+}
+
+func normalizeYAMLValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[key] = normalizeYAMLValue(item)
+		}
+		return out
+	case map[interface{}]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[fmt.Sprint(key)] = normalizeYAMLValue(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for idx, item := range typed {
+			out[idx] = normalizeYAMLValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func numericValueAsFloat(value interface{}) (float64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	case float32:
+		return float64(typed), true
+	case float64:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func numericValueAsIntInRange(value interface{}, min, max int) (int, bool) {
+	number, ok := numericValueAsFloat(value)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, false
+	}
+	asInt := int(number)
+	if number != float64(asInt) || asInt < min || asInt > max {
+		return 0, false
+	}
+	return asInt, true
 }
 
 func limitFallbackSummary(summary map[string]interface{}, totalMaxChars, fieldMaxChars int) map[string]interface{} {

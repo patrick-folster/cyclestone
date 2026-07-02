@@ -75,7 +75,8 @@ Provide:
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- End with final fenced ```json block only.
-- JSON schema fields exactly: changed_files, implemented_behavior, checks_run, decisions, risks.
-- Each JSON field must be an array of strings, even when empty.
-- No text after the final JSON block.
+- End with a single valid YAML document only. Do not wrap it in Markdown fences.
+- YAML schema fields exactly: changed_files, implemented_behavior, checks_run, decisions, risks.
+- Each YAML field must be an array of strings, even when empty.
+- Use YAML block scalars (`|`) for long string values, especially multi-sentence summaries, check output notes, decisions, and risks.
+- No text after the YAML document.

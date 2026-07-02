@@ -19,6 +19,7 @@ import (
 	"github.com/patrick-folster/cyclestone/resources"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"gopkg.in/yaml.v3"
 )
 
 // RunOptions defines options for a milestone cycle run.
@@ -276,17 +277,17 @@ func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []co
 	runRecommenderPhase(ctx, pipeline, milestone, opts, state, ch, reportsDir, cycleNum, reportPath, settings, reportFile, &codexThreadID, codexThreadMetadataPath)
 
 	// Human review steps
-	fmt.Fprintf(reportFile, "\n## Human Review Steps\n\n")
-	fmt.Fprintf(reportFile, "1. Review `%s`.\n", reportPath)
-	fmt.Fprintf(reportFile, "2. Review the cycle summary in `.cyclestone/reports/%s.md`.\n", milestone.ID)
-	fmt.Fprintf(reportFile, "3. Inspect changed files in each tracked repository listed in the git context with git status and git diff.\n")
+	writeReportDetailf(reportFile, "\n## Human Review Steps\n\n")
+	writeReportDetailf(reportFile, "1. Review `%s`.\n", reportPath)
+	writeReportDetailf(reportFile, "2. Review the cycle summary in `.cyclestone/reports/%s.md`.\n", milestone.ID)
+	writeReportDetailf(reportFile, "3. Inspect changed files in each tracked repository listed in the git context with git status and git diff.\n")
 	if opts.NoBranchChange {
-		fmt.Fprintf(reportFile, "4. Confirm repositories remained on their original branches.\n")
+		writeReportDetailf(reportFile, "4. Confirm repositories remained on their original branches.\n")
 	} else {
-		fmt.Fprintf(reportFile, "4. Confirm changed repositories are on %s-prefixed milestone branches.\n", branchName)
+		writeReportDetailf(reportFile, "4. Confirm changed repositories are on %s-prefixed milestone branches.\n", branchName)
 	}
-	fmt.Fprintf(reportFile, "5. Confirm QA verdict and unresolved issues.\n")
-	fmt.Fprintf(reportFile, "\nFinished: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700"))
+	writeReportDetailf(reportFile, "5. Confirm QA verdict and unresolved issues.\n")
+	writeReportDetailf(reportFile, "\nFinished: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700"))
 
 	duration := time.Since(cycleStartTime)
 	state.UpdateLastCycleLog(milestone.ID, func(cl *config.MilestoneCycleLog) {
@@ -547,29 +548,19 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 	sb.WriteString(fmt.Sprintf("- Updated: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700")))
 	sb.WriteString("\n## Cycle History\n\n")
 
-	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.md", milestoneID)))
+	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.yaml", milestoneID)))
 	if err == nil {
 		sort.Strings(files)
 		for _, file := range files {
 			baseName := filepath.Base(file)
 			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
-			cyclePart = strings.TrimSuffix(cyclePart, ".md")
+			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
 
-			var started, verdict string
-			f, err := os.Open(file)
-			if err == nil {
-				scanner := bufio.NewScanner(f)
-				for scanner.Scan() {
-					line := scanner.Text()
-					if strings.HasPrefix(line, "- Started:") {
-						started = strings.TrimPrefix(line, "- Started:")
-						started = strings.TrimSpace(started)
-					}
-					if strings.HasPrefix(line, "Exit status:") || strings.Contains(line, "verdict:") {
-						verdict = line
-					}
-				}
-				f.Close()
+			report, _ := readCycleReportYAML(file)
+			started := strings.TrimSpace(report.Started)
+			verdict := firstReportSignal(report.Details)
+			if report.ParseError != "" {
+				verdict = report.ParseError
 			}
 
 			sb.WriteString(fmt.Sprintf("- Cycle %s: .cyclestone/reports/%s", cyclePart, baseName))
@@ -588,6 +579,37 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 	sb.WriteString("Later cycles should focus on unresolved QA findings, incomplete acceptance criteria, changed-file verification, and current repository state rather than restarting the milestone from scratch.\n")
 
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
+}
+
+type cycleReportYAML struct {
+	MilestoneID         string `yaml:"milestone_id"`
+	Started             string `yaml:"started"`
+	Root                string `yaml:"root"`
+	Branch              string `yaml:"branch"`
+	BranchChanges       string `yaml:"branch_changes"`
+	Cycle               string `yaml:"cycle"`
+	CycleMode           string `yaml:"cycle_mode"`
+	MilestoneFile       string `yaml:"milestone_file"`
+	SummaryReport       string `yaml:"summary_report"`
+	PreviousCycleReport string `yaml:"previous_cycle_report"`
+	CycleMetadata       string `yaml:"cycle_metadata"`
+	HumanCycleNote      string `yaml:"human_cycle_note"`
+	Details             string `yaml:"details"`
+	ParseError          string
+}
+
+func readCycleReportYAML(path string) (cycleReportYAML, string) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return cycleReportYAML{ParseError: fmt.Sprintf("failed to read YAML report: %v", err)}, ""
+	}
+
+	text := string(content)
+	var report cycleReportYAML
+	if err := yaml.Unmarshal(content, &report); err != nil {
+		report.ParseError = fmt.Sprintf("malformed YAML report: %v", err)
+	}
+	return report, text
 }
 
 func buildScopedMilestoneContext(milestone config.Milestone, opts RunOptions) string {
@@ -652,23 +674,82 @@ func buildScopedMilestoneContext(milestone config.Milestone, opts RunOptions) st
 }
 
 func summarizeCycleReport(path string) string {
-	content, err := os.ReadFile(path)
-	if err != nil {
+	report, text := readCycleReportYAML(path)
+	if text == "" {
 		return ""
 	}
 
-	text := string(content)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Source report: %s\n", path))
 	sb.WriteString(fmt.Sprintf("Original size: %d chars\n", len([]rune(text))))
 	sb.WriteString("Note: this is a bounded continuation summary. Open the source report if exact historical logs are needed.\n\n")
 
-	scanner := bufio.NewScanner(strings.NewReader(text))
+	metadata := cycleReportMetadata(report)
+	details := report.Details
+	if report.ParseError != "" {
+		metadata = append(metadata, report.ParseError)
+		details = text
+	}
+
+	phases, important := summarizeCycleReportDetails(details)
+
+	appendList := func(title string, lines []string) {
+		if len(lines) == 0 {
+			return
+		}
+		sb.WriteString("### " + title + "\n\n")
+		for _, line := range lines {
+			sb.WriteString("- " + line + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	appendList("Metadata", metadata)
+	appendList("Top-Level Sections", phases)
+	appendList("Key Continuation Signals", important)
+
+	result := sb.String()
+	runes := []rune(result)
+	if len(runes) > maxPreviousCycleSummaryChars {
+		return string(runes[:maxPreviousCycleSummaryChars]) + "\n\n[Previous cycle summary truncated to internal safety limit. Open source report for full history.]\n"
+	}
+	return result
+}
+
+func cycleReportMetadata(report cycleReportYAML) []string {
+	fields := []struct {
+		label string
+		value string
+	}{
+		{"milestone_id", report.MilestoneID},
+		{"started", report.Started},
+		{"root", report.Root},
+		{"branch", report.Branch},
+		{"branch_changes", report.BranchChanges},
+		{"cycle", report.Cycle},
+		{"cycle_mode", report.CycleMode},
+		{"milestone_file", report.MilestoneFile},
+		{"summary_report", report.SummaryReport},
+		{"previous_cycle_report", report.PreviousCycleReport},
+		{"cycle_metadata", report.CycleMetadata},
+	}
+
+	var metadata []string
+	for _, field := range fields {
+		if strings.TrimSpace(field.value) == "" {
+			continue
+		}
+		metadata = append(metadata, fmt.Sprintf("%s: %s", field.label, field.value))
+	}
+	return metadata
+}
+
+func summarizeCycleReportDetails(details string) ([]string, []string) {
+	scanner := bufio.NewScanner(strings.NewReader(details))
 	scanner.Buffer(make([]byte, 1024), 1024*1024)
 
 	inFence := false
 	currentSection := ""
-	var metadata []string
 	var phases []string
 	var important []string
 	var currentBlock []string
@@ -717,18 +798,6 @@ func summarizeCycleReport(path string) string {
 			continue
 		}
 
-		if !inFence && (strings.HasPrefix(trimmed, "# Milestone Cycle Report:") ||
-			strings.HasPrefix(trimmed, "- Started:") ||
-			strings.HasPrefix(trimmed, "- Branch:") ||
-			strings.HasPrefix(trimmed, "- Branch changes:") ||
-			strings.HasPrefix(trimmed, "- Cycle:") ||
-			strings.HasPrefix(trimmed, "- Cycle mode:") ||
-			strings.HasPrefix(trimmed, "- Git context:") ||
-			strings.HasPrefix(trimmed, "Finished:")) {
-			metadata = append(metadata, trimmed)
-			continue
-		}
-
 		if collectBlock && !inFence {
 			if trimmed == "" {
 				continue
@@ -742,28 +811,15 @@ func summarizeCycleReport(path string) string {
 		}
 	}
 	flushBlock()
+	return phases, important
+}
 
-	appendList := func(title string, lines []string) {
-		if len(lines) == 0 {
-			return
-		}
-		sb.WriteString("### " + title + "\n\n")
-		for _, line := range lines {
-			sb.WriteString("- " + line + "\n")
-		}
-		sb.WriteString("\n")
+func firstReportSignal(details string) string {
+	_, important := summarizeCycleReportDetails(details)
+	if len(important) == 0 {
+		return ""
 	}
-
-	appendList("Metadata", metadata)
-	appendList("Top-Level Sections", phases)
-	appendList("Key Continuation Signals", important)
-
-	result := sb.String()
-	runes := []rune(result)
-	if len(runes) > maxPreviousCycleSummaryChars {
-		return string(runes[:maxPreviousCycleSummaryChars]) + "\n\n[Previous cycle summary truncated to internal safety limit. Open source report for full history.]\n"
-	}
-	return result
+	return important[0]
 }
 
 func limitTextMiddle(text string, maxChars int, source string) string {
@@ -1843,13 +1899,13 @@ func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone con
 	// Determine previous report path
 	if cycleNum > 1 {
 		prevPadded := fmt.Sprintf("%03d", cycleNum-1)
-		prevPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, prevPadded))
+		prevPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, prevPadded))
 		if _, err := os.Stat(prevPath); err == nil {
 			previousReportPath = prevPath
 		}
 	}
 
-	reportPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded))
+	reportPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
 	metadataPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-metadata.json", milestone.ID, cyclePadded))
 	repos = git.GetTrackedRepos()
 
@@ -1908,33 +1964,43 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 		cycleMode = "continuation"
 	}
 
-	fmt.Fprintf(reportFile, "# Milestone Cycle Report: %s\n\n", milestoneID)
-	fmt.Fprintf(reportFile, "- Started: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700"))
-	fmt.Fprintf(reportFile, "- Root: .\n")
-	fmt.Fprintf(reportFile, "- Branch: %s\n", branchName)
+	fmt.Fprintf(reportFile, "milestone_id: %s\n", yamlQuote(milestoneID))
+	fmt.Fprintf(reportFile, "started: %s\n", yamlQuote(time.Now().Format("2006-01-02 15:04:05 -0700")))
+	fmt.Fprintf(reportFile, "root: %s\n", yamlQuote("."))
+	fmt.Fprintf(reportFile, "branch: %s\n", yamlQuote(branchName))
 	if opts.NoBranchChange {
-		fmt.Fprintf(reportFile, "- Branch changes: skipped by --no-branch-change\n")
+		fmt.Fprintf(reportFile, "branch_changes: %s\n", yamlQuote("skipped by --no-branch-change"))
 	} else {
-		fmt.Fprintf(reportFile, "- Branch changes: enabled\n")
+		fmt.Fprintf(reportFile, "branch_changes: %s\n", yamlQuote("enabled"))
 	}
-	fmt.Fprintf(reportFile, "- Cycle: %s\n", cyclePadded)
-	fmt.Fprintf(reportFile, "- Cycle mode: %s\n", cycleMode)
-	fmt.Fprintf(reportFile, "- Milestone file: .cyclestone/milestones/%s.md\n", milestoneID)
-	fmt.Fprintf(reportFile, "- Summary report: .cyclestone/reports/%s.md\n", milestoneID)
+	fmt.Fprintf(reportFile, "cycle: %s\n", yamlQuote(cyclePadded))
+	fmt.Fprintf(reportFile, "cycle_mode: %s\n", yamlQuote(cycleMode))
+	fmt.Fprintf(reportFile, "milestone_file: %s\n", yamlQuote(fmt.Sprintf(".cyclestone/milestones/%s.md", milestoneID)))
+	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(fmt.Sprintf(".cyclestone/reports/%s.md", milestoneID)))
 	if previousReportPath != "" {
-		fmt.Fprintf(reportFile, "- Previous cycle report: %s\n", previousReportPath)
+		fmt.Fprintf(reportFile, "previous_cycle_report: %s\n", yamlQuote(previousReportPath))
 	}
-	fmt.Fprintf(reportFile, "- Cycle metadata: %s\n", metadataPath)
+	fmt.Fprintf(reportFile, "cycle_metadata: %s\n", yamlQuote(metadataPath))
 
 	if strings.TrimSpace(opts.CycleNote) != "" {
-		fmt.Fprintf(reportFile, "\n## Human Cycle Note\n\n%s\n", strings.TrimSpace(opts.CycleNote))
+		fmt.Fprintf(reportFile, "human_cycle_note: |-\n")
+		writeReportDetailString(reportFile, strings.TrimSpace(opts.CycleNote)+"\n")
 	}
 
-	fmt.Fprintf(reportFile, "\n## Workflow\n\nExecuting PM -> Developer -> QA phases for cycle %s (%s).\n", cyclePadded, cycleMode)
+	fmt.Fprintf(reportFile, "details: |-\n")
+	writeReportDetailf(reportFile, "## Workflow\n\nExecuting PM -> Developer -> QA phases for cycle %s (%s).\n", cyclePadded, cycleMode)
 
 	if gitError != nil {
-		fmt.Fprintf(reportFile, "\n### Git Configuration Error\n\n%v\n", gitError)
+		writeReportDetailf(reportFile, "\n### Git Configuration Error\n\n%v\n", gitError)
 	}
+}
+
+func yamlQuote(value string) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return `""`
+	}
+	return string(data)
 }
 
 func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone config.Milestone, opts RunOptions, state *config.State, ch chan tea.Msg, reportsDir string, cycleNum int, previousReportPath string, metadataPath string, settings config.Settings, reportFile *os.File, codexThreadMetadataPath string, codexThreadID *string) (cycleStatus string, interrupted bool) {
@@ -1944,7 +2010,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 	for _, agent := range pipeline {
 		select {
 		case <-ctx.Done():
-			reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded))
+			reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
 			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
 				MilestoneID:         milestone.ID,
 				CycleNumber:         cycleNum,
@@ -1996,7 +2062,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 				Runner:          runner,
 				Model:           configuredModelForRunner(runner, settings),
 				Mode:            runnerModeLabel(opts),
-				ReportFile:      filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded)),
+				ReportFile:      filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
 				OutputFile:      outputPath,
 				LatestCommand:   describeRunnerCommand(runner, opts),
 				MaxModelCalls:   normalizedMaxModelCalls(settings),
@@ -2022,7 +2088,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 
 		if runner == "manual" {
-			fmt.Fprintf(reportFile, "\n## %s Phase (Manual Mode)\n\nPrompt written to `%s`. Complete manually and record logs.\n", agent.Name, inputPath)
+			writeReportDetailf(reportFile, "\n## %s Phase (Manual Mode)\n\nPrompt written to `%s`. Complete manually and record logs.\n", agent.Name, inputPath)
 		} else {
 			reportBefore := currentFileSize(reportFile)
 			writePhaseReportExcerpt(reportFile, agent.Name, outputPath, runner, exitCode, maxPhaseReportOutputChars)
@@ -2032,16 +2098,16 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 			writePhaseCostMetrics(reportFile, metrics)
 		}
 		if *codexThreadID != "" {
-			fmt.Fprintf(reportFile, "- Codex thread metadata: `%s`\n", codexThreadMetadataPath)
+			writeReportDetailf(reportFile, "- Codex thread metadata: `%s`\n", codexThreadMetadataPath)
 		}
 		if compactPhaseHandoffsEnabled(settings) {
-			fmt.Fprintf(reportFile, "- Handoff summary: `%s`\n", handoffPath)
+			writeReportDetailf(reportFile, "- Handoff summary: `%s`\n", handoffPath)
 		}
 		if writeHandoff {
 			if status, errors := phaseHandoffStatus(handoffPath); status == "invalid" {
-				fmt.Fprintf(reportFile, "\n### Output Contract Validation\n\n")
+				writeReportDetailf(reportFile, "\n### Output Contract Validation\n\n")
 				for _, validationErr := range errors {
-					fmt.Fprintf(reportFile, "- %s\n", validationErr)
+					writeReportDetailf(reportFile, "- %s\n", validationErr)
 				}
 			}
 		}
@@ -2076,25 +2142,25 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 					AgentID:             agent.ID,
 					Runner:              runner,
 					Model:               configuredModelForRunner(runner, settings),
-					ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded)),
+					ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
 					OutputFile:          outputPath,
 					LastError:           lastError,
 					NextSuggestedAction: "Review the output log and rerun the cycle after fixing the failure.",
 				})
 			}
-			fmt.Fprintf(reportFile, "\n### Execution Stalled\n\nAgent %s failed with non-zero exit code %d. Execution pipeline stopped.\n", agent.Name, exitCode)
+			writeReportDetailf(reportFile, "\n### Execution Stalled\n\nAgent %s failed with non-zero exit code %d. Execution pipeline stopped.\n", agent.Name, exitCode)
 			if runErr != nil {
-				fmt.Fprintf(reportFile, "Error details: %v\n", runErr)
+				writeReportDetailf(reportFile, "Error details: %v\n", runErr)
 			}
 			break
 		}
 		if writeHandoff {
 			if status, errors := phaseHandoffStatus(handoffPath); status == "invalid" {
 				if runner == "aider" || runner == "ollama" {
-					fmt.Fprintf(reportFile, "\n### Output Contract Validation Warning\n\n")
-					fmt.Fprintf(reportFile, "Aider/Ollama runner detected. Bypassing strict contract validation.\n")
+					writeReportDetailf(reportFile, "\n### Output Contract Validation Warning\n\n")
+					writeReportDetailf(reportFile, "Aider/Ollama runner detected. Bypassing strict contract validation.\n")
 					for _, validationErr := range errors {
-						fmt.Fprintf(reportFile, "- %s\n", validationErr)
+						writeReportDetailf(reportFile, "- %s\n", validationErr)
 					}
 				} else {
 					cycleStatus = contractValidationCycleStatus(agent.ID, cycleStatus)
@@ -2107,7 +2173,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 							AgentID:             agent.ID,
 							Runner:              runner,
 							Model:               configuredModelForRunner(runner, settings),
-							ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded)),
+							ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
 							OutputFile:          outputPath,
 							LastError:           strings.Join(errors, "; "),
 							NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
@@ -2136,7 +2202,7 @@ func runPostCycleChecks(ctx context.Context, milestone config.Milestone, repos [
 			if _, err := os.Stat(filepath.Join(subdir, "package.json")); err == nil {
 				failures, logs := runChecksForPackage(ctx, subdir, subdir, reportFile)
 				checkFailures += failures
-				reportFile.WriteString(logs)
+				writeReportDetailString(reportFile, logs)
 			}
 		}
 	}
@@ -2150,17 +2216,17 @@ func runPostCycleChecks(ctx context.Context, milestone config.Milestone, repos [
 		ok, description := git.VerifyBranchSnapshot(meta.BranchSnapshot)
 		if !ok {
 			checkFailures++
-			fmt.Fprintf(reportFile, "\n## Branch Policy Violation\n\n%s\n", description)
+			writeReportDetailf(reportFile, "\n## Branch Policy Violation\n\n%s\n", description)
 		} else {
-			fmt.Fprintf(reportFile, "\n## Branch Policy Check\n\nAll tracked repositories remained on their original branches.\n")
+			writeReportDetailf(reportFile, "\n## Branch Policy Check\n\nAll tracked repositories remained on their original branches.\n")
 		}
 	}
 
 	if checkFailures > 0 {
 		cycleStatus = "failed"
-		fmt.Fprintf(reportFile, "\n## Check Summary\n\n%d package check(s) or branch policy checks failed. Review details above.\n", checkFailures)
+		writeReportDetailf(reportFile, "\n## Check Summary\n\n%d package check(s) or branch policy checks failed. Review details above.\n", checkFailures)
 	} else if cycleStatus == "approved" {
-		fmt.Fprintf(reportFile, "\n## Check Summary\n\nAll package manager checks completed successfully.\n")
+		writeReportDetailf(reportFile, "\n## Check Summary\n\nAll package manager checks completed successfully.\n")
 	}
 
 	return cycleStatus
@@ -2262,23 +2328,23 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		state.SetMilestoneRecommendation(milestone.ID, recommenderScore)
 
 		// Append recommender details to the main cycle report
-		fmt.Fprintf(reportFile, "\n## Cycle Recommender Phase\n\n")
+		writeReportDetailf(reportFile, "\n## Cycle Recommender Phase\n\n")
 		if runErr != nil {
-			fmt.Fprintf(reportFile, "Execution failed: %v\n", runErr)
+			writeReportDetailf(reportFile, "Execution failed: %v\n", runErr)
 		} else {
-			fmt.Fprintf(reportFile, "Cycle Recommender execution succeeded.\n")
+			writeReportDetailf(reportFile, "Cycle Recommender execution succeeded.\n")
 		}
-		fmt.Fprintf(reportFile, "Recommendation score: %d\n\n", recommenderScore)
+		writeReportDetailf(reportFile, "Recommendation score: %d\n\n", recommenderScore)
 		if compactPhaseHandoffsEnabled(settings) {
-			fmt.Fprintf(reportFile, "- Handoff summary: `%s`\n\n", recommenderHandoffPath)
+			writeReportDetailf(reportFile, "- Handoff summary: `%s`\n\n", recommenderHandoffPath)
 		}
 		if writeHandoff {
 			if status, errors := phaseHandoffStatus(recommenderHandoffPath); status == "invalid" {
-				fmt.Fprintf(reportFile, "Output contract validation errors:\n")
+				writeReportDetailf(reportFile, "Output contract validation errors:\n")
 				for _, validationErr := range errors {
-					fmt.Fprintf(reportFile, "- %s\n", validationErr)
+					writeReportDetailf(reportFile, "- %s\n", validationErr)
 				}
-				fmt.Fprintf(reportFile, "\n")
+				writeReportDetailf(reportFile, "\n")
 			}
 		}
 		reportBefore := currentFileSize(reportFile)
