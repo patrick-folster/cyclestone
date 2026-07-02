@@ -1,0 +1,10 @@
+milestones:
+  - id: "0001-project-setup"
+    title: "Project Setup & Base Architecture"
+    spec_path: "milestones/0001-project-setup.md"
+  - id: "0002-git-integration"
+    title: "Git Integration & Execution"
+    spec_path: "milestones/0002-git-integration.md"
+  - id: "0003-config-state"
+    title: "Config & State Serialization"
+    spec_path: "milestones/0003-config-state.md"
