@@ -979,12 +979,36 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 		cmd = exec.CommandContext(ctx, "agy", args...)
 		cmd.Stdin = strings.NewReader(prompt)
 	} else if runner == "aider" || runner == "ollama" {
-		promptFile := filepath.Join(".cyclestone", "aider-milestone-prompt.txt")
+		var promptFile string
+		var cleanup func()
 		_ = os.MkdirAll(".cyclestone", 0755)
-		if err := os.WriteFile(promptFile, []byte(prompt), 0644); err != nil {
-			ch <- CreateMilestoneFinishedMsg{Error: err}
-			return
+		promptFile = filepath.Join(".cyclestone", "aider-milestone-prompt.txt")
+		if err := os.WriteFile(promptFile, []byte(prompt), 0644); err == nil {
+			cleanup = func() { _ = os.Remove(promptFile) }
+		} else {
+			// Fallback 1: Write to workspace root
+			promptFile = ".aider-milestone-prompt.txt"
+			if err2 := os.WriteFile(promptFile, []byte(prompt), 0644); err2 == nil {
+				cleanup = func() { _ = os.Remove(promptFile) }
+			} else {
+				// Fallback 2: System temp dir
+				tmpFile, err3 := os.CreateTemp("", "aider-milestone-prompt-*.txt")
+				if err3 != nil {
+					ch <- CreateMilestoneFinishedMsg{Error: fmt.Errorf("failed to create prompt file: %w (fallback errors: %v, %v)", err, err2, err3)}
+					return
+				}
+				promptFile = tmpFile.Name()
+				if _, err4 := tmpFile.Write([]byte(prompt)); err4 != nil {
+					tmpFile.Close()
+					_ = os.Remove(promptFile)
+					ch <- CreateMilestoneFinishedMsg{Error: err4}
+					return
+				}
+				tmpFile.Close()
+				cleanup = func() { _ = os.Remove(promptFile) }
+			}
 		}
+		defer cleanup()
 		args := []string{
 			"--message-file", promptFile,
 			"--yes-always",
@@ -1005,12 +1029,13 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			args = append(args, "--model", model)
 		}
 		cmd = exec.CommandContext(ctx, "aider", args...)
+		cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 		if runner == "ollama" {
 			host := settings.OllamaHost
 			if host == "" {
 				host = "http://localhost:11434"
 			}
-			cmd.Env = append(os.Environ(), "OLLAMA_API_BASE="+host)
+			cmd.Env = append(cmd.Env, "OLLAMA_API_BASE="+host)
 		}
 	} else {
 		// Default to codex or custom scripts
@@ -1347,8 +1372,30 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 	reportsDir := filepath.Join(".cyclestone", "reports")
 	_ = os.MkdirAll(reportsDir, 0755)
 	promptFile := filepath.Join(reportsDir, fmt.Sprintf("%s-aider-prompt.txt", agentID))
+	var cleanup func()
 	if err := os.WriteFile(promptFile, []byte(inputContent), 0644); err != nil {
-		return 1, err
+		// Fallback 1: Write to workspace root
+		promptFile = fmt.Sprintf(".%s-aider-prompt.txt", agentID)
+		if err2 := os.WriteFile(promptFile, []byte(inputContent), 0644); err2 == nil {
+			cleanup = func() { _ = os.Remove(promptFile) }
+		} else {
+			// Fallback 2: System temp dir
+			tmpFile, err3 := os.CreateTemp("", fmt.Sprintf("%s-aider-prompt-*.txt", agentID))
+			if err3 != nil {
+				return 1, fmt.Errorf("failed to create prompt file: %w (fallback errors: %v, %v)", err, err2, err3)
+			}
+			promptFile = tmpFile.Name()
+			if _, err4 := tmpFile.Write([]byte(inputContent)); err4 != nil {
+				tmpFile.Close()
+				_ = os.Remove(promptFile)
+				return 1, err4
+			}
+			tmpFile.Close()
+			cleanup = func() { _ = os.Remove(promptFile) }
+		}
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	args := []string{
 		"--message-file", promptFile,
@@ -1370,12 +1417,13 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 		args = append(args, "--model", model)
 	}
 	cmd := exec.CommandContext(ctx, "aider", args...)
+	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 	if runner == "ollama" {
 		host := settings.OllamaHost
 		if host == "" {
 			host = "http://localhost:11434"
 		}
-		cmd.Env = append(os.Environ(), "OLLAMA_API_BASE="+host)
+		cmd.Env = append(cmd.Env, "OLLAMA_API_BASE="+host)
 	}
 
 	r, w := io.Pipe()

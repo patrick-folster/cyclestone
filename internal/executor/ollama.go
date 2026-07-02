@@ -251,8 +251,8 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 	}
 
 	type AiderModelSetting struct {
-		Name   string `yaml:"name"`
-		NumCtx int    `yaml:"num_ctx,omitempty"`
+		Name        string                 `yaml:"name"`
+		ExtraParams map[string]interface{} `yaml:"extra_params,omitempty"`
 	}
 
 	var list []AiderModelSetting
@@ -264,7 +264,10 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 	found := false
 	for i, entry := range list {
 		if entry.Name == model {
-			list[i].NumCtx = settings.OllamaNumCtx
+			if list[i].ExtraParams == nil {
+				list[i].ExtraParams = make(map[string]interface{})
+			}
+			list[i].ExtraParams["num_ctx"] = settings.OllamaNumCtx
 			found = true
 			break
 		}
@@ -272,7 +275,9 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 	if !found {
 		list = append(list, AiderModelSetting{
 			Name:   model,
-			NumCtx: settings.OllamaNumCtx,
+			ExtraParams: map[string]interface{}{
+				"num_ctx": settings.OllamaNumCtx,
+			},
 		})
 	}
 

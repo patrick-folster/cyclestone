@@ -52,3 +52,4 @@ Thumbs.db
 .cyclestone/reports
 .cyclestone/milestone.yml
 .cyclestone/state.json
+.aider*
