@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -542,6 +543,9 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 		sort.Strings(files)
 		for _, file := range files {
 			baseName := filepath.Base(file)
+			if !isPrimaryCycleReportFile(milestoneID, baseName) {
+				continue
+			}
 			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
 			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
 
@@ -568,6 +572,19 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 	sb.WriteString("Later cycles should focus on unresolved QA findings, incomplete acceptance criteria, changed-file verification, and current repository state rather than restarting the milestone from scratch.\n")
 
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
+}
+
+func isPrimaryCycleReportFile(milestoneID, baseName string) bool {
+	prefix := milestoneID + "-cycle-"
+	if !strings.HasPrefix(baseName, prefix) || !strings.HasSuffix(baseName, ".yaml") {
+		return false
+	}
+	cyclePart := strings.TrimSuffix(strings.TrimPrefix(baseName, prefix), ".yaml")
+	if len(cyclePart) != 3 {
+		return false
+	}
+	_, err := strconv.Atoi(cyclePart)
+	return err == nil
 }
 
 type cycleReportYAML struct {
@@ -1678,14 +1695,14 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
 		}
-		handoffPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-handoff.json", milestone.ID, cyclePadded, agentFileID))
+		handoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, agentFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, agent.OutputContract)
 		if writeHandoff {
 			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote)
 		}
 
 		if agent.ID == "recommender" {
-			state.SetMilestoneRecommendation(milestone.ID, parseRecommendationScore(handoffPath, outputPath))
+			state.SetMilestoneRecommendation(milestone.ID, parseRecommendationScore(handoffPath))
 		}
 
 		if runner == "manual" {
@@ -1916,14 +1933,13 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		if ch != nil {
 			sendExecutorMsg(ctx, ch, AgentCompletedMsg{AgentID: "recommender", ExitCode: exitCode, Timestamp: time.Now(), OutputFile: recommenderLogPath})
 		}
-		recommenderHandoffPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-handoff.json", milestone.ID, cyclePadded, recommenderFileID))
+		recommenderHandoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, recommenderFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, "recommender")
 		if writeHandoff {
 			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote)
 		}
 
-		// Parse the structured recommendation score with the legacy text marker as fallback.
-		recommenderScore := parseRecommendationScore(recommenderHandoffPath, recommenderLogPath)
+		recommenderScore := parseRecommendationScore(recommenderHandoffPath)
 
 		// Save recommendation score to state
 		state.SetMilestoneRecommendation(milestone.ID, recommenderScore)

@@ -7,27 +7,25 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/patrick-folster/cyclestone/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
-// phaseHandoff defines the schema for the JSON handout written at the end of each agent's execution phase.
+// phaseHandoff defines the schema for the YAML handoff written at the end of each agent's execution phase.
 type phaseHandoff struct {
-	MilestoneID      string                 `json:"milestone_id"`
-	Cycle            int                    `json:"cycle"`
-	AgentID          string                 `json:"agent_id"`
-	HumanInput       string                 `json:"human_input"` // optional human note or comment from the cycle's execution options
-	Summary          map[string]interface{} `json:"summary"`
-	OutputContract   string                 `json:"output_contract,omitempty"`
-	ValidationStatus string                 `json:"validation_status,omitempty"`
-	ValidationErrors []string               `json:"validation_errors,omitempty"`
-	Fallback         bool                   `json:"fallback,omitempty"`
-	SourceLog        string                 `json:"source_log,omitempty"`
+	MilestoneID      string                 `yaml:"milestone_id"`
+	Cycle            int                    `yaml:"cycle"`
+	AgentID          string                 `yaml:"agent_id"`
+	HumanInput       string                 `yaml:"human_input"` // optional human note or comment from the cycle's execution options
+	Summary          map[string]interface{} `yaml:"summary"`
+	OutputContract   string                 `yaml:"output_contract,omitempty"`
+	ValidationStatus string                 `yaml:"validation_status,omitempty"`
+	ValidationErrors []string               `yaml:"validation_errors,omitempty"`
+	Fallback         bool                   `yaml:"fallback,omitempty"`
+	SourceLog        string                 `yaml:"source_log,omitempty"`
 }
 
 type handoffDocumentCandidate struct {
@@ -36,32 +34,32 @@ type handoffDocumentCandidate struct {
 }
 
 type DeveloperOutputContract struct {
-	ChangedFiles        []string `json:"changed_files"`
-	ImplementedBehavior []string `json:"implemented_behavior"`
-	ChecksRun           []string `json:"checks_run"`
-	Decisions           []string `json:"decisions"`
-	Risks               []string `json:"risks"`
+	ChangedFiles        []string `yaml:"changed_files"`
+	ImplementedBehavior []string `yaml:"implemented_behavior"`
+	ChecksRun           []string `yaml:"checks_run"`
+	Decisions           []string `yaml:"decisions"`
+	Risks               []string `yaml:"risks"`
 }
 
 type QACriterionResult struct {
-	Criterion string `json:"criterion"`
-	Result    string `json:"result"`
-	Notes     string `json:"notes,omitempty"`
+	Criterion string `yaml:"criterion"`
+	Result    string `yaml:"result"`
+	Notes     string `yaml:"notes,omitempty"`
 }
 
 type QAOutputContract struct {
-	Verdict         string              `json:"verdict"`
-	CriteriaResults []QACriterionResult `json:"criteria_results"`
-	ReviewedFiles   []string            `json:"reviewed_files"`
-	FailingChecks   []string            `json:"failing_checks"`
-	RequiredFixes   []string            `json:"required_fixes"`
+	Verdict         string              `yaml:"verdict"`
+	CriteriaResults []QACriterionResult `yaml:"criteria_results"`
+	ReviewedFiles   []string            `yaml:"reviewed_files"`
+	FailingChecks   []string            `yaml:"failing_checks"`
+	RequiredFixes   []string            `yaml:"required_fixes"`
 }
 
 type RecommenderOutputContract struct {
-	Score          int      `json:"score"`
-	Verdict        string   `json:"verdict"`
-	Reason         string   `json:"reason"`
-	NextCycleFocus []string `json:"next_cycle_focus"`
+	Score          int      `yaml:"score"`
+	Verdict        string   `yaml:"verdict"`
+	Reason         string   `yaml:"reason"`
+	NextCycleFocus []string `yaml:"next_cycle_focus"`
 }
 
 type contractValidationResult struct {
@@ -72,7 +70,7 @@ type contractValidationResult struct {
 	Contract string
 }
 
-// writePhaseHandoff writes the phase execution results to a JSON handout file.
+// writePhaseHandoff writes the phase execution results to a YAML handoff file.
 // It includes the optional human comment/note inside the human_input property.
 func writePhaseHandoff(ctx context.Context, settings config.Settings, path, milestoneID string, cycleNum int, agentID string, outputContract string, outputPath string, maxChars int, cycleNote string) error {
 	outBytes, err := os.ReadFile(outputPath)
@@ -127,7 +125,7 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 			summary["failing_checks"] = boundedLineMatches(text, []string{"fail", "failed", "error"}, fieldMaxChars)
 			summary["required_fixes"] = boundedLineMatches(text, []string{"fix", "required", "blocker"}, fieldMaxChars)
 		case "recommender":
-			summary["score"] = boundedLineMatches(text, []string{"recommendation_score", "RECOMMENDATION_SCORE", "score"}, fieldMaxChars)
+			summary["score"] = boundedLineMatches(text, []string{"score"}, fieldMaxChars)
 			summary["reason"] = boundedLineMatches(text, []string{"reason", "gap", "recommend"}, fieldMaxChars)
 		default:
 			summary["summary"] = limitTextMiddle(text, fieldMaxChars, outputPath)
@@ -144,14 +142,14 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 		Fallback:    true,
 		SourceLog:   outputPath,
 	}
-	data, err := json.MarshalIndent(handoff, "", "  ")
+	data, err := marshalPhaseHandoffYAML(handoff)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
 }
 
-// writeParsedPhaseHandoff serializes a parsed YAML document from the agent's output as the phase handout's summary,
+// writeParsedPhaseHandoff serializes a parsed YAML document from the agent's output as the phase handoff's summary,
 // embedding it along with metadata and the optional human comment.
 func writeParsedPhaseHandoff(path, milestoneID string, cycleNum int, agentID string, outputPath string, parsed []byte, cycleNote string) error {
 	var summary map[string]interface{}
@@ -166,7 +164,7 @@ func writeParsedPhaseHandoff(path, milestoneID string, cycleNum int, agentID str
 		Summary:     summary,
 		SourceLog:   outputPath,
 	}
-	data, err := json.MarshalIndent(handoff, "", "  ")
+	data, err := marshalPhaseHandoffYAML(handoff)
 	if err != nil {
 		return err
 	}
@@ -188,11 +186,15 @@ func writeContractPhaseHandoff(path, milestoneID string, cycleNum int, agentID s
 	if handoff.Summary == nil {
 		handoff.Summary = map[string]interface{}{}
 	}
-	data, err := json.MarshalIndent(handoff, "", "  ")
+	data, err := marshalPhaseHandoffYAML(handoff)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+func marshalPhaseHandoffYAML(handoff phaseHandoff) ([]byte, error) {
+	return yaml.Marshal(handoff)
 }
 
 func effectiveOutputContract(_ string, configured string) string {
@@ -377,10 +379,22 @@ func loadPhaseHandoff(path string) (phaseHandoff, error) {
 	if err != nil {
 		return handoff, err
 	}
-	if err := json.Unmarshal(data, &handoff); err != nil {
-		return handoff, err
+	if err := yaml.Unmarshal(data, &handoff); err == nil {
+		handoff.Summary = normalizeHandoffSummary(handoff.Summary)
+		return handoff, nil
 	}
-	return handoff, nil
+	return handoff, fmt.Errorf("failed to parse YAML handoff: %s", path)
+}
+
+func normalizeHandoffSummary(summary map[string]interface{}) map[string]interface{} {
+	if summary == nil {
+		return nil
+	}
+	normalized, ok := normalizeYAMLValue(summary).(map[string]interface{})
+	if !ok {
+		return summary
+	}
+	return normalized
 }
 
 func phaseHandoffStatus(path string) (string, []string) {
@@ -430,26 +444,13 @@ func applyQAVerdictToCycleStatus(verdict, current string) string {
 	}
 }
 
-func parseRecommendationScore(handoffPath, outputPath string) int {
+func parseRecommendationScore(handoffPath string) int {
 	if handoff, err := loadPhaseHandoff(handoffPath); err == nil && handoff.Summary != nil && handoff.ValidationStatus != "invalid" {
 		if score, ok := numericValueAsIntInRange(handoff.Summary["score"], 0, 10); ok {
 			return score
 		}
 	}
-	outBytes, err := os.ReadFile(outputPath)
-	if err != nil {
-		return -1
-	}
-	re := regexp.MustCompile(`RECOMMENDATION_SCORE:\s*(\d+)`)
-	matches := re.FindStringSubmatch(string(outBytes))
-	if len(matches) <= 1 {
-		return -1
-	}
-	score, err := strconv.Atoi(matches[1])
-	if err != nil || score < 0 || score > 10 {
-		return -1
-	}
-	return score
+	return -1
 }
 
 func extractHandoffYAML(text string) ([]byte, bool) {
@@ -504,7 +505,7 @@ func fencedYAMLBlocks(text string) []handoffDocumentCandidate {
 				fields = []string{""}
 			}
 			info = strings.ToLower(fields[0])
-			inYAMLFence = info == "yaml" || info == "yml" || info == "json"
+			inYAMLFence = info == "yaml" || info == "yml"
 			fenceStart = offset
 			offset += len(line) + 1
 			continue
@@ -531,7 +532,7 @@ func parseHandoffYAMLDocument(candidate string) ([]byte, map[string]interface{},
 	if err := unmarshalYAMLMap([]byte(strings.TrimSpace(candidate)), &decoded); err != nil {
 		return nil, nil, false
 	}
-	pretty, err := json.MarshalIndent(decoded, "", "  ")
+	pretty, err := yaml.Marshal(decoded)
 	if err != nil {
 		return nil, nil, false
 	}
@@ -745,10 +746,12 @@ func boundedLineMatches(text string, needles []string, maxChars int) []string {
 
 func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars int, pipeline []config.Agent) string {
 	agentFileID := getAgentFileID(agentID, pipeline)
-	path := filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-%s-handoff.json", milestoneID, cyclePadded, agentFileID))
+	path := phaseHandoffPath(filepath.Join(".cyclestone", "reports"), milestoneID, cyclePadded, agentFileID)
 	content, err := os.ReadFile(path)
-	if err == nil && json.Valid(content) {
-		return limitTextMiddle(string(content), maxChars, path)
+	if err == nil {
+		if handoffContentValid(content) {
+			return limitTextMiddle(string(content), maxChars, path)
+		}
 	}
 
 	outputPath := filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-%s-output.log", milestoneID, cyclePadded, agentFileID))
@@ -765,6 +768,21 @@ func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars in
 	sb.WriteString(fmt.Sprintf("Source log fallback: %s\n\n", outputPath))
 	sb.WriteString(limitTextMiddle(string(output), maxChars, outputPath))
 	return sb.String()
+}
+
+func handoffContentValid(content []byte) bool {
+	var decoded phaseHandoff
+	if err := yaml.Unmarshal(content, &decoded); err != nil {
+		return false
+	}
+	if decoded.MilestoneID != "" || decoded.AgentID != "" || decoded.OutputContract != "" || decoded.ValidationStatus != "" || decoded.SourceLog != "" || decoded.Summary != nil {
+		return true
+	}
+	return false
+}
+
+func phaseHandoffPath(reportsDir, milestoneID, cyclePadded, agentFileID string) string {
+	return filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-handoff.yaml", milestoneID, cyclePadded, agentFileID))
 }
 
 func getAgentFileID(agentID string, pipeline []config.Agent) string {

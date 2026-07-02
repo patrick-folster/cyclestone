@@ -296,21 +296,24 @@ func TestHistoryRichDetailsAndDeletion(t *testing.T) {
 func TestHistoryRendersStructuredContractMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputPath := filepath.Join(tmpDir, "MS-cycle-001-03-qa-output.log")
-	handoffPath := filepath.Join(tmpDir, "MS-cycle-001-03-qa-handoff.json")
+	handoffPath := filepath.Join(tmpDir, "MS-cycle-001-03-qa-handoff.yaml")
 	if err := os.WriteFile(outputPath, []byte("qa output"), 0644); err != nil {
 		t.Fatalf("failed to write output: %v", err)
 	}
-	handoff := `{
-  "summary": {
-    "verdict": "needs-human-review",
-    "criteria_results": [{"criterion":"AC1","result":"fail"}],
-    "reviewed_files": ["internal/executor/handoff.go"],
-    "failing_checks": ["go test ./..."],
-    "required_fixes": ["fix validation status mapping"]
-  },
-  "output_contract": "qa",
-  "validation_status": "valid"
-}`
+	handoff := `summary:
+  verdict: needs-human-review
+  criteria_results:
+    - criterion: AC1
+      result: fail
+  reviewed_files:
+    - internal/executor/handoff.go
+  failing_checks:
+    - go test ./...
+  required_fixes:
+    - fix validation status mapping
+output_contract: qa
+validation_status: valid
+`
 	if err := os.WriteFile(handoffPath, []byte(handoff), 0644); err != nil {
 		t.Fatalf("failed to write handoff: %v", err)
 	}

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/patrick-folster/cyclestone/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // DetailsModel handles rendering the detail specs and historical log timeline for a milestone.
@@ -38,10 +38,10 @@ type DetailsModel struct {
 }
 
 type detailsPhaseHandoff struct {
-	Summary          map[string]interface{} `json:"summary"`
-	OutputContract   string                 `json:"output_contract,omitempty"`
-	ValidationStatus string                 `json:"validation_status,omitempty"`
-	ValidationErrors []string               `json:"validation_errors,omitempty"`
+	Summary          map[string]interface{} `yaml:"summary"`
+	OutputContract   string                 `yaml:"output_contract,omitempty"`
+	ValidationStatus string                 `yaml:"validation_status,omitempty"`
+	ValidationErrors []string               `yaml:"validation_errors,omitempty"`
 }
 
 // NewDetailsModel creates a DetailsModel instance.
@@ -857,8 +857,8 @@ func (m DetailsModel) renderActionContractMetadata(action config.AgentActionLog,
 		appendStringList(&sb, m.Styles, "Failing:", contractStringSlice(handoff.Summary["failing_checks"]), width)
 		appendStringList(&sb, m.Styles, "Fixes:", contractStringSlice(handoff.Summary["required_fixes"]), width)
 	case "recommender":
-		if score, ok := handoff.Summary["score"].(float64); ok {
-			sb.WriteString(fmt.Sprintf("        %s %.0f/10\n", m.Styles.HelpStyle.Render("Score:"), score))
+		if score, ok := numericDetailsScore(handoff.Summary["score"]); ok {
+			sb.WriteString(fmt.Sprintf("        %s %d/10\n", m.Styles.HelpStyle.Render("Score:"), score))
 		}
 		if verdict, ok := handoff.Summary["verdict"].(string); ok && verdict != "" {
 			sb.WriteString(fmt.Sprintf("        %s %s\n", m.Styles.HelpStyle.Render("Verdict:"), m.Styles.DetailValue.Render(verdict)))
@@ -872,19 +872,35 @@ func loadDetailsPhaseHandoff(outputPath string) (detailsPhaseHandoff, bool) {
 	if outputPath == "" {
 		return handoff, false
 	}
-	handoffPath := strings.TrimSuffix(outputPath, "-output.log") + "-handoff.json"
+	handoffPath := strings.TrimSuffix(outputPath, "-output.log") + "-handoff.yaml"
 	if handoffPath == outputPath {
 		base := strings.TrimSuffix(outputPath, filepath.Ext(outputPath))
-		handoffPath = base + "-handoff.json"
+		handoffPath = base + "-handoff.yaml"
 	}
 	data, err := os.ReadFile(handoffPath)
 	if err != nil {
 		return handoff, false
 	}
-	if err := json.Unmarshal(data, &handoff); err != nil {
+	if err := yaml.Unmarshal(data, &handoff); err != nil {
+		return handoff, false
+	}
+	if handoff.OutputContract == "" && handoff.ValidationStatus == "" && len(handoff.Summary) == 0 {
 		return handoff, false
 	}
 	return handoff, true
+}
+
+func numericDetailsScore(value interface{}) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), typed == float64(int(typed))
+	default:
+		return 0, false
+	}
 }
 
 func appendStringList(sb *strings.Builder, styles Styles, label string, values []string, width int) {

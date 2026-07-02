@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -682,28 +681,28 @@ func TestSanitizeRunnerLogForReportStripsCodexPromptEcho(t *testing.T) {
 func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	tmpDir := t.TempDir()
 	yamlLog := filepath.Join(tmpDir, "pm.log")
-	yamlHandoff := filepath.Join(tmpDir, "pm-handoff.json")
+	yamlHandoff := filepath.Join(tmpDir, "pm-handoff.yaml")
 	if err := os.WriteFile(yamlLog, []byte("report\n```yaml\nscope:\n  - one\nrisks:\n  - low\n```\n"), 0644); err != nil {
 		t.Fatalf("failed to write yaml log: %v", err)
 	}
 	if err := writePhaseHandoff(context.Background(), config.Settings{}, yamlHandoff, "MS-H", 1, "pm", "", yamlLog, 1000, "Test human comment"); err != nil {
 		t.Fatalf("writePhaseHandoff YAML failed: %v", err)
 	}
-	jsonBytes, err := os.ReadFile(yamlHandoff)
+	yamlBytes, err := os.ReadFile(yamlHandoff)
 	if err != nil {
 		t.Fatalf("failed to read handoff: %v", err)
 	}
-	if !strings.Contains(string(jsonBytes), "\"milestone_id\": \"MS-H\"") ||
-		!strings.Contains(string(jsonBytes), "\"agent_id\": \"pm\"") ||
-		!strings.Contains(string(jsonBytes), "\"human_input\": \"Test human comment\"") ||
-		!strings.Contains(string(jsonBytes), "\"summary\"") ||
-		!strings.Contains(string(jsonBytes), "\"scope\"") ||
-		strings.Contains(string(jsonBytes), "\"fallback\"") {
-		t.Fatalf("expected parsed yaml handoff, got:\n%s", string(jsonBytes))
+	if !strings.Contains(string(yamlBytes), "milestone_id: MS-H") ||
+		!strings.Contains(string(yamlBytes), "agent_id: pm") ||
+		!strings.Contains(string(yamlBytes), "human_input: Test human comment") ||
+		!strings.Contains(string(yamlBytes), "summary:") ||
+		!strings.Contains(string(yamlBytes), "scope:") ||
+		strings.Contains(string(yamlBytes), "fallback:") {
+		t.Fatalf("expected parsed yaml handoff, got:\n%s", string(yamlBytes))
 	}
 
 	fallbackLog := filepath.Join(tmpDir, "custom.log")
-	fallbackHandoff := filepath.Join(tmpDir, "custom-handoff.json")
+	fallbackHandoff := filepath.Join(tmpDir, "custom-handoff.yaml")
 	if err := os.WriteFile(fallbackLog, []byte("Verdict: blocked\nRequired fix: add tests\n"), 0644); err != nil {
 		t.Fatalf("failed to write fallback log: %v", err)
 	}
@@ -714,8 +713,8 @@ func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read fallback handoff: %v", err)
 	}
-	if !strings.Contains(string(fallbackBytes), "\"fallback\": true") ||
-		!strings.Contains(string(fallbackBytes), "\"human_input\": \"\"") ||
+	if !strings.Contains(string(fallbackBytes), "fallback: true") ||
+		!strings.Contains(string(fallbackBytes), "human_input: \"\"") ||
 		!strings.Contains(string(fallbackBytes), "Required fix") {
 		t.Fatalf("expected fallback summary, got:\n%s", string(fallbackBytes))
 	}
@@ -724,7 +723,7 @@ func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "developer.log")
-	handoffPath := filepath.Join(tmpDir, "developer-handoff.json")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
 	text := strings.Join([]string{
 		"Earlier draft:",
 		"```yaml",
@@ -746,7 +745,7 @@ func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read handoff: %v", err)
 	}
-	if err := json.Unmarshal(data, &handoff); err != nil {
+	if err := yaml.Unmarshal(data, &handoff); err != nil {
 		t.Fatalf("failed to unmarshal handoff: %v", err)
 	}
 	if handoff.OutputContract != "developer" || handoff.ValidationStatus != "valid" {
@@ -761,8 +760,8 @@ func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 func TestAgentIDAloneDoesNotForceOutputContract(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "developer.log")
-	handoffPath := filepath.Join(tmpDir, "developer-handoff.json")
-	if err := os.WriteFile(logPath, []byte("custom developer output without json"), 0644); err != nil {
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	if err := os.WriteFile(logPath, []byte("custom developer output without structured YAML"), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
 	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "", logPath, 1000, ""); err != nil {
@@ -773,11 +772,11 @@ func TestAgentIDAloneDoesNotForceOutputContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read handoff: %v", err)
 	}
-	if err := json.Unmarshal(data, &handoff); err != nil {
+	if err := yaml.Unmarshal(data, &handoff); err != nil {
 		t.Fatalf("failed to unmarshal handoff: %v", err)
 	}
 	if handoff.OutputContract != "" || handoff.ValidationStatus != "" || !handoff.Fallback {
-		t.Fatalf("expected legacy fallback without explicit output_contract, got %#v", handoff)
+		t.Fatalf("expected fallback without explicit output_contract, got %#v", handoff)
 	}
 }
 
@@ -881,7 +880,7 @@ func TestRecommenderContractAcceptsYAMLIntegerScore(t *testing.T) {
 func TestRecommenderHandoffPersistsMissingVerdictValidationError(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "recommender.log")
-	handoffPath := filepath.Join(tmpDir, "recommender-handoff.json")
+	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
 	body := "```yaml\nscore: 1\nreason: complete\nnext_cycle_focus: []\n```"
 	if err := os.WriteFile(logPath, []byte(body), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
@@ -927,24 +926,20 @@ func TestQAVerdictAndValidationStatusMapping(t *testing.T) {
 	}
 }
 
-func TestRecommenderScoreUsesStructuredThenLegacyFallback(t *testing.T) {
+func TestRecommenderScoreUsesStructuredHandoffOnly(t *testing.T) {
 	tmpDir := t.TempDir()
-	handoffPath := filepath.Join(tmpDir, "recommender-handoff.json")
-	logPath := filepath.Join(tmpDir, "recommender-output.log")
-	if err := os.WriteFile(handoffPath, []byte(`{"summary":{"score":2},"output_contract":"recommender","validation_status":"valid"}`), 0644); err != nil {
+	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
+	if err := os.WriteFile(handoffPath, []byte("summary:\n  score: 2\noutput_contract: recommender\nvalidation_status: valid\n"), 0644); err != nil {
 		t.Fatalf("failed to write handoff: %v", err)
 	}
-	if err := os.WriteFile(logPath, []byte("RECOMMENDATION_SCORE: 9"), 0644); err != nil {
-		t.Fatalf("failed to write log: %v", err)
-	}
-	if got := parseRecommendationScore(handoffPath, logPath); got != 2 {
+	if got := parseRecommendationScore(handoffPath); got != 2 {
 		t.Fatalf("expected structured score, got %d", got)
 	}
-	if err := os.WriteFile(handoffPath, []byte(`{"summary":{},"output_contract":"recommender","validation_status":"invalid"}`), 0644); err != nil {
+	if err := os.WriteFile(handoffPath, []byte("summary: {}\noutput_contract: recommender\nvalidation_status: invalid\n"), 0644); err != nil {
 		t.Fatalf("failed to write invalid handoff: %v", err)
 	}
-	if got := parseRecommendationScore(handoffPath, logPath); got != 9 {
-		t.Fatalf("expected legacy fallback score, got %d", got)
+	if got := parseRecommendationScore(handoffPath); got != -1 {
+		t.Fatalf("expected invalid handoff score to be unavailable, got %d", got)
 	}
 }
 
@@ -965,8 +960,8 @@ func TestExtractHandoffYAMLParsesMultilineFencedBlock(t *testing.T) {
 		t.Fatalf("expected multiline fenced YAML to parse")
 	}
 	var summary map[string]interface{}
-	if err := json.Unmarshal(parsed, &summary); err != nil {
-		t.Fatalf("expected valid JSON: %v", err)
+	if err := yaml.Unmarshal(parsed, &summary); err != nil {
+		t.Fatalf("expected valid YAML: %v", err)
 	}
 	if got := summary["scope"].([]interface{})[0]; got != "implement parser" {
 		t.Fatalf("expected parsed scope, got %#v", got)
@@ -994,11 +989,11 @@ func TestExtractHandoffYAMLSelectsLastValidHandoff(t *testing.T) {
 		t.Fatalf("expected fenced YAML handoff to parse")
 	}
 	var summary map[string]interface{}
-	if err := json.Unmarshal(parsed, &summary); err != nil {
-		t.Fatalf("expected valid JSON: %v", err)
+	if err := yaml.Unmarshal(parsed, &summary); err != nil {
+		t.Fatalf("expected valid YAML: %v", err)
 	}
 	if _, ok := summary["changed_files"]; ok {
-		t.Fatalf("expected later bare JSON handoff, got developer object: %s", string(parsed))
+		t.Fatalf("expected later bare YAML handoff, got developer object: %s", string(parsed))
 	}
 	if got := summary["verdict"]; got != "approved" {
 		t.Fatalf("expected last QA handoff, got: %s", string(parsed))
@@ -1008,7 +1003,7 @@ func TestExtractHandoffYAMLSelectsLastValidHandoff(t *testing.T) {
 func TestWritePhaseHandoffCapsFallbackSize(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "developer.log")
-	handoffPath := filepath.Join(tmpDir, "developer-handoff.json")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
 	var sb strings.Builder
 	for i := 0; i < 300; i++ {
 		sb.WriteString(fmt.Sprintf("Changed file %03d: internal/executor/file_%03d.go %s\n", i, i, strings.Repeat("x", 160)))
@@ -1028,7 +1023,7 @@ func TestWritePhaseHandoffCapsFallbackSize(t *testing.T) {
 	if len([]rune(string(bytes))) > maxFallbackHandoffChars+2000 {
 		t.Fatalf("expected fallback handoff to be capped, got %d chars", len([]rune(string(bytes))))
 	}
-	if !strings.Contains(string(bytes), "\"fallback\": true") || !strings.Contains(string(bytes), "\"summary\"") || !strings.Contains(string(bytes), "\"human_input\": \"Developer note\"") {
+	if !strings.Contains(string(bytes), "fallback: true") || !strings.Contains(string(bytes), "summary:") || !strings.Contains(string(bytes), "human_input: Developer note") {
 		t.Fatalf("expected legacy-compatible fallback signal, got:\n%s", string(bytes))
 	}
 }
@@ -1059,10 +1054,10 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
 		t.Fatalf("failed to write prior report: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-01-pm-handoff.json"), []byte(`{"scope":["pm scope"],"target_paths":["internal/executor"]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-01-pm-handoff.yaml"), []byte("summary:\n  scope:\n    - pm scope\n  target_paths:\n    - internal/executor\n"), 0644); err != nil {
 		t.Fatalf("failed to write pm handoff: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-02-developer-handoff.json"), []byte(`{"changed_files":["internal/executor/executor.go"],"checks_run":["PASS"]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-02-developer-handoff.yaml"), []byte("summary:\n  changed_files:\n    - internal/executor/executor.go\n  checks_run:\n    - PASS\n"), 0644); err != nil {
 		t.Fatalf("failed to write dev handoff: %v", err)
 	}
 
@@ -1139,12 +1134,12 @@ func TestReadHandoffOrFallbackUsesBoundedOutputLogForMissingOrMalformedHandoff(t
 		t.Fatalf("expected missing handoff to use bounded output log fallback, got:\n%s", missing)
 	}
 
-	handoffPath := filepath.Join(reportsDir, "MS-F-cycle-001-01-pm-handoff.json")
-	if err := os.WriteFile(handoffPath, []byte("{not-json"), 0644); err != nil {
+	handoffPath := filepath.Join(reportsDir, "MS-F-cycle-001-01-pm-handoff.yaml")
+	if err := os.WriteFile(handoffPath, []byte("not: [valid"), 0644); err != nil {
 		t.Fatalf("failed to write malformed handoff: %v", err)
 	}
 	malformed := readHandoffOrFallback("MS-F", "001", "pm", 200, nil)
-	if !strings.Contains(malformed, "Handoff summary malformed") || strings.Contains(malformed, "{not-json") {
+	if !strings.Contains(malformed, "Handoff summary malformed") || strings.Contains(malformed, "not: [valid") {
 		t.Fatalf("expected malformed handoff to use output log fallback, got:\n%s", malformed)
 	}
 }
@@ -1445,6 +1440,9 @@ func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
 	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
 		t.Fatalf("failed to write report: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(reportsDir, "MS-YAML-cycle-001-01-pm-handoff.yaml"), []byte("summary:\n  scope: []\n"), 0644); err != nil {
+		t.Fatalf("failed to write handoff: %v", err)
+	}
 
 	if err := updateCycleSummaryReport("MS-YAML", 1, reportsDir); err != nil {
 		t.Fatalf("updateCycleSummaryReport failed: %v", err)
@@ -1456,6 +1454,9 @@ func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
 	summary := string(content)
 	if !strings.Contains(summary, ".cyclestone/reports/MS-YAML-cycle-001.yaml (2026-07-02 10:00:00 -0500) - verdict: approved") {
 		t.Fatalf("expected YAML metadata and details verdict in cycle summary, got:\n%s", summary)
+	}
+	if strings.Contains(summary, "handoff.yaml") {
+		t.Fatalf("expected handoff YAML to be excluded from cycle summary, got:\n%s", summary)
 	}
 }
 

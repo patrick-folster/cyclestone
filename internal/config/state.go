@@ -396,6 +396,9 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 		sort.Strings(files)
 		for _, file := range files {
 			baseName := filepath.Base(file)
+			if !isPrimaryCycleReportFile(milestoneID, baseName) {
+				continue
+			}
 			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
 			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
 
@@ -417,6 +420,23 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 	sb.WriteString("Later cycles should focus on unresolved QA findings, incomplete acceptance criteria, changed-file verification, and current repository state rather than restarting the milestone from scratch.\n")
 
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
+}
+
+func isPrimaryCycleReportFile(milestoneID, baseName string) bool {
+	prefix := milestoneID + "-cycle-"
+	if !strings.HasPrefix(baseName, prefix) || !strings.HasSuffix(baseName, ".yaml") {
+		return false
+	}
+	cyclePart := strings.TrimSuffix(strings.TrimPrefix(baseName, prefix), ".yaml")
+	if len(cyclePart) != 3 {
+		return false
+	}
+	for _, r := range cyclePart {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type cycleReportSummaryEnvelope struct {

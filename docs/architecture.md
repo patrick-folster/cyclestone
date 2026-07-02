@@ -31,11 +31,11 @@ Agent frontmatter selects the runner and ordering. Custom agents should be treat
 
 Built-in Developer, QA, and Recommender agents opt in to structured output contracts with `output_contract` frontmatter. Custom agents are not assigned a contract by default; a custom prompt can opt in with one of the known values:
 
-- `developer`: final fenced `json` block with `changed_files`, `implemented_behavior`, `checks_run`, `decisions`, and `risks`, all arrays of strings.
-- `qa`: final fenced `json` block with string `verdict`, `criteria_results` objects containing string `criterion` and `result`, plus `reviewed_files`, `failing_checks`, and `required_fixes` arrays of strings.
-- `recommender`: final fenced `json` block with integer `score` from 0 to 10, string `verdict`, string `reason`, and `next_cycle_focus` array of strings.
+- `developer`: final fenced `yaml` block with `changed_files`, `implemented_behavior`, `checks_run`, `decisions`, and `risks`, all arrays of strings.
+- `qa`: final fenced `yaml` block with string `verdict`, `criteria_results` objects containing string `criterion` and `result`, plus `reviewed_files`, `failing_checks`, and `required_fixes` arrays of strings.
+- `recommender`: final fenced `yaml` block with integer `score` from 0 to 10, string `verdict`, string `reason`, and `next_cycle_focus` array of strings.
 
-For contracted agents, the executor validates the final fenced `json` block only. Explicit contracts are still validated and persisted when `EnableCompactPhaseHandoffs` is false; that setting disables compact phase-input summaries and uncontracted fallback handoff persistence. Older custom or uncontracted outputs continue through the legacy handoff fallback path.
+For contracted agents, the executor validates the final fenced `yaml` block only. Explicit contracts are still validated and persisted when `EnableCompactPhaseHandoffs` is false; that setting disables compact phase-input summaries and uncontracted fallback handoff persistence. Custom or uncontracted outputs continue through fallback YAML handoff summarization.
 
 ## Runners
 
@@ -61,11 +61,12 @@ Project config:
 Runtime output:
 
 - `.cyclestone/state.json`: active milestone, status, cycles, and history.
-- `.cyclestone/reports/*.md`: cycle reports and phase excerpts.
-- `.cyclestone/reports/*handoff.json`: structured phase handoffs. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`. Legacy handoffs may omit these fields and are treated as compatible.
+- `.cyclestone/reports/*-cycle-NNN.yaml`: structured cycle reports.
+- `.cyclestone/reports/*.md`: milestone summary rollups.
+- `.cyclestone/reports/*handoff.yaml`: structured phase handoffs. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`.
 - `.cyclestone/reports/*metadata.json`: cycle metadata.
 
-Malformed JSON, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading prefers validated structured handoff data and falls back to the legacy `RECOMMENDATION_SCORE:` marker for older logs.
+Malformed YAML, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading uses validated structured handoff data.
 
 ## Branch Behavior
 

@@ -670,12 +670,14 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	c2File := filepath.Join(reportsDir, "MS-1-cycle-002.yaml")
 	c3File := filepath.Join(reportsDir, "MS-1-cycle-003.yaml")
 	c3Meta := filepath.Join(reportsDir, "MS-1-cycle-003-metadata.json")
+	c3Handoff := filepath.Join(reportsDir, "MS-1-cycle-003-03-qa-handoff.yaml")
 	summaryFile := filepath.Join(reportsDir, "MS-1.md")
 
 	_ = os.WriteFile(c1File, []byte("started: \"2026-07-02 09:00:00 -0500\"\ndetails: |-\n  c1\n"), 0644)
 	_ = os.WriteFile(c2File, []byte("started: \"2026-07-02 10:00:00 -0500\"\ndetails: |-\n  c2\n"), 0644)
 	_ = os.WriteFile(c3File, []byte("started: \"2026-07-02 11:00:00 -0500\"\ndetails: |-\n  verdict: approved\n"), 0644)
 	_ = os.WriteFile(c3Meta, []byte("c3meta"), 0644)
+	_ = os.WriteFile(c3Handoff, []byte("summary:\n  verdict: approved\n"), 0644)
 	_ = os.WriteFile(summaryFile, []byte("summary"), 0644)
 
 	err := DeleteMilestoneCycle(configPath, statePath, "MS-1", 2)
@@ -710,11 +712,15 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 
 	c3RenamedFile := filepath.Join(reportsDir, "MS-1-cycle-002.yaml")
 	c3RenamedMeta := filepath.Join(reportsDir, "MS-1-cycle-002-metadata.json")
+	c3RenamedHandoff := filepath.Join(reportsDir, "MS-1-cycle-002-03-qa-handoff.yaml")
 	if _, err := os.Stat(c3RenamedFile); os.IsNotExist(err) {
 		t.Error("expected cycle 3 report to be renamed to cycle 2")
 	}
 	if _, err := os.Stat(c3RenamedMeta); os.IsNotExist(err) {
 		t.Error("expected cycle 3 metadata to be renamed to cycle 2")
+	}
+	if _, err := os.Stat(c3RenamedHandoff); os.IsNotExist(err) {
+		t.Error("expected cycle 3 handoff to be renamed to cycle 2")
 	}
 	if _, err := os.Stat(c3File); !os.IsNotExist(err) {
 		t.Error("expected old cycle 3 file to not exist anymore")
@@ -726,7 +732,8 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 		t.Errorf("expected summary report to exist, got error: %v", err)
 	} else if !strings.Contains(string(summaryBytes), "Latest cycle: 002") ||
 		!strings.Contains(string(summaryBytes), "MS-1-cycle-002.yaml") ||
-		!strings.Contains(string(summaryBytes), "verdict: approved") {
+		!strings.Contains(string(summaryBytes), "verdict: approved") ||
+		strings.Contains(string(summaryBytes), "handoff.yaml") {
 		t.Errorf("expected summary report to list YAML cycle reports with parsed verdict, got %q", string(summaryBytes))
 	}
 
