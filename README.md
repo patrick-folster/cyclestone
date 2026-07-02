@@ -48,9 +48,7 @@ Many AI coding agents operate as a "black box"—you run them, and they edit you
 - At least one supported runner:
   - `codex`: OpenAI Codex CLI installed and authenticated. This is the default runner.
   - `agy`: `agy` CLI installed and authenticated.
-  - `gemini`: `GEMINI_API_KEY` set.
-  - `openai`: `OPENAI_API_KEY` set.
-  - `anthropic`: `ANTHROPIC_API_KEY` set.
+  - `aider`: Aider CLI installed.
   - `ollama`: Ollama running locally or reachable through `ollama_host` (runs via Aider CLI).
 
 ### 1. Installation
@@ -110,7 +108,7 @@ Setup writes files only after final confirmation:
 - `.cyclestone/milestones/`
 - `.cyclestone/milestones/<id>.md` when you create the first milestone
 
-Runner detection checks `codex`, `agy`, and `aider` on `PATH`, and enables direct API runners only when `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` is set. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
+Runner detection checks `codex`, `agy`, and `aider` on `PATH`. The `ollama` runner is offered when Aider is available, because Ollama execution runs through Aider. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
 
 The wizard defaults to sandbox mode and automatic milestone branches. Selecting unrestricted mode requires an explicit confirmation before settings are saved. If `cyclestone` is run non-interactively and no config exists, it exits before launching the TUI; run it in an interactive terminal or provide an existing config path.
 
@@ -201,19 +199,15 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 | `codex` | Codex CLI on `PATH` and authenticated | Default. Uses Codex CLI sandbox/approval behavior. |
 | `agy` | `agy` CLI on `PATH` and authenticated | External CLI runner. |
 | `aider` | Aider CLI on `PATH` | Python-based coding assistant. Defaults to `--no-auto-commits`, `--no-dirty-commits`, and `--no-gitignore`. |
-| `gemini` | `GEMINI_API_KEY` | Direct API runner. Provider usage may incur costs. |
-| `openai` | `OPENAI_API_KEY` | Direct API runner. Provider usage may incur costs. |
-| `anthropic` | `ANTHROPIC_API_KEY` | Direct API runner. Provider usage may incur costs. |
-| `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to local Ollama behavior unless `ollama_host` is configured. |
+| `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to `qwen3-coder:480b-cloud` unless `ollama_model` is configured. |
 
 ### Known Limitations
 
 - Agents can edit files through their runner. Review diffs before merging.
 - Token budgets are estimates for some runners and exact for others only when provider usage data is returned.
-- Provider API usage can create cost. Set model limits before large milestones.
+- Remote Ollama or cloud model usage can create cost. Set model limits before large milestones.
 - Local Ollama behavior (via Aider) depends on installed models, context limits, and host performance.
 - Branch snapshots help audit work, but they are not a backup system.
-- Custom runner scripts are trusted code. Review them before use.
 
 ### Project Files and Git Ignore
 

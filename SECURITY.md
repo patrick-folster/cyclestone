@@ -13,15 +13,15 @@ Do not include exploitable details in a public issue. If private reporting is no
 Include:
 
 - Affected version or commit.
-- Runner used (`codex`, `agy`, `gemini`, `openai`, `anthropic`, `ollama`, or custom).
+- Runner used (`codex`, `agy`, `aider`, or `ollama`).
 - Operating system.
 - Impact summary.
 - Minimal reproduction steps.
-- Whether the issue requires `--unrestricted` or a custom runner script.
+- Whether the issue requires `--unrestricted`.
 
 ## Threat Model
 
-Cyclestone orchestrates AI runners that can inspect project files and may modify repository content. Treat prompts, custom agents, and custom runner scripts as executable workflow inputs.
+Cyclestone orchestrates AI runners that can inspect project files and may modify repository content. Treat prompts and custom agents as executable workflow inputs.
 
 Primary risks:
 

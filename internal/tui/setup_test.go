@@ -9,10 +9,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestSetupRunnerDetectionUsesPathAndAPIKeys(t *testing.T) {
+func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	tmp := t.TempDir()
 	codexPath := filepath.Join(tmp, "codex")
 	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	aiderPath := filepath.Join(tmp, "aider")
+	if err := os.WriteFile(aiderPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", tmp)
@@ -22,17 +26,24 @@ func TestSetupRunnerDetectionUsesPathAndAPIKeys(t *testing.T) {
 
 	runners := detectSetupRunnerAvailability()
 	available := map[string]bool{}
+	seen := map[string]bool{}
 	for _, runner := range runners {
 		available[runner.ID] = runner.Available
+		seen[runner.ID] = true
 	}
 	if !available["codex"] {
 		t.Fatalf("expected codex to be detected from PATH: %#v", runners)
 	}
-	if !available["openai"] {
-		t.Fatalf("expected openai to be detected from OPENAI_API_KEY: %#v", runners)
+	if !available["aider"] || !available["ollama"] {
+		t.Fatalf("expected aider and ollama to be available through aider on PATH: %#v", runners)
 	}
-	if available["gemini"] || available["anthropic"] || available["agy"] || available["aider"] {
+	if available["agy"] {
 		t.Fatalf("unexpected unavailable runner marked available: %#v", runners)
+	}
+	for _, removed := range []string{"gemini", "openai", "anthropic"} {
+		if seen[removed] {
+			t.Fatalf("setup should not offer %s: %#v", removed, runners)
+		}
 	}
 	if got := defaultSetupRunner(runners); got != "codex" {
 		t.Fatalf("expected first available default runner codex, got %q", got)
@@ -42,8 +53,8 @@ func TestSetupRunnerDetectionUsesPathAndAPIKeys(t *testing.T) {
 func TestSetupWizardBlocksUnrestrictedWithoutAcknowledgement(t *testing.T) {
 	root := t.TempDir()
 	model := NewSetupWizardModel(filepath.Join(root, ".cyclestone", "milestone.yml"), filepath.Join(root, ".cyclestone", "state.json"), DefaultStyles(true, true))
-	model.Runners = []runnerAvailability{{ID: "openai", Label: "OpenAI API", Available: true}}
-	model.Runner = "openai"
+	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.Runner = "codex"
 	model.Unrestricted = true
 	model.UnrestrictedAck = false
 	model.FocusIndex = setupFieldConfirm

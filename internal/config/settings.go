@@ -9,6 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const DefaultOllamaModel = "qwen3-coder:480b-cloud"
+
 // AgentGroup represents a serialized pipeline group of agents.
 type AgentGroup struct {
 	Name     string   `yaml:"name" json:"name"`
@@ -390,7 +392,7 @@ func LoadMergedSettings() Settings {
 		s.AnthropicModel = "claude-3-5-sonnet-20241022"
 	}
 	if s.OllamaModel == "" {
-		s.OllamaModel = "llama3"
+		s.OllamaModel = DefaultOllamaModel
 	}
 
 	// Ensure "Default" is present and listed first

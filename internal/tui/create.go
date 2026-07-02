@@ -27,7 +27,7 @@ type CreateMilestoneMsg struct {
 	Goal               string
 	AcceptanceCriteria []string
 	Checks             []string
-	RunnerType         string // "template", "codex", "agy"
+	RunnerType         string
 	CreateBranch       bool
 }
 
@@ -44,7 +44,7 @@ type CreateMilestoneModel struct {
 	TitleInput    textinput.Model
 	GoalInput     textarea.Model
 	Spinner       spinner.Model
-	RunnerType    string // "template", "codex", "agy", etc.
+	RunnerType    string
 	DefaultLLM    string
 	CreateBranch  bool
 	Loading       bool
@@ -93,7 +93,7 @@ func NewCreateMilestoneModel(styles Styles) CreateMilestoneModel {
 		TitleInput:   titleInput,
 		GoalInput:    goalInput,
 		Spinner:      s,
-		RunnerType:   "template",
+		RunnerType:   normalizeMilestoneRunner(""),
 		DefaultLLM:   "",
 		CreateBranch: false,
 		FocusIndex:   0,
@@ -529,9 +529,7 @@ func (m CreateMilestoneModel) View() string {
 			var renderedOpts []string
 			for _, opt := range opts {
 				display := opt
-				if opt == "template" {
-					display = "None (Template)"
-				} else if opt == "ollama" {
+				if opt == "ollama" {
 					display = "ollama via aider"
 				}
 				if m.RunnerType == opt {
@@ -654,8 +652,8 @@ func (m CreateMilestoneModel) View() string {
 			var renderedOpts []string
 			for _, opt := range opts {
 				display := opt
-				if opt == "template" {
-					display = "None (Template)"
+				if opt == "ollama" {
+					display = "ollama via aider"
 				}
 				if m.RunnerType == opt {
 					renderedOpts = append(renderedOpts, m.Styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))
@@ -852,19 +850,8 @@ func slugifyTitle(title string) string {
 	return strings.Join(clean, "-")
 }
 
-func getCreateRunnerOptions(defaultLLM string) []string {
-	opts := []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api"}
-	isStandard := false
-	for _, o := range opts {
-		if o == defaultLLM {
-			isStandard = true
-			break
-		}
-	}
-	if defaultLLM != "" && !isStandard {
-		opts = append(opts, defaultLLM)
-	}
-	return opts
+func getCreateRunnerOptions(_ string) []string {
+	return getMilestoneRunnerOptions()
 }
 
 func (m *CreateMilestoneModel) recalcHeights() {

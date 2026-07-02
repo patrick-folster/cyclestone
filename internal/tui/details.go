@@ -282,21 +282,7 @@ func (m DetailsModel) Update(msg tea.Msg) (DetailsModel, tea.Cmd) {
 			}
 		case "l":
 			// Cycle LLM options
-			options := []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama"}
-			mergedSettings := config.LoadMergedSettings()
-			var customScript string
-			if isCustomLLM(mergedSettings.DefaultLLM) {
-				customScript = mergedSettings.DefaultLLM
-			} else {
-				if proj, err := config.LoadProjectSettings(); err == nil && isCustomLLM(proj.DefaultLLM) {
-					customScript = proj.DefaultLLM
-				} else if glob, err := config.LoadGlobalSettings(); err == nil && isCustomLLM(glob.DefaultLLM) {
-					customScript = glob.DefaultLLM
-				}
-			}
-			if customScript != "" {
-				options = append(options, customScript)
-			}
+			options := getMilestoneRunnerOptions()
 
 			// Find current index
 			currentIdx := -1
@@ -307,12 +293,7 @@ func (m DetailsModel) Update(msg tea.Msg) (DetailsModel, tea.Cmd) {
 				}
 			}
 			if currentIdx == -1 {
-				if isCustomLLM(m.LLM) {
-					options = append(options, m.LLM)
-					currentIdx = len(options) - 1
-				} else {
-					currentIdx = 0
-				}
+				currentIdx = 0
 			}
 
 			nextIdx := (currentIdx + 1) % len(options)

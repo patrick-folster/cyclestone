@@ -17,9 +17,7 @@ var supportedSetupRunners = []runnerAvailability{
 	{ID: "codex", Label: "Codex CLI"},
 	{ID: "agy", Label: "Agy CLI"},
 	{ID: "aider", Label: "Aider CLI"},
-	{ID: "gemini", Label: "Gemini API"},
-	{ID: "openai", Label: "OpenAI API"},
-	{ID: "anthropic", Label: "Anthropic API"},
+	{ID: "ollama", Label: "Ollama via Aider"},
 }
 
 func detectSetupRunnerAvailability() []runnerAvailability {
@@ -55,6 +53,11 @@ func isRunnerAvailable(runner string) (bool, string) {
 			return false, fmt.Sprintf("%s not found on PATH", runner)
 		}
 		return true, "available on PATH"
+	case "ollama":
+		if _, err := exec.LookPath("aider"); err != nil {
+			return false, "aider not found on PATH"
+		}
+		return true, "available through aider on PATH"
 	case "gemini":
 		if os.Getenv("GEMINI_API_KEY") == "" {
 			return false, "GEMINI_API_KEY is not set"

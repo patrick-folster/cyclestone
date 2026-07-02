@@ -84,9 +84,6 @@ var settingsGroups = []settingsGroup{
 	{Name: "Execution Behavior", Rows: []int{settingDefaultMode, settingAutoGitBranch, settingCreateMilestoneBranch, settingDefaultGitBranchPrefix}},
 	{Name: "UI Behavior", Rows: []int{settingDisableBold, settingDisableRoundedBorders}},
 	{Name: "Context/Cache Limits", Rows: []int{settingEnableContextCaching, settingEnableCompactPhaseHandoffs, settingEnableCodexSessionResume, settingCacheTTLMinutes, settingMaxHandoffChars, settingMaxModelCallsPerPhase, settingMaxTokenBudgetPerPhase, settingMaxLLMInputChars, settingMaxRetainedConversationMessages}},
-	{Name: "Gemini Settings", Rows: []int{settingGeminiModel}},
-	{Name: "OpenAI Settings", Rows: []int{settingOpenAIModel}},
-	{Name: "Anthropic Settings", Rows: []int{settingAnthropicModel}},
 	{Name: "Aider Settings", Rows: []int{settingAiderModel}},
 	{Name: "Ollama via Aider Settings", Rows: []int{settingOllamaModel, settingOllamaHost, settingOllamaKeepAlive, settingOllamaNumCtx, settingOllamaNumPredict}},
 	{Name: "Agent Groups", Rows: []int{settingAgentGroups}},
@@ -163,7 +160,7 @@ func NewSettingsModel(styles Styles) SettingsModel {
 		OpenAIModelInput:                newInput("openai model", 32, 120),
 		AnthropicModelInput:             newInput("anthropic model", 32, 120),
 		AiderModelInput:                 newInput("aider model", 32, 120),
-		OllamaModelInput:                newInput("llama3", 32, 120),
+		OllamaModelInput:                newInput(config.DefaultOllamaModel, 32, 120),
 		OllamaHostInput:                 newInput("http://localhost:11434", 40, 200),
 		KeepAliveInput:                  newInput("5m", 15, 20),
 		OllamaNumCtxInput:               newInput("4096", 10, 8),
@@ -188,18 +185,26 @@ func (m *SettingsModel) loadSettingsDrafts() {
 		m.ErrorMsg = fmt.Sprintf("Error loading global settings: %v", err)
 	}
 	m.GlobalDraft = global
-	m.GlobalOriginal = global
 
 	project, err := config.LoadProjectSettings()
 	if err != nil {
 		m.ErrorMsg = fmt.Sprintf("Error loading project settings: %v", err)
 	}
 	m.ProjectDraft = project
-	m.ProjectOriginal = project
+	m.normalizeDefaultLLMDrafts()
+	m.GlobalOriginal = m.GlobalDraft
+	m.ProjectOriginal = m.ProjectDraft
 
 	m.syncCustomInput()
 	m.updateTextInputFocus()
 	m.updatePlaceholders()
+}
+
+func (m *SettingsModel) normalizeDefaultLLMDrafts() {
+	m.GlobalDraft.DefaultLLM = normalizeMilestoneRunner(m.GlobalDraft.DefaultLLM)
+	if m.ProjectDraft.DefaultLLM != "" {
+		m.ProjectDraft.DefaultLLM = normalizeMilestoneRunner(m.ProjectDraft.DefaultLLM)
+	}
 }
 
 func (m SettingsModel) Init() tea.Cmd {
@@ -402,7 +407,7 @@ func (m *SettingsModel) switchScope(scope string) {
 	m.syncInputValuesToDraft()
 	m.Scope = scope
 	m.syncCustomInput()
-	if m.FocusIndex == settingCustomLLM && !isCustomLLM(m.getActiveDraft().DefaultLLM) {
+	if m.FocusIndex == settingCustomLLM {
 		m.FocusIndex = m.firstRowForGroup(m.ActiveGroup)
 	}
 	m.updateTextInputFocus()
@@ -414,7 +419,7 @@ func (m SettingsModel) visibleRows() []int {
 	rows := make([]int, 0, settingsRowCount)
 	for _, group := range settingsGroups {
 		for _, row := range group.Rows {
-			if row == settingCustomLLM && !isCustomLLM(m.getActiveDraft().DefaultLLM) {
+			if row == settingCustomLLM {
 				continue
 			}
 			rows = append(rows, row)
@@ -486,7 +491,7 @@ func (m SettingsModel) rowsForGroup(groupIdx int) []int {
 	}
 	rows := make([]int, 0, len(group.Rows))
 	for _, row := range group.Rows {
-		if row == settingCustomLLM && !isCustomLLM(m.getActiveDraft().DefaultLLM) {
+		if row == settingCustomLLM {
 			continue
 		}
 		rows = append(rows, row)
@@ -770,7 +775,7 @@ func (m *SettingsModel) updatePlaceholders() {
 	m.OpenAIModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OpenAIModel, "openai model")
 	m.AnthropicModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AnthropicModel, "anthropic model")
 	m.AiderModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AiderModel, "aider model")
-	m.OllamaModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaModel, "llama3")
+	m.OllamaModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaModel, config.DefaultOllamaModel)
 	m.OllamaHostInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaHost, "http://localhost:11434")
 	m.KeepAliveInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaKeepAlive, defaults.OllamaKeepAlive)
 
@@ -798,7 +803,7 @@ func (m *SettingsModel) syncInputValuesToDraft() {
 		fieldGeminiModel, fieldOpenAIModel, fieldAnthropicModel, fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
 		fieldOllamaKeepAlive, fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
 	} {
-		if field == fieldCustomLLM && !isCustomLLM(m.getActiveDraft().DefaultLLM) {
+		if field == fieldCustomLLM {
 			continue
 		}
 		m.applyTextFieldValue(field)
@@ -806,17 +811,15 @@ func (m *SettingsModel) syncInputValuesToDraft() {
 }
 
 func getLLMOptions(scope string) []string {
+	options := getMilestoneRunnerOptions()
 	if scope == settingsScopeGlobal {
-		return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "custom"}
+		return options
 	}
-	return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "custom", "inherit"}
+	return append(options, "inherit")
 }
 
 func getCurrentLLMOptIndex(val string, options []string) int {
 	for i, opt := range options {
-		if opt == "custom" && isCustomLLM(val) {
-			return i
-		}
 		if opt == "inherit" && val == "" {
 			return i
 		}
@@ -839,13 +842,6 @@ func (m *SettingsModel) handleLeftRight(isLeft bool) {
 		}
 		newOpt := options[(newIdx+len(options))%len(options)]
 		switch newOpt {
-		case "custom":
-			pathVal := m.CustomLLMInput.Value()
-			if pathVal == "" {
-				pathVal = "./custom-wrapper.sh"
-				m.CustomLLMInput.SetValue(pathVal)
-			}
-			draft.DefaultLLM = pathVal
 		case "inherit":
 			draft.DefaultLLM = ""
 		default:
@@ -969,7 +965,10 @@ func boolPtr(v bool) *bool {
 func (m SettingsModel) handleSave() (SettingsModel, tea.Cmd) {
 	m.syncInputValuesToDraft()
 	if m.Scope == settingsScopeGlobal {
+		m.GlobalDraft.DefaultLLM = normalizeMilestoneRunner(m.GlobalDraft.DefaultLLM)
 		m.normalizeGlobalDraft()
+	} else if m.ProjectDraft.DefaultLLM != "" {
+		m.ProjectDraft.DefaultLLM = normalizeMilestoneRunner(m.ProjectDraft.DefaultLLM)
 	}
 
 	draft := m.getActiveDraft()
@@ -1358,12 +1357,9 @@ func (m SettingsModel) rowValue(row int) string {
 			if opt == "ollama" {
 				return "ollama via aider"
 			}
-			if opt == "ollama_api" {
-				return "ollama directly"
-			}
 			return opt
 		}, func(opt string) bool {
-			return (opt == "custom" && isCustomLLM(draft.DefaultLLM)) || (opt == "inherit" && draft.DefaultLLM == "") || opt == draft.DefaultLLM
+			return (opt == "inherit" && draft.DefaultLLM == "") || opt == draft.DefaultLLM
 		})
 	case settingCustomLLM:
 		return m.CustomLLMInput.View()
@@ -1415,7 +1411,7 @@ func (m SettingsModel) rowValue(row int) string {
 	case settingAiderModel:
 		return m.renderStringInputWithInherit(m.AiderModelInput.View(), m.GlobalDraft.AiderModel)
 	case settingOllamaModel:
-		return m.renderStringInputWithInherit(m.OllamaModelInput.View(), defaultString(m.GlobalDraft.OllamaModel, "llama3"))
+		return m.renderStringInputWithInherit(m.OllamaModelInput.View(), defaultString(m.GlobalDraft.OllamaModel, config.DefaultOllamaModel))
 	case settingOllamaHost:
 		return m.renderStringInputWithInherit(m.OllamaHostInput.View(), defaultString(m.GlobalDraft.OllamaHost, "http://localhost:11434"))
 	case settingOllamaKeepAlive:

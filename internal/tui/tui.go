@@ -314,10 +314,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.CreateMilestone.Width = m.Width
 			m.CreateMilestone.Height = m.Height
 			settings := config.LoadMergedSettings()
-			defaultRunner := settings.DefaultLLM
-			if defaultRunner == "" {
-				defaultRunner = "template"
-			}
+			defaultRunner := normalizeMilestoneRunner(settings.DefaultLLM)
 			m.CreateMilestone.DefaultLLM = settings.DefaultLLM
 			m.CreateMilestone.RunnerType = defaultRunner
 			createBranch := false
@@ -1104,7 +1101,7 @@ func (m *RootModel) initDetailsScreen(ms config.Milestone) {
 	m.Details.History = m.getHistoryForMilestone(ms.ID)
 	m.Details.RecommendationScore = m.State.GetMilestoneRecommendation(ms.ID)
 	settings := config.LoadMergedSettings()
-	m.Details.LLM = settings.DefaultLLM
+	m.Details.LLM = normalizeMilestoneRunner(settings.DefaultLLM)
 	if m.Unrestricted {
 		m.Details.Mode = "unrestricted"
 	} else {

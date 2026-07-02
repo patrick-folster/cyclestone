@@ -44,15 +44,11 @@ Supported runners:
 - `codex`
 - `agy`
 - `aider`
-- `gemini`
-- `openai`
-- `anthropic`
 - `ollama`
-- Custom executable paths
 
-CLI runners execute external programs (including Codex, Agy, Aider, and Ollama via Aider). Direct API runners call provider APIs.
+CLI runners execute external programs, including Codex, Agy, Aider, and Ollama via Aider.
 
-First-run setup detects `codex`, `agy`, and `aider` with `PATH` lookups. It detects direct API runners from `GEMINI_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY`. The default setup runner is chosen only from available supported options; unavailable API runners are not selectable until their environment variable exists.
+First-run setup detects `codex`, `agy`, and `aider` with `PATH` lookups. The `ollama` runner is selectable when Aider is available, because Ollama execution runs through Aider. The default setup runner is chosen only from available supported options.
 
 ## Files
 
@@ -99,7 +95,7 @@ Default mode is `sandbox`. The exact restrictions depend on the selected runner.
 
 The first-run wizard defaults to sandbox mode. Persisting `default_mode: unrestricted` requires an explicit acknowledgement in the wizard before setup can be confirmed.
 
-Custom runner scripts and custom agents are trusted inputs. Review them before use.
+Custom agents are trusted inputs. Review them before use.
 
 ## Terminal Compatibility
 

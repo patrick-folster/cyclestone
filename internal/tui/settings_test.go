@@ -23,11 +23,16 @@ func TestSettingsModelRendersScrollableGroupList(t *testing.T) {
 	for _, want := range []string{
 		"[ Global ]", "[ Project ]",
 		"Runner Selection", "Execution Behavior", "UI Behavior", "Context/Cache Limits",
-		"Gemini Settings", "OpenAI Settings", "Anthropic Settings", "Ollama via Aider Settings",
+		"Aider Settings", "Ollama via Aider Settings",
 		"Agent Groups", "Save & Exit", "Discard & Exit",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected settings view to contain %q, got:\n%s", want, view)
+		}
+	}
+	for _, hiddenGroup := range []string{"Gemini Settings", "OpenAI Settings", "Anthropic Settings"} {
+		if strings.Contains(view, hiddenGroup) {
+			t.Fatalf("expected settings view to hide %q, got:\n%s", hiddenGroup, view)
 		}
 	}
 	for _, hidden := range []string{"Default LLM / Runner", "Max LLM Input Chars", "Enter to edit pipeline groups"} {
@@ -98,12 +103,41 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 		if err != nil {
 			t.Fatalf("failed to load saved project settings: %v", err)
 		}
-		if saved.DefaultLLM != "./saved-runner.sh" || saved.CacheTTLMinutes != 45 || saved.MaxHandoffChars != 6000 || saved.MaxModelCallsPerPhase != 25 ||
+		if saved.DefaultLLM != "codex" || saved.CacheTTLMinutes != 45 || saved.MaxHandoffChars != 6000 || saved.MaxModelCallsPerPhase != 25 ||
 			saved.MaxTokenBudgetPerPhase != 123456 || saved.MaxLLMInputChars != 750000 || saved.GeminiModel != "gemini-2" ||
 			saved.OpenAIModel != "gpt-5" || saved.AnthropicModel != "claude-4" || saved.AiderModel != "aider-test-model" || saved.OllamaModel != "llama3.1" ||
 			saved.OllamaHost != "http://ollama:11434" || saved.OllamaKeepAlive != "15m" || saved.OllamaNumCtx != 8192 ||
 			saved.OllamaNumPredict != 2048 || saved.DefaultGitBranchPrefix != "test-prefix/" {
 			t.Fatalf("saved settings missing expected fields: %+v", saved)
+		}
+	})
+}
+
+func TestSettingsRunnerOptionsAreRestricted(t *testing.T) {
+	if got, want := getLLMOptions(settingsScopeGlobal), []string{"codex", "agy", "aider", "ollama"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("global runner options = %v; want %v", got, want)
+	}
+	if got, want := getLLMOptions(settingsScopeProject), []string{"codex", "agy", "aider", "ollama", "inherit"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("project runner options = %v; want %v", got, want)
+	}
+}
+
+func TestSettingsSaveNormalizesUnsupportedDefaultLLM(t *testing.T) {
+	withTempSettingsDir(t, func() {
+		model := NewSettingsModel(DefaultStyles(true, true))
+		model.Scope = "project"
+		model.ProjectDraft.DefaultLLM = "gemini"
+
+		updated, _ := model.handleSave()
+		if updated.ErrorMsg != "" {
+			t.Fatalf("expected save without error, got %q", updated.ErrorMsg)
+		}
+		saved, err := config.LoadProjectSettings()
+		if err != nil {
+			t.Fatalf("failed to load project settings: %v", err)
+		}
+		if saved.DefaultLLM != "codex" {
+			t.Fatalf("expected unsupported project runner to normalize to codex, got %q", saved.DefaultLLM)
 		}
 	})
 }
@@ -165,7 +199,7 @@ func TestSettingsModelGlobalSaveNormalizesResolvedDefaults(t *testing.T) {
 
 func TestSettingsModelAgentGroupsEntry(t *testing.T) {
 	model := NewSettingsModel(DefaultStyles(true, true))
-	model.ActiveGroup = 8
+	model.ActiveGroup = settingsGroupIndex(t, "Agent Groups")
 	model.FocusIndex = settingAgentGroups
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -182,11 +216,12 @@ func TestSettingsModelEnterOpensGroupDetailAndBackReturnsToList(t *testing.T) {
 	model.Width = 80
 	model.Height = 20
 	model.Scope = "project"
-	model.SelectedGroup = 8
+	ollamaGroup := settingsGroupIndex(t, "Ollama via Aider Settings")
+	model.SelectedGroup = ollamaGroup
 
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if model.ActiveGroup != 8 {
-		t.Fatalf("expected active group 8, got %d", model.ActiveGroup)
+	if model.ActiveGroup != ollamaGroup {
+		t.Fatalf("expected active group %d, got %d", ollamaGroup, model.ActiveGroup)
 	}
 	if model.FocusIndex != settingOllamaModel {
 		t.Fatalf("expected first Ollama row focus, got %d", model.FocusIndex)
@@ -202,9 +237,20 @@ func TestSettingsModelEnterOpensGroupDetailAndBackReturnsToList(t *testing.T) {
 	if model.ActiveGroup != -1 {
 		t.Fatalf("expected return to group list, got active group %d", model.ActiveGroup)
 	}
-	if model.SelectedGroup != 8 {
+	if model.SelectedGroup != ollamaGroup {
 		t.Fatalf("expected selected group preserved, got %d", model.SelectedGroup)
 	}
+}
+
+func settingsGroupIndex(t *testing.T, name string) int {
+	t.Helper()
+	for i, group := range settingsGroups {
+		if group.Name == name {
+			return i
+		}
+	}
+	t.Fatalf("could not find settings group %q", name)
+	return -1
 }
 
 func TestSettingsModelDetailNavigationScrollsConstrainedHeight(t *testing.T) {
@@ -298,8 +344,8 @@ func TestSettingsModelSpacebarToggling(t *testing.T) {
 		t.Fatalf("expected auto git branch to cycle to false, got %+v", model.ProjectDraft.AutoGitBranch)
 	}
 
-	// Now focus a text input field, e.g. custom LLM script path
-	model.FocusIndex = settingCustomLLM
+	// Now focus a text input field.
+	model.FocusIndex = settingDefaultGitBranchPrefix
 	model.updateTextInputFocus()
 	if !model.IsTextInputFocused() {
 		t.Fatalf("expected text input to be focused")
@@ -307,7 +353,7 @@ func TestSettingsModelSpacebarToggling(t *testing.T) {
 
 	// Press space. It should type a space character into the field rather than cycling.
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
-	val := model.CustomLLMInput.Value()
+	val := model.DefaultGitBranchPrefixInput.Value()
 	if val != " " {
 		t.Fatalf("expected space char to be typed into input, got %q", val)
 	}
@@ -424,12 +470,12 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	model := NewSettingsModel(DefaultStyles(true, true))
 
 	// Set some global settings values
-	model.GlobalDraft.GeminiModel = "global-gemini"
+	model.GlobalDraft.AiderModel = "global-aider"
 	model.GlobalDraft.CacheTTLMinutes = 45
 	model.GlobalDraft.OllamaNumCtx = 16384
 
 	// Keep project settings unset/empty
-	model.ProjectDraft.GeminiModel = ""
+	model.ProjectDraft.AiderModel = ""
 	model.ProjectDraft.CacheTTLMinutes = 0
 	model.ProjectDraft.OllamaNumCtx = 0
 
@@ -439,8 +485,8 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	model.updatePlaceholders()
 
 	// Verify input values are empty for unset project settings
-	if model.GeminiModelInput.Value() != "" {
-		t.Errorf("expected project scope GeminiModel input to be empty, got %q", model.GeminiModelInput.Value())
+	if model.AiderModelInput.Value() != "" {
+		t.Errorf("expected project scope AiderModel input to be empty, got %q", model.AiderModelInput.Value())
 	}
 	if model.CacheTTLInput.Value() != "" {
 		t.Errorf("expected project scope CacheTTL input to be empty, got %q", model.CacheTTLInput.Value())
@@ -450,8 +496,8 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	}
 
 	// Verify placeholders correctly inherit global values
-	if model.GeminiModelInput.Placeholder != "global-gemini" {
-		t.Errorf("expected GeminiModel placeholder to be 'global-gemini', got %q", model.GeminiModelInput.Placeholder)
+	if model.AiderModelInput.Placeholder != "global-aider" {
+		t.Errorf("expected AiderModel placeholder to be 'global-aider', got %q", model.AiderModelInput.Placeholder)
 	}
 	if model.CacheTTLInput.Placeholder != "45" {
 		t.Errorf("expected CacheTTL placeholder to be '45', got %q", model.CacheTTLInput.Placeholder)
@@ -461,14 +507,14 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	}
 
 	// Verify placeholder fallback to system default if global is also unset
-	model.GlobalDraft.GeminiModel = ""
+	model.GlobalDraft.AiderModel = ""
 	model.GlobalDraft.CacheTTLMinutes = 0
 	model.GlobalDraft.OllamaNumCtx = 0
 	model.updatePlaceholders()
 
-	// "gemini model" is the fallback default placeholder
-	if model.GeminiModelInput.Placeholder != "gemini model" {
-		t.Errorf("expected GeminiModel placeholder to default to 'gemini model', got %q", model.GeminiModelInput.Placeholder)
+	// "aider model" is the fallback default placeholder
+	if model.AiderModelInput.Placeholder != "aider model" {
+		t.Errorf("expected AiderModel placeholder to default to 'aider model', got %q", model.AiderModelInput.Placeholder)
 	}
 	// "30" is the CacheTTLMinutes system default
 	if model.CacheTTLInput.Placeholder != "30" {
@@ -485,8 +531,8 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	model.updatePlaceholders()
 
 	// At global scope, if a setting is unset, placeholder is system default
-	if model.GeminiModelInput.Placeholder != "gemini model" {
-		t.Errorf("expected global scope GeminiModel placeholder to default to 'gemini model', got %q", model.GeminiModelInput.Placeholder)
+	if model.AiderModelInput.Placeholder != "aider model" {
+		t.Errorf("expected global scope AiderModel placeholder to default to 'aider model', got %q", model.AiderModelInput.Placeholder)
 	}
 	if model.CacheTTLInput.Placeholder != "30" {
 		t.Errorf("expected global scope CacheTTL placeholder to default to '30', got %q", model.CacheTTLInput.Placeholder)
@@ -513,8 +559,8 @@ func TestSettingsModelSaveAndExitDirectAction(t *testing.T) {
 		}
 
 		model.SelectedGroup = saveIdx
-		model.ProjectDraft.GeminiModel = "gemini-test-direct"
-		model.GeminiModelInput.SetValue("gemini-test-direct")
+		model.ProjectDraft.AiderModel = "aider-test-direct"
+		model.AiderModelInput.SetValue("aider-test-direct")
 
 		// Press Enter on "Save & Exit"
 		model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -531,8 +577,8 @@ func TestSettingsModelSaveAndExitDirectAction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to load project settings: %v", err)
 		}
-		if saved.GeminiModel != "gemini-test-direct" {
-			t.Fatalf("expected GeminiModel to be saved, got %q", saved.GeminiModel)
+		if saved.AiderModel != "aider-test-direct" {
+			t.Fatalf("expected AiderModel to be saved, got %q", saved.AiderModel)
 		}
 	})
 }

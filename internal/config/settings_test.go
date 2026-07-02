@@ -79,6 +79,9 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if defaults.OllamaKeepAlive != "5m" {
 		t.Errorf("expected default OllamaKeepAlive '5m', got '%s'", defaults.OllamaKeepAlive)
 	}
+	if defaults.OllamaModel != DefaultOllamaModel {
+		t.Errorf("expected default OllamaModel %q, got %q", DefaultOllamaModel, defaults.OllamaModel)
+	}
 	if defaults.MaxModelCallsPerPhase != 50 {
 		t.Errorf("expected default MaxModelCallsPerPhase 50, got %d", defaults.MaxModelCallsPerPhase)
 	}
