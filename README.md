@@ -139,7 +139,7 @@ Long-form goals and acceptance criteria live in the referenced markdown spec. St
 
 ### Runtime Settings (`settings.yml`)
 
-Project runtime settings can live in `.cyclestone/settings.yml`. For example, use `max_llm_input_chars` to keep LLM requests below a provider's hard input limit:
+Project runtime settings can live in `.cyclestone/settings.yml`. For example, use `max_llm_input_chars` to keep runner prompts below the selected model's input limit:
 
 ```yaml
 default_llm: codex
@@ -148,7 +148,7 @@ auto_git_branch: true
 max_llm_input_chars: 900000
 ```
 
-Ollama-only generation/context settings are also supported. When unset, they are omitted from `/api/chat` and Ollama defaults apply:
+Ollama-via-Aider generation/context settings are also supported. `ollama_num_ctx` and `ollama_num_predict` are written to Aider's temporary model settings when configured; otherwise Aider and Ollama defaults apply:
 
 ```yaml
 ollama_num_ctx: 65536
@@ -185,7 +185,7 @@ Before running a milestone cycle:
 
 - Commit or stash unrelated work.
 - Review `.cyclestone/milestones/*.md` and local agent prompts.
-- Confirm the selected runner and API credentials.
+- Confirm the selected runner is installed, authenticated, and configured.
 - Prefer milestone branches unless you intentionally pass `--no-branch-change`.
 
 When you press `r` from a milestone, Cyclestone opens a preflight review before any runner starts. Confirming the review begins the normal cycle execution path; cancelling returns to milestone details without writing reports or metadata, saving cycle state, preparing executor files, or changing branches.
@@ -204,7 +204,7 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 ### Known Limitations
 
 - Agents can edit files through their runner. Review diffs before merging.
-- Token budgets are estimates for some runners and exact for others only when provider usage data is returned.
+- Token budgets are estimates and should be treated as guardrails, not exact billing numbers.
 - Remote Ollama or cloud model usage can create cost. Set model limits before large milestones.
 - Local Ollama behavior (via Aider) depends on installed models, context limits, and host performance.
 - Branch snapshots help audit work, but they are not a backup system.
@@ -249,7 +249,7 @@ Contributions are welcome! Please feel free to open a Pull Request or file an Is
 By using this software, you explicitly acknowledge and agree that:
 - **No Liability:** In no event shall the authors, copyright holders, or contributors be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 - **No Warranty:** The software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
-- **Assumption of Risk:** You assume all risks associated with running this tool. This includes, but is not limited to, data loss, codebase corruption, system configuration changes, unauthorized network operations, exfiltration of credentials/secrets, and financial costs incurred from third-party LLM API providers. Always run AI agents inside an isolated sandbox, virtual machine, or container, and carefully review all git diffs and logs.
+- **Assumption of Risk:** You assume all risks associated with running this tool. This includes, but is not limited to, data loss, codebase corruption, system configuration changes, unauthorized network operations, exfiltration of credentials/secrets, and financial costs incurred by configured AI runners or model services. Always run AI agents inside an isolated sandbox, virtual machine, or container, and carefully review all git diffs and logs.
 
 ## 📄 License
 

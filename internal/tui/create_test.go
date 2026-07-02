@@ -26,8 +26,8 @@ func TestGetCreateRunnerOptions(t *testing.T) {
 			expected:   []string{"codex", "agy", "aider", "ollama"},
 		},
 		{
-			name:       "custom defaultLLM",
-			defaultLLM: "custom-runner",
+			name:       "unsupported defaultLLM",
+			defaultLLM: "unsupported-runner",
 			expected:   []string{"codex", "agy", "aider", "ollama"},
 		},
 	}
@@ -92,7 +92,7 @@ func TestCreateMilestoneModel_CycleNoteMode(t *testing.T) {
 	m.Width = 80
 	m.Height = 24
 	m.RunMilestone = config.Milestone{ID: "0010", Title: "My Milestone"}
-	m.RunRunnerLLM = "gemini"
+	m.RunRunnerLLM = "ollama"
 	m.RunRunnerMode = "sandbox"
 	m.RunNoBranch = true
 	m.RunSingleID = "qa"

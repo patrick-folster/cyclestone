@@ -21,7 +21,6 @@ const (
 
 const (
 	settingDefaultLLM = iota
-	settingCustomLLM
 	settingDefaultMode
 	settingAutoGitBranch
 	settingCreateMilestoneBranch
@@ -37,13 +36,9 @@ const (
 	settingMaxTokenBudgetPerPhase
 	settingMaxLLMInputChars
 	settingMaxRetainedConversationMessages
-	settingGeminiModel
-	settingOpenAIModel
-	settingAnthropicModel
 	settingAiderModel
 	settingOllamaModel
 	settingOllamaHost
-	settingOllamaKeepAlive
 	settingOllamaNumCtx
 	settingOllamaNumPredict
 	settingAgentGroups
@@ -55,20 +50,15 @@ const (
 type settingsTextField int
 
 const (
-	fieldCustomLLM settingsTextField = iota
-	fieldCacheTTL
+	fieldCacheTTL settingsTextField = iota
 	fieldMaxHandoffChars
 	fieldMaxCalls
 	fieldTokenBudget
 	fieldLLMInputChars
 	fieldMaxRetainedConversationMessages
-	fieldGeminiModel
-	fieldOpenAIModel
-	fieldAnthropicModel
 	fieldAiderModel
 	fieldOllamaModel
 	fieldOllamaHost
-	fieldOllamaKeepAlive
 	fieldOllamaNumCtx
 	fieldOllamaNumPredict
 	fieldDefaultGitBranchPrefix
@@ -80,12 +70,12 @@ type settingsGroup struct {
 }
 
 var settingsGroups = []settingsGroup{
-	{Name: "Runner Selection", Rows: []int{settingDefaultLLM, settingCustomLLM}},
+	{Name: "Runner Selection", Rows: []int{settingDefaultLLM}},
 	{Name: "Execution Behavior", Rows: []int{settingDefaultMode, settingAutoGitBranch, settingCreateMilestoneBranch, settingDefaultGitBranchPrefix}},
 	{Name: "UI Behavior", Rows: []int{settingDisableBold, settingDisableRoundedBorders}},
 	{Name: "Context/Cache Limits", Rows: []int{settingEnableContextCaching, settingEnableCompactPhaseHandoffs, settingEnableCodexSessionResume, settingCacheTTLMinutes, settingMaxHandoffChars, settingMaxModelCallsPerPhase, settingMaxTokenBudgetPerPhase, settingMaxLLMInputChars, settingMaxRetainedConversationMessages}},
 	{Name: "Aider Settings", Rows: []int{settingAiderModel}},
-	{Name: "Ollama via Aider Settings", Rows: []int{settingOllamaModel, settingOllamaHost, settingOllamaKeepAlive, settingOllamaNumCtx, settingOllamaNumPredict}},
+	{Name: "Ollama via Aider Settings", Rows: []int{settingOllamaModel, settingOllamaHost, settingOllamaNumCtx, settingOllamaNumPredict}},
 	{Name: "Agent Groups", Rows: []int{settingAgentGroups}},
 	{Name: "Save & Exit", Rows: []int{}},
 	{Name: "Discard & Exit", Rows: []int{}},
@@ -111,7 +101,6 @@ type SettingsModel struct {
 	ErrorMsg           string
 	SuccessMsg         string
 
-	CustomLLMInput                  textinput.Model
 	CacheTTLInput                   textinput.Model
 	MaxHandoffInput                 textinput.Model
 	MaxCallsInput                   textinput.Model
@@ -119,13 +108,9 @@ type SettingsModel struct {
 	LLMInputInput                   textinput.Model
 	MaxRetainedConversationMsgInput textinput.Model
 
-	GeminiModelInput            textinput.Model
-	OpenAIModelInput            textinput.Model
-	AnthropicModelInput         textinput.Model
 	AiderModelInput             textinput.Model
 	OllamaModelInput            textinput.Model
 	OllamaHostInput             textinput.Model
-	KeepAliveInput              textinput.Model
 	OllamaNumCtxInput           textinput.Model
 	OllamaPredictInput          textinput.Model
 	DefaultGitBranchPrefixInput textinput.Model
@@ -149,34 +134,21 @@ func NewSettingsModel(styles Styles) SettingsModel {
 		FocusIndex:                      settingDefaultLLM,
 		ActiveGroup:                     -1,
 		Styles:                          styles,
-		CustomLLMInput:                  newInput("./path/to/script.sh", 40, 250),
 		CacheTTLInput:                   newInput("30", 10, 5),
 		MaxHandoffInput:                 newInput("12000", 10, 8),
 		MaxCallsInput:                   newInput("50", 10, 5),
 		TokenBudgetInput:                newInput("1000000", 15, 8),
 		LLMInputInput:                   newInput("900000", 15, 9),
 		MaxRetainedConversationMsgInput: newInput("8", 10, 5),
-		GeminiModelInput:                newInput("gemini model", 32, 120),
-		OpenAIModelInput:                newInput("openai model", 32, 120),
-		AnthropicModelInput:             newInput("anthropic model", 32, 120),
 		AiderModelInput:                 newInput("aider model", 32, 120),
 		OllamaModelInput:                newInput(config.DefaultOllamaModel, 32, 120),
 		OllamaHostInput:                 newInput("http://localhost:11434", 40, 200),
-		KeepAliveInput:                  newInput("5m", 15, 20),
 		OllamaNumCtxInput:               newInput("4096", 10, 8),
 		OllamaPredictInput:              newInput("1024", 10, 8),
 		DefaultGitBranchPrefixInput:     newInput("cyclestone/milestones/", 32, 120),
 	}
 	m.loadSettingsDrafts()
 	return m
-}
-
-func isCustomLLM(val string) bool {
-	switch val {
-	case "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "":
-		return false
-	}
-	return true
 }
 
 func (m *SettingsModel) loadSettingsDrafts() {
@@ -407,9 +379,6 @@ func (m *SettingsModel) switchScope(scope string) {
 	m.syncInputValuesToDraft()
 	m.Scope = scope
 	m.syncCustomInput()
-	if m.FocusIndex == settingCustomLLM {
-		m.FocusIndex = m.firstRowForGroup(m.ActiveGroup)
-	}
 	m.updateTextInputFocus()
 	m.updatePlaceholders()
 	m.ensureScrollVisible()
@@ -419,9 +388,6 @@ func (m SettingsModel) visibleRows() []int {
 	rows := make([]int, 0, settingsRowCount)
 	for _, group := range settingsGroups {
 		for _, row := range group.Rows {
-			if row == settingCustomLLM {
-				continue
-			}
 			rows = append(rows, row)
 		}
 	}
@@ -491,9 +457,6 @@ func (m SettingsModel) rowsForGroup(groupIdx int) []int {
 	}
 	rows := make([]int, 0, len(group.Rows))
 	for _, row := range group.Rows {
-		if row == settingCustomLLM {
-			continue
-		}
 		rows = append(rows, row)
 	}
 	if len(rows) == 0 {
@@ -550,8 +513,6 @@ func (m SettingsModel) IsTextInputFocused() bool {
 
 func (m SettingsModel) textFieldForFocus() settingsTextField {
 	switch m.FocusIndex {
-	case settingCustomLLM:
-		return fieldCustomLLM
 	case settingCacheTTLMinutes:
 		return fieldCacheTTL
 	case settingMaxHandoffChars:
@@ -564,20 +525,12 @@ func (m SettingsModel) textFieldForFocus() settingsTextField {
 		return fieldLLMInputChars
 	case settingMaxRetainedConversationMessages:
 		return fieldMaxRetainedConversationMessages
-	case settingGeminiModel:
-		return fieldGeminiModel
-	case settingOpenAIModel:
-		return fieldOpenAIModel
-	case settingAnthropicModel:
-		return fieldAnthropicModel
 	case settingAiderModel:
 		return fieldAiderModel
 	case settingOllamaModel:
 		return fieldOllamaModel
 	case settingOllamaHost:
 		return fieldOllamaHost
-	case settingOllamaKeepAlive:
-		return fieldOllamaKeepAlive
 	case settingOllamaNumCtx:
 		return fieldOllamaNumCtx
 	case settingOllamaNumPredict:
@@ -591,8 +544,6 @@ func (m SettingsModel) textFieldForFocus() settingsTextField {
 
 func (m *SettingsModel) inputForField(field settingsTextField) *textinput.Model {
 	switch field {
-	case fieldCustomLLM:
-		return &m.CustomLLMInput
 	case fieldCacheTTL:
 		return &m.CacheTTLInput
 	case fieldMaxHandoffChars:
@@ -605,20 +556,12 @@ func (m *SettingsModel) inputForField(field settingsTextField) *textinput.Model 
 		return &m.LLMInputInput
 	case fieldMaxRetainedConversationMessages:
 		return &m.MaxRetainedConversationMsgInput
-	case fieldGeminiModel:
-		return &m.GeminiModelInput
-	case fieldOpenAIModel:
-		return &m.OpenAIModelInput
-	case fieldAnthropicModel:
-		return &m.AnthropicModelInput
 	case fieldAiderModel:
 		return &m.AiderModelInput
 	case fieldOllamaModel:
 		return &m.OllamaModelInput
 	case fieldOllamaHost:
 		return &m.OllamaHostInput
-	case fieldOllamaKeepAlive:
-		return &m.KeepAliveInput
 	case fieldOllamaNumCtx:
 		return &m.OllamaNumCtxInput
 	case fieldOllamaNumPredict:
@@ -636,9 +579,9 @@ func (m *SettingsModel) updateTextInputFocus() {
 		activeField = m.textFieldForFocus()
 	}
 	for _, field := range []settingsTextField{
-		fieldCustomLLM, fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars, fieldMaxRetainedConversationMessages,
-		fieldGeminiModel, fieldOpenAIModel, fieldAnthropicModel, fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
-		fieldOllamaKeepAlive, fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
+		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars, fieldMaxRetainedConversationMessages,
+		fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
+		fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
 	} {
 		input := m.inputForField(field)
 		if input == nil {
@@ -669,8 +612,6 @@ func (m SettingsModel) updateActiveTextInput(msg tea.KeyMsg) (SettingsModel, tea
 func (m *SettingsModel) applyTextFieldValue(field settingsTextField) {
 	draft := m.getActiveDraft()
 	switch field {
-	case fieldCustomLLM:
-		draft.DefaultLLM = m.CustomLLMInput.Value()
 	case fieldCacheTTL:
 		draft.CacheTTLMinutes = parseIntOrZero(m.CacheTTLInput.Value())
 	case fieldMaxHandoffChars:
@@ -683,20 +624,12 @@ func (m *SettingsModel) applyTextFieldValue(field settingsTextField) {
 		draft.MaxLLMInputChars = parseIntOrZero(m.LLMInputInput.Value())
 	case fieldMaxRetainedConversationMessages:
 		draft.MaxRetainedConversationMessages = parseIntOrZero(m.MaxRetainedConversationMsgInput.Value())
-	case fieldGeminiModel:
-		draft.GeminiModel = m.GeminiModelInput.Value()
-	case fieldOpenAIModel:
-		draft.OpenAIModel = m.OpenAIModelInput.Value()
-	case fieldAnthropicModel:
-		draft.AnthropicModel = m.AnthropicModelInput.Value()
 	case fieldAiderModel:
 		draft.AiderModel = m.AiderModelInput.Value()
 	case fieldOllamaModel:
 		draft.OllamaModel = m.OllamaModelInput.Value()
 	case fieldOllamaHost:
 		draft.OllamaHost = m.OllamaHostInput.Value()
-	case fieldOllamaKeepAlive:
-		draft.OllamaKeepAlive = m.KeepAliveInput.Value()
 	case fieldOllamaNumCtx:
 		draft.OllamaNumCtx = parseIntOrZero(m.OllamaNumCtxInput.Value())
 	case fieldOllamaNumPredict:
@@ -723,24 +656,15 @@ func (m *SettingsModel) getActiveDraft() *config.Settings {
 
 func (m *SettingsModel) syncCustomInput() {
 	draft := m.getActiveDraft()
-	if isCustomLLM(draft.DefaultLLM) {
-		m.CustomLLMInput.SetValue(draft.DefaultLLM)
-	} else {
-		m.CustomLLMInput.SetValue("")
-	}
 	setIntInput(&m.CacheTTLInput, draft.CacheTTLMinutes)
 	setIntInput(&m.MaxHandoffInput, draft.MaxHandoffChars)
 	setIntInput(&m.MaxCallsInput, draft.MaxModelCallsPerPhase)
 	setIntInput(&m.TokenBudgetInput, draft.MaxTokenBudgetPerPhase)
 	setIntInput(&m.LLMInputInput, draft.MaxLLMInputChars)
 	setIntInput(&m.MaxRetainedConversationMsgInput, draft.MaxRetainedConversationMessages)
-	m.GeminiModelInput.SetValue(draft.GeminiModel)
-	m.OpenAIModelInput.SetValue(draft.OpenAIModel)
-	m.AnthropicModelInput.SetValue(draft.AnthropicModel)
 	m.AiderModelInput.SetValue(draft.AiderModel)
 	m.OllamaModelInput.SetValue(draft.OllamaModel)
 	m.OllamaHostInput.SetValue(draft.OllamaHost)
-	m.KeepAliveInput.SetValue(draft.OllamaKeepAlive)
 	setIntInput(&m.OllamaNumCtxInput, draft.OllamaNumCtx)
 	setIntInput(&m.OllamaPredictInput, draft.OllamaNumPredict)
 	m.DefaultGitBranchPrefixInput.SetValue(draft.DefaultGitBranchPrefix)
@@ -771,13 +695,9 @@ func (m *SettingsModel) updatePlaceholders() {
 	}
 
 	m.DefaultGitBranchPrefixInput.Placeholder = getStringPlaceholder(m.GlobalDraft.DefaultGitBranchPrefix, defaults.DefaultGitBranchPrefix)
-	m.GeminiModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.GeminiModel, "gemini model")
-	m.OpenAIModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OpenAIModel, "openai model")
-	m.AnthropicModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AnthropicModel, "anthropic model")
 	m.AiderModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AiderModel, "aider model")
 	m.OllamaModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaModel, config.DefaultOllamaModel)
 	m.OllamaHostInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaHost, "http://localhost:11434")
-	m.KeepAliveInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaKeepAlive, defaults.OllamaKeepAlive)
 
 	m.CacheTTLInput.Placeholder = getIntPlaceholder(m.GlobalDraft.CacheTTLMinutes, defaults.CacheTTLMinutes)
 	m.MaxHandoffInput.Placeholder = getIntPlaceholder(m.GlobalDraft.MaxHandoffChars, defaults.MaxHandoffChars)
@@ -799,13 +719,10 @@ func setIntInput(input *textinput.Model, val int) {
 
 func (m *SettingsModel) syncInputValuesToDraft() {
 	for _, field := range []settingsTextField{
-		fieldCustomLLM, fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars,
-		fieldGeminiModel, fieldOpenAIModel, fieldAnthropicModel, fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
-		fieldOllamaKeepAlive, fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
+		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars,
+		fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
+		fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
 	} {
-		if field == fieldCustomLLM {
-			continue
-		}
 		m.applyTextFieldValue(field)
 	}
 }
@@ -978,7 +895,7 @@ func (m SettingsModel) handleSave() (SettingsModel, tea.Cmd) {
 			return m, nil
 		}
 		if draft.DefaultLLM != "" && !config.IsValidLLM(draft.DefaultLLM) {
-			m.ErrorMsg = fmt.Sprintf("Invalid LLM runner / path: %s", draft.DefaultLLM)
+			m.ErrorMsg = fmt.Sprintf("Invalid LLM runner: %s", draft.DefaultLLM)
 			return m, nil
 		}
 	}
@@ -1037,9 +954,6 @@ func (m *SettingsModel) normalizeGlobalDraft() {
 	}
 	if m.GlobalDraft.MaxHandoffChars <= 0 {
 		m.GlobalDraft.MaxHandoffChars = defaults.MaxHandoffChars
-	}
-	if m.GlobalDraft.OllamaKeepAlive == "" {
-		m.GlobalDraft.OllamaKeepAlive = defaults.OllamaKeepAlive
 	}
 	if m.GlobalDraft.OllamaNumCtx <= 0 {
 		m.GlobalDraft.OllamaNumCtx = defaults.OllamaNumCtx
@@ -1287,8 +1201,6 @@ func (m SettingsModel) rowLabel(row int) string {
 	switch row {
 	case settingDefaultLLM:
 		return "Default LLM / Runner"
-	case settingCustomLLM:
-		return "Custom Runner Script Path"
 	case settingDefaultMode:
 		return "Default Execution Mode"
 	case settingAutoGitBranch:
@@ -1319,20 +1231,12 @@ func (m SettingsModel) rowLabel(row int) string {
 		return "Max LLM Input Chars"
 	case settingMaxRetainedConversationMessages:
 		return "Max Retained Conversation Messages"
-	case settingGeminiModel:
-		return "Gemini Model"
-	case settingOpenAIModel:
-		return "OpenAI Model"
-	case settingAnthropicModel:
-		return "Anthropic Model"
 	case settingAiderModel:
 		return "Aider Model"
 	case settingOllamaModel:
 		return "Ollama Model (via Aider)"
 	case settingOllamaHost:
 		return "Ollama Host (via Aider)"
-	case settingOllamaKeepAlive:
-		return "Ollama Keep-Alive Duration (via Aider)"
 	case settingOllamaNumCtx:
 		return "Ollama Num Ctx (via Aider)"
 	case settingOllamaNumPredict:
@@ -1361,8 +1265,6 @@ func (m SettingsModel) rowValue(row int) string {
 		}, func(opt string) bool {
 			return (opt == "inherit" && draft.DefaultLLM == "") || opt == draft.DefaultLLM
 		})
-	case settingCustomLLM:
-		return m.CustomLLMInput.View()
 	case settingDefaultMode:
 		options := []string{"sandbox", "unrestricted"}
 		if m.Scope == settingsScopeProject {
@@ -1402,20 +1304,12 @@ func (m SettingsModel) rowValue(row int) string {
 		return m.renderInputWithInherit(m.LLMInputInput.View(), m.GlobalDraft.MaxLLMInputChars, "900000")
 	case settingMaxRetainedConversationMessages:
 		return m.renderInputWithInherit(m.MaxRetainedConversationMsgInput.View(), m.GlobalDraft.MaxRetainedConversationMessages, "8")
-	case settingGeminiModel:
-		return m.renderStringInputWithInherit(m.GeminiModelInput.View(), m.GlobalDraft.GeminiModel)
-	case settingOpenAIModel:
-		return m.renderStringInputWithInherit(m.OpenAIModelInput.View(), m.GlobalDraft.OpenAIModel)
-	case settingAnthropicModel:
-		return m.renderStringInputWithInherit(m.AnthropicModelInput.View(), m.GlobalDraft.AnthropicModel)
 	case settingAiderModel:
 		return m.renderStringInputWithInherit(m.AiderModelInput.View(), m.GlobalDraft.AiderModel)
 	case settingOllamaModel:
 		return m.renderStringInputWithInherit(m.OllamaModelInput.View(), defaultString(m.GlobalDraft.OllamaModel, config.DefaultOllamaModel))
 	case settingOllamaHost:
 		return m.renderStringInputWithInherit(m.OllamaHostInput.View(), defaultString(m.GlobalDraft.OllamaHost, "http://localhost:11434"))
-	case settingOllamaKeepAlive:
-		return m.renderStringInputWithInherit(m.KeepAliveInput.View(), defaultString(m.GlobalDraft.OllamaKeepAlive, "5m"))
 	case settingOllamaNumCtx:
 		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "65536")
 	case settingOllamaNumPredict:
@@ -1567,15 +1461,6 @@ func settingsEqual(a, b config.Settings) bool {
 	if a.DefaultGitBranchPrefix != b.DefaultGitBranchPrefix {
 		return false
 	}
-	if a.GeminiModel != b.GeminiModel {
-		return false
-	}
-	if a.OpenAIModel != b.OpenAIModel {
-		return false
-	}
-	if a.AnthropicModel != b.AnthropicModel {
-		return false
-	}
 	if a.AiderModel != b.AiderModel {
 		return false
 	}
@@ -1598,9 +1483,6 @@ func settingsEqual(a, b config.Settings) bool {
 		return false
 	}
 	if a.MaxHandoffChars != b.MaxHandoffChars {
-		return false
-	}
-	if a.OllamaKeepAlive != b.OllamaKeepAlive {
 		return false
 	}
 	if a.OllamaNumCtx != b.OllamaNumCtx {

@@ -29,7 +29,7 @@ Primary risks:
 - Unsafe tool or shell execution through a selected runner.
 - File modification outside the intended task scope.
 - Credential exposure through environment variables, logs, prompts, or reports.
-- Network calls made by external CLIs or direct provider APIs.
+- Network calls made by external CLIs.
 
 Default mode is `sandbox`. Use `--unrestricted` only for trusted projects, trusted prompts, and trusted runners.
 

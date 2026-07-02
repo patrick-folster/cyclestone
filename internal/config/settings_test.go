@@ -76,11 +76,11 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if defaults.MaxHandoffChars != 12000 {
 		t.Errorf("expected default MaxHandoffChars 12000, got %d", defaults.MaxHandoffChars)
 	}
-	if defaults.OllamaKeepAlive != "5m" {
-		t.Errorf("expected default OllamaKeepAlive '5m', got '%s'", defaults.OllamaKeepAlive)
-	}
 	if defaults.OllamaModel != DefaultOllamaModel {
 		t.Errorf("expected default OllamaModel %q, got %q", DefaultOllamaModel, defaults.OllamaModel)
+	}
+	if defaults.OllamaNumPredict != 8192 {
+		t.Errorf("expected default OllamaNumPredict 8192, got %d", defaults.OllamaNumPredict)
 	}
 	if defaults.MaxModelCallsPerPhase != 50 {
 		t.Errorf("expected default MaxModelCallsPerPhase 50, got %d", defaults.MaxModelCallsPerPhase)
@@ -238,7 +238,7 @@ func TestSaveProjectSettingsAtCustomPath(t *testing.T) {
 	settingsPath := filepath.Join(root, "custom", "settings.yml")
 	trueVal := true
 	settings := Settings{
-		DefaultLLM:            "openai",
+		DefaultLLM:            "ollama",
 		DefaultMode:           "sandbox",
 		AutoGitBranch:         &trueVal,
 		CreateMilestoneBranch: &trueVal,
@@ -252,7 +252,7 @@ func TestSaveProjectSettingsAtCustomPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read custom settings: %v", err)
 	}
-	if !strings.Contains(string(data), "default_llm: openai") || !strings.Contains(string(data), "create_milestone_branch: true") {
+	if !strings.Contains(string(data), "default_llm: ollama") || !strings.Contains(string(data), "create_milestone_branch: true") {
 		t.Fatalf("custom settings did not contain expected fields:\n%s", data)
 	}
 }
@@ -388,13 +388,26 @@ func TestOllamaGenerationSettingsSerializeAndMerge(t *testing.T) {
 	if merged.OllamaNumCtx != 8192 || merged.OllamaNumPredict != 1024 {
 		t.Fatalf("expected empty project settings to preserve global values, got ctx=%d predict=%d", merged.OllamaNumCtx, merged.OllamaNumPredict)
 	}
+
+	if err := SaveGlobalSettings(Settings{DefaultLLM: "ollama"}); err != nil {
+		t.Fatalf("failed to save sparse global settings: %v", err)
+	}
+	if err := SaveProjectSettings(Settings{}); err != nil {
+		t.Fatalf("failed to save empty project settings: %v", err)
+	}
+	merged = LoadMergedSettings()
+	if merged.OllamaModel != DefaultOllamaModel {
+		t.Fatalf("expected default ollama model for sparse settings, got %q", merged.OllamaModel)
+	}
+	if merged.OllamaNumCtx != 65536 || merged.OllamaNumPredict != 8192 {
+		t.Fatalf("expected default ollama options for sparse settings, got ctx=%d predict=%d", merged.OllamaNumCtx, merged.OllamaNumPredict)
+	}
 }
 
 func TestLLMValidationAndConfig(t *testing.T) {
 	// 1. Verify IsValidLLM validation logic
 	validCases := []string{
-		"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api",
-		"./script.sh", "/absolute/path/to/runner", "custom_script.py",
+		"codex", "agy", "aider", "ollama",
 	}
 	for _, c := range validCases {
 		if !IsValidLLM(c) {
@@ -403,6 +416,7 @@ func TestLLMValidationAndConfig(t *testing.T) {
 	}
 
 	invalidCases := []string{
+		"gemini", "openai", "anthropic", "ollama_api", "./script.sh", "/absolute/path/to/runner", "custom_script.py",
 		"invalid", "some_binary", "another-binary",
 	}
 	for _, c := range invalidCases {
@@ -439,9 +453,6 @@ func TestLLMValidationAndConfig(t *testing.T) {
 	falseVal := false
 	s := Settings{
 		DefaultLLM:                      "gemini",
-		GeminiModel:                     "gemini-2.5-pro",
-		OpenAIModel:                     "gpt-4-turbo",
-		AnthropicModel:                  "claude-3-opus",
 		AiderModel:                      "aider-claude-3-5",
 		OllamaModel:                     "mistral",
 		OllamaHost:                      "http://127.0.0.1:11434",
@@ -450,7 +461,6 @@ func TestLLMValidationAndConfig(t *testing.T) {
 		EnableCodexSessionResume:        &trueVal,
 		CacheTTLMinutes:                 45,
 		MaxHandoffChars:                 6000,
-		OllamaKeepAlive:                 "15m",
 		MaxModelCallsPerPhase:           25,
 		MaxLLMInputChars:                750000,
 		MaxRetainedConversationMessages: 12,
@@ -461,17 +471,8 @@ func TestLLMValidationAndConfig(t *testing.T) {
 	}
 
 	merged := LoadMergedSettings()
-	if merged.DefaultLLM != "gemini" {
-		t.Errorf("expected DefaultLLM 'gemini', got '%s'", merged.DefaultLLM)
-	}
-	if merged.GeminiModel != "gemini-2.5-pro" {
-		t.Errorf("expected GeminiModel 'gemini-2.5-pro', got '%s'", merged.GeminiModel)
-	}
-	if merged.OpenAIModel != "gpt-4-turbo" {
-		t.Errorf("expected OpenAIModel 'gpt-4-turbo', got '%s'", merged.OpenAIModel)
-	}
-	if merged.AnthropicModel != "claude-3-opus" {
-		t.Errorf("expected AnthropicModel 'claude-3-opus', got '%s'", merged.AnthropicModel)
+	if merged.DefaultLLM != "codex" {
+		t.Errorf("expected unsupported DefaultLLM to normalize to 'codex', got '%s'", merged.DefaultLLM)
 	}
 	if merged.AiderModel != "aider-claude-3-5" {
 		t.Errorf("expected AiderModel 'aider-claude-3-5', got '%s'", merged.AiderModel)
@@ -496,9 +497,6 @@ func TestLLMValidationAndConfig(t *testing.T) {
 	}
 	if merged.MaxHandoffChars != 6000 {
 		t.Errorf("expected MaxHandoffChars 6000, got %d", merged.MaxHandoffChars)
-	}
-	if merged.OllamaKeepAlive != "15m" {
-		t.Errorf("expected OllamaKeepAlive '15m', got '%s'", merged.OllamaKeepAlive)
 	}
 	if merged.MaxModelCallsPerPhase != 25 {
 		t.Errorf("expected MaxModelCallsPerPhase 25, got %d", merged.MaxModelCallsPerPhase)

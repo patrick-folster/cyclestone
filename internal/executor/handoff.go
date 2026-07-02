@@ -93,21 +93,6 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 	}
 
 	summaryText := ""
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if len([]rune(text)) > maxChars && apiKey != "" {
-		model := settings.GeminiModel
-		prompt := fmt.Sprintf(
-			"You are an expert technical coordinator. Please summarize the following phase execution log for agent %s on milestone %s (cycle %d). Generate a dense, high-quality, structured summary (max 1000 words) containing:\n1. Core implementation decisions.\n2. List of files changed/created/reviewed.\n3. Specific tasks, open findings, or fixes required for the next phase.\n\nPhase Output:\n\n%s",
-			agentID, milestoneID, cycleNum, text,
-		)
-		dummyWriter := &liveLogWriter{
-			agentID: "summarizer",
-		}
-		res, err := executeAPI(ctx, "gemini", model, apiKey, []UnifiedMessage{{Role: "user", Content: prompt}}, settings, dummyWriter, true)
-		if err == nil && res.Message.Content != "" {
-			summaryText = strings.TrimSpace(res.Message.Content)
-		}
-	}
 
 	fieldMaxChars := maxChars
 	if fieldMaxChars > maxFallbackHandoffFieldChars {

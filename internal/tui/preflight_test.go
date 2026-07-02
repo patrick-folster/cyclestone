@@ -79,8 +79,7 @@ func TestPreflightRenderingAndConfirmCancelFlow(t *testing.T) {
 	}
 }
 
-func TestPreflightValidationBlocksInvalidGroupAndMissingAPIKey(t *testing.T) {
-	t.Setenv("GEMINI_API_KEY", "")
+func TestPreflightValidationBlocksInvalidGroupAndUnsupportedRunner(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	state := &config.State{
 		MilestoneStatuses:        map[string]string{},
@@ -106,6 +105,10 @@ func TestPreflightValidationBlocksInvalidGroupAndMissingAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(view, "Resolved agent pipeline is empty") {
 		t.Fatalf("expected empty pipeline blocker, got:\n%s", view)
+	}
+	issue, ok := validateRunnerAvailability("gemini")
+	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, `Runner "gemini" is unsupported`) {
+		t.Fatalf("expected unsupported runner blocker, got %#v ok=%v", issue, ok)
 	}
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -203,23 +206,50 @@ func TestStartCyclePipelineResolutionMatchesSingleAgentPreflight(t *testing.T) {
 }
 
 func TestValidateRunnerAvailabilityWarningsAndBlockers(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "")
 	issue, ok := validateRunnerAvailability("openai")
-	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "OPENAI_API_KEY") {
-		t.Fatalf("expected missing openai API key blocker, got %#v ok=%v", issue, ok)
+	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "unsupported") {
+		t.Fatalf("expected unsupported openai blocker, got %#v ok=%v", issue, ok)
 	}
 
 	tmp := t.TempDir()
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", tmp)
 	issue, ok = validateRunnerAvailability("definitely-missing-runner")
-	if ok {
-		t.Fatalf("custom or unknown runner should not be false-blocked, got %#v", issue)
+	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "unsupported") {
+		t.Fatalf("expected unsupported unknown runner blocker, got %#v ok=%v", issue, ok)
 	}
 	issue, ok = validateRunnerAvailability("codex")
 	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "codex") {
 		t.Fatalf("expected missing codex binary blocker with PATH %q, old PATH %q: %#v ok=%v", tmp, oldPath, issue, ok)
 	}
+}
+
+func TestPreflightBlocksUnsupportedAgentRunnerBinary(t *testing.T) {
+	styles := DefaultStyles(true, true)
+	state := &config.State{
+		MilestoneStatuses:        map[string]string{},
+		MilestoneCycles:          map[string]int{},
+		MilestoneRecommendations: map[string]int{},
+		History:                  map[string][]config.MilestoneCycleLog{},
+	}
+	model := NewPreflightModel(styles)
+	model.Load(StartCycleMsg{
+		Milestone: config.Milestone{ID: "0015-cycle-preflight-review", Title: "Preflight"},
+	}, state, ".cyclestone/milestone.yml", ".cyclestone/state.json")
+	model.Pipeline = []config.Agent{{ID: "developer", Name: "Developer", RunnerBinary: "gemini", PromptBody: "prompt"}}
+	model.MissingAgents = nil
+	model.Issues = nil
+	model.validate()
+
+	if !model.HasBlockers() {
+		t.Fatal("expected unsupported agent runner to block preflight")
+	}
+	for _, issue := range model.Issues {
+		if issue.Severity == preflightBlocker && strings.Contains(issue.Message, `Runner "gemini" is unsupported`) {
+			return
+		}
+	}
+	t.Fatalf("expected unsupported runner blocker, got %#v", model.Issues)
 }
 
 func TestPreflightRootRoutingFromNoteForm(t *testing.T) {

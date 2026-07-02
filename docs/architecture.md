@@ -89,7 +89,7 @@ First-run setup defaults branch behavior to automatic milestone branches and per
 
 ## Sandbox Boundary
 
-Default mode is `sandbox`. The exact restrictions depend on the selected runner. The application still coordinates prompts, writes runtime files, and invokes external runners or provider APIs.
+Default mode is `sandbox`. The exact restrictions depend on the selected runner. The application still coordinates prompts, writes runtime files, and invokes external runners.
 
 `--unrestricted` removes the intended sandbox boundary for agent execution. Use it only when the runner and repository are trusted.
 

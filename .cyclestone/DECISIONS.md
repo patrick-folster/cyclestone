@@ -82,3 +82,24 @@ YAML-compatible legacy input. Main cycle report files are generated with the
 logs nested under a block scalar. Internal phase handoff artifacts and
 `.cyclestone/state.json` remain JSON for compatibility with existing state and
 TUI integration.
+
+## Supported Runner Boundary
+
+- Date: 2026-07-02
+- Milestone: runner-selection-consolidation
+
+Cyclestone exposes and supports only four LLM runners in user-facing selection
+surfaces and executor dispatch: `codex`, `agy`, `aider`, and `ollama`.
+Milestone creation, milestone cycle details, settings, first-run setup, runner
+availability checks, and preflight validation must use the same supported set.
+
+`ollama` is executed through the Aider CLI, not through a native Ollama API
+client. Plain Ollama model names are converted to Aider's `ollama_chat/<model>`
+form, `OLLAMA_API_BASE` is set from `ollama_host`, and `ollama_num_ctx` /
+`ollama_num_predict` are written to temporary Aider model settings as
+`num_ctx` / `num_predict`. The default Ollama model is
+`qwen3-coder:480b-cloud`.
+
+Direct provider API runners (`gemini`, `openai`, `anthropic`, `ollama_api`) and
+custom runner script paths are intentionally unsupported. They may remain in
+negative tests only to verify rejection and migration behavior.

@@ -48,24 +48,24 @@ func TestSettingsModelRendersScrollableGroupList(t *testing.T) {
 func TestSettingsModelTabSwitchingChangesActiveDraft(t *testing.T) {
 	model := NewSettingsModel(DefaultStyles(true, true))
 	model.Scope = "project"
-	model.ProjectDraft.GeminiModel = "project-model"
-	model.GlobalDraft.GeminiModel = "global-model"
+	model.ProjectDraft.AiderModel = "project-model"
+	model.GlobalDraft.AiderModel = "global-model"
 	model.syncCustomInput()
 
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	if model.Scope != "global" {
 		t.Fatalf("expected global tab, got %q", model.Scope)
 	}
-	if model.GeminiModelInput.Value() != "global-model" {
-		t.Fatalf("expected global draft input, got %q", model.GeminiModelInput.Value())
+	if model.AiderModelInput.Value() != "global-model" {
+		t.Fatalf("expected global draft input, got %q", model.AiderModelInput.Value())
 	}
 
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	if model.Scope != "project" {
 		t.Fatalf("expected project tab, got %q", model.Scope)
 	}
-	if model.GeminiModelInput.Value() != "project-model" {
-		t.Fatalf("expected project draft input, got %q", model.GeminiModelInput.Value())
+	if model.AiderModelInput.Value() != "project-model" {
+		t.Fatalf("expected project draft input, got %q", model.AiderModelInput.Value())
 	}
 }
 
@@ -73,20 +73,15 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 	withTempSettingsDir(t, func() {
 		model := NewSettingsModel(DefaultStyles(true, true))
 		model.Scope = "project"
-		model.ProjectDraft.DefaultLLM = "./runner.sh"
-		model.CustomLLMInput.SetValue("./saved-runner.sh")
+		model.ProjectDraft.DefaultLLM = "ollama"
 		model.CacheTTLInput.SetValue("45")
 		model.MaxHandoffInput.SetValue("6000")
 		model.MaxCallsInput.SetValue("25")
 		model.TokenBudgetInput.SetValue("123456")
 		model.LLMInputInput.SetValue("750000")
-		model.GeminiModelInput.SetValue("gemini-2")
-		model.OpenAIModelInput.SetValue("gpt-5")
-		model.AnthropicModelInput.SetValue("claude-4")
 		model.AiderModelInput.SetValue("aider-test-model")
 		model.OllamaModelInput.SetValue("llama3.1")
 		model.OllamaHostInput.SetValue("http://ollama:11434")
-		model.KeepAliveInput.SetValue("15m")
 		model.OllamaNumCtxInput.SetValue("8192")
 		model.OllamaPredictInput.SetValue("2048")
 		model.DefaultGitBranchPrefixInput.SetValue("test-prefix/")
@@ -103,10 +98,10 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 		if err != nil {
 			t.Fatalf("failed to load saved project settings: %v", err)
 		}
-		if saved.DefaultLLM != "codex" || saved.CacheTTLMinutes != 45 || saved.MaxHandoffChars != 6000 || saved.MaxModelCallsPerPhase != 25 ||
-			saved.MaxTokenBudgetPerPhase != 123456 || saved.MaxLLMInputChars != 750000 || saved.GeminiModel != "gemini-2" ||
-			saved.OpenAIModel != "gpt-5" || saved.AnthropicModel != "claude-4" || saved.AiderModel != "aider-test-model" || saved.OllamaModel != "llama3.1" ||
-			saved.OllamaHost != "http://ollama:11434" || saved.OllamaKeepAlive != "15m" || saved.OllamaNumCtx != 8192 ||
+		if saved.DefaultLLM != "ollama" || saved.CacheTTLMinutes != 45 || saved.MaxHandoffChars != 6000 || saved.MaxModelCallsPerPhase != 25 ||
+			saved.MaxTokenBudgetPerPhase != 123456 || saved.MaxLLMInputChars != 750000 ||
+			saved.AiderModel != "aider-test-model" || saved.OllamaModel != "llama3.1" ||
+			saved.OllamaHost != "http://ollama:11434" || saved.OllamaNumCtx != 8192 ||
 			saved.OllamaNumPredict != 2048 || saved.DefaultGitBranchPrefix != "test-prefix/" {
 			t.Fatalf("saved settings missing expected fields: %+v", saved)
 		}
@@ -154,7 +149,7 @@ func TestSettingsModelProjectSavePreservesInheritSentinels(t *testing.T) {
 		model.ProjectDraft.EnableCodexSessionResume = nil
 		model.CacheTTLInput.SetValue("")
 		model.MaxHandoffInput.SetValue("")
-		model.GeminiModelInput.SetValue("")
+		model.AiderModelInput.SetValue("")
 		model.OllamaNumCtxInput.SetValue("")
 
 		updated, _ := model.handleSave()
@@ -167,7 +162,7 @@ func TestSettingsModelProjectSavePreservesInheritSentinels(t *testing.T) {
 		}
 		if saved.DefaultLLM != "" || saved.DefaultMode != "" || saved.AutoGitBranch != nil || saved.EnableContextCaching != nil ||
 			saved.EnableCompactPhaseHandoffs != nil || saved.EnableCodexSessionResume != nil ||
-			saved.CacheTTLMinutes != 0 || saved.MaxHandoffChars != 0 || saved.GeminiModel != "" || saved.OllamaNumCtx != 0 {
+			saved.CacheTTLMinutes != 0 || saved.MaxHandoffChars != 0 || saved.AiderModel != "" || saved.OllamaNumCtx != 0 {
 			t.Fatalf("expected inherit sentinels to remain empty/nil/zero, got %+v", saved)
 		}
 	})
@@ -299,8 +294,8 @@ func TestSettingsModelGroupListNavigationScrollsConstrainedHeight(t *testing.T) 
 func TestSettingsModelTabSwitchingRestrictedToGroupList(t *testing.T) {
 	model := NewSettingsModel(DefaultStyles(true, true))
 	model.Scope = "project"
-	model.ProjectDraft.GeminiModel = "project-model"
-	model.GlobalDraft.GeminiModel = "global-model"
+	model.ProjectDraft.AiderModel = "project-model"
+	model.GlobalDraft.AiderModel = "global-model"
 	model.syncCustomInput()
 
 	// Enter a group details view (e.g. active group 1)
@@ -371,7 +366,7 @@ func TestSettingsModelUnsavedChangesExitPrompt(t *testing.T) {
 	}
 
 	// Make a change
-	model.GeminiModelInput.SetValue("modified-model")
+	model.AiderModelInput.SetValue("modified-model")
 
 	// Assert modified state is detected
 	if !model.HasUnsavedChanges() {
@@ -615,7 +610,7 @@ func TestSettingsModelDiscardAndExitDirectAction(t *testing.T) {
 	}
 
 	// 2. With changes, press Enter -> should show discard prompt
-	model.GeminiModelInput.SetValue("unsaved-change")
+	model.AiderModelInput.SetValue("unsaved-change")
 	if !model.HasUnsavedChanges() {
 		t.Fatalf("expected unsaved changes")
 	}

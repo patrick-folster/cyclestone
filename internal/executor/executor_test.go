@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,93 +18,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestExecutionCeilingLimit(t *testing.T) {
-	// Create temporary files for test
-	tmpDir, err := os.MkdirTemp("", "executor_test_ceiling")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+func TestUnsupportedRunnersAreRejected(t *testing.T) {
+	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	statePath := filepath.Join(tmpDir, "state.json")
-	configPath := filepath.Join(tmpDir, "milestone.yml")
 	outputPath := filepath.Join(tmpDir, "output.log")
-
-	// Set up temporary local settings path
-	localCyclestoneDir := filepath.Join(".", ".cyclestone")
-	err = os.MkdirAll(localCyclestoneDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create .cyclestone: %v", err)
-	}
-
-	// Configure MaxModelCallsPerPhase to 3
-	testSettings := config.Settings{
-		DefaultLLM:            "ollama_api",
-		MaxModelCallsPerPhase: 3,
-	}
-	settingsBytes, _ := json.Marshal(testSettings)
-	os.WriteFile(filepath.Join(localCyclestoneDir, "settings.yml"), settingsBytes, 0644)
-
-	// Initialize milestone state
-	st := &config.State{
-		MilestoneStatuses: map[string]string{
-			"test-milestone": "Todo",
-		},
-		History: map[string][]config.MilestoneCycleLog{
-			"test-milestone": {
-				{
-					CycleNumber: 1,
-					Status:      "failed",
-				},
-			},
-		},
-	}
-	stateBytes, _ := json.Marshal(st)
-	os.WriteFile(statePath, stateBytes, 0644)
-
-	// Set up mock Ollama server that always returns a unique tool call each turn
-	var serverCallCount int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		serverCallCount++
-		// Respond with a stream of 1 chunk containing a unique tool call in Ollama's native format
-		// (arguments is a JSON object, no index/id/type fields)
-		chunk := fmt.Sprintf(`{"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "run_command", "arguments": {"command": "echo %d"}}}]}, "done": true}`, serverCallCount)
-		w.Write([]byte(chunk + "\n"))
-	}))
-	defer server.Close()
-
-	// Update local settings to point OllamaHost to our mock server
-	testSettings.OllamaHost = server.URL
-	testSettings.OllamaModel = "llama3"
-	settingsBytes, _ = json.Marshal(testSettings)
-	os.WriteFile(filepath.Join(localCyclestoneDir, "settings.yml"), settingsBytes, 0644)
-
-	opts := RunOptions{
-		StatePath:      statePath,
-		ConfigPath:     configPath,
-		NoBranchChange: true,
-	}
-
-	ctx := context.Background()
-	exitCode, runErr := runLLMOrScript(ctx, "ollama_api", "test-agent", "TestAgent", "initial prompt", outputPath, opts, nil)
-
-	// Since ceiling is 3, and we always return a tool call, we should exceed the limit of 3.
-	if exitCode != 3 {
-		t.Errorf("expected exit code 3 for ceiling limit, got %d", exitCode)
-	}
-	if runErr == nil || !strings.Contains(runErr.Error(), "model call limit of 3 exceeded") {
-		t.Errorf("expected ceiling limit error, got %v", runErr)
-	}
-
-	// Verify status in state.json is set to failed
-	updatedState, err := config.LoadState(statePath)
-	if err != nil {
-		t.Fatalf("failed to load updated state: %v", err)
-	}
-	if updatedState.MilestoneStatuses["test-milestone"] != "Failed" {
-		t.Errorf("expected milestone status Failed, got %s", updatedState.MilestoneStatuses["test-milestone"])
+	for _, runner := range []string{"gemini", "openai", "anthropic", "ollama_api", "./runner.sh", "/tmp/runner"} {
+		t.Run(runner, func(t *testing.T) {
+			exitCode, runErr := runRunner(context.Background(), runner, "test-agent", "TestAgent", "prompt", outputPath, RunOptions{}, nil)
+			if exitCode != 1 {
+				t.Fatalf("expected exit code 1, got %d", exitCode)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "unsupported runner: "+runner) {
+				t.Fatalf("expected unsupported runner error, got %v", runErr)
+			}
+		})
 	}
 }
 
@@ -154,428 +79,6 @@ func TestRunAgentPipelineCancellationDoesNotBlockWithoutListener(t *testing.T) {
 		t.Fatal("expected cancelled pipeline to return without a waiting executor listener")
 	}
 }
-
-func TestDuplicateToolCallDetector(t *testing.T) {
-	// Create temporary files for test
-	tmpDir, err := os.MkdirTemp("", "executor_test_dup")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-	t.Chdir(tmpDir)
-
-	statePath := filepath.Join(tmpDir, "state.json")
-	configPath := filepath.Join(tmpDir, "milestone.yml")
-	outputPath := filepath.Join(tmpDir, "output.log")
-
-	localCyclestoneDir := filepath.Join(".", ".cyclestone")
-	err = os.MkdirAll(localCyclestoneDir, 0755)
-	if err != nil {
-		t.Fatalf("failed to create .cyclestone: %v", err)
-	}
-
-	testSettings := config.Settings{
-		DefaultLLM:            "ollama_api",
-		MaxModelCallsPerPhase: 10,
-	}
-
-	// Set up mock Ollama server that returns consecutive duplicates
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// Parse request messages to determine the turn
-		type ollamaPayload struct {
-			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-
-		bodyBytes, _ := io.ReadAll(r.Body)
-		var payload ollamaPayload
-		_ = json.Unmarshal(bodyBytes, &payload)
-
-		// Check warning in history
-		hasWarning := false
-		for _, m := range payload.Messages {
-			if strings.Contains(m.Content, "System Warning: The tool call you just requested") {
-				hasWarning = true
-			}
-		}
-
-		var chunk string
-		if hasWarning {
-			// This is Turn 3 (first warning was injected, model still requests duplicate)
-			chunk = `{"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "run_command", "arguments": {"command": "echo dup"}}}]}, "done": true}`
-		} else if len(payload.Messages) >= 3 {
-			// This is Turn 2 (first tool execution returned an error, model requests duplicate)
-			chunk = `{"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "run_command", "arguments": {"command": "echo dup"}}}]}, "done": true}`
-		} else {
-			// This is Turn 1
-			chunk = `{"message": {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "run_command", "arguments": {"command": "echo dup"}}}]}, "done": true}`
-		}
-		w.Write([]byte(chunk + "\n"))
-	}))
-	defer server.Close()
-
-	testSettings.OllamaHost = server.URL
-	testSettings.OllamaModel = "llama3"
-	settingsBytes, _ := json.Marshal(testSettings)
-	os.WriteFile(filepath.Join(localCyclestoneDir, "settings.yml"), settingsBytes, 0644)
-
-	opts := RunOptions{
-		StatePath:      statePath,
-		ConfigPath:     configPath,
-		NoBranchChange: true,
-	}
-
-	ctx := context.Background()
-	exitCode, runErr := runLLMOrScript(ctx, "ollama_api", "test-agent", "TestAgent", "initial prompt", outputPath, opts, nil)
-
-	// Since consecutive duplicate was called twice consecutively, we should abort with exit code 2.
-	if exitCode != 2 {
-		t.Errorf("expected exit code 2 for duplicate tool calls, got %d", exitCode)
-	}
-	if runErr == nil || !strings.Contains(runErr.Error(), "consecutive duplicate tool call detected: run_command") {
-		t.Errorf("expected duplicate tool call abort error, got %v", runErr)
-	}
-
-	// Verify output log contains warning
-	outBytes, _ := os.ReadFile(outputPath)
-	outputContent := string(outBytes)
-	if !strings.Contains(outputContent, "[Guard Rail] Duplicate tool call detected. Injecting system warning for run_command.") {
-		t.Errorf("expected duplicate warning in output log, got: %s", outputContent)
-	}
-}
-
-func TestOllamaHistorySerializesToolArgumentsAsObject(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "executor_ollama_history_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-	t.Chdir(tmpDir)
-
-	localCyclestoneDir := filepath.Join(".", ".cyclestone")
-	if err := os.MkdirAll(localCyclestoneDir, 0755); err != nil {
-		t.Fatalf("failed to create .cyclestone: %v", err)
-	}
-
-	var requests []map[string]interface{}
-	serverCallCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		serverCallCount++
-
-		bodyBytes, _ := io.ReadAll(r.Body)
-		var payload map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			t.Fatalf("failed to unmarshal request payload: %v", err)
-		}
-		requests = append(requests, payload)
-
-		if serverCallCount == 1 {
-			w.Write([]byte(`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"run_command","arguments":{"command":"echo ok"}}}]},"done":true}` + "\n"))
-			return
-		}
-		w.Write([]byte(`{"message":{"role":"assistant","content":"done"},"done":true,"done_reason":"stop"}` + "\n"))
-	}))
-	defer server.Close()
-
-	settingsBytes, _ := json.Marshal(config.Settings{
-		DefaultLLM:            "ollama_api",
-		OllamaHost:            server.URL,
-		OllamaModel:           "llama3",
-		MaxLLMInputChars:      900000,
-		MaxModelCallsPerPhase: 5,
-	})
-	if err := os.WriteFile(filepath.Join(localCyclestoneDir, "settings.yml"), settingsBytes, 0644); err != nil {
-		t.Fatalf("failed to write settings: %v", err)
-	}
-
-	outputPath := filepath.Join(tmpDir, "output.log")
-	exitCode, runErr := runLLMOrScript(context.Background(), "ollama_api", "test-agent", "TestAgent", "initial prompt", outputPath, RunOptions{}, nil)
-	if exitCode != 0 || runErr != nil {
-		t.Fatalf("expected successful ollama run, exit=%d err=%v", exitCode, runErr)
-	}
-	if len(requests) < 2 {
-		t.Fatalf("expected at least 2 Ollama requests, got %d", len(requests))
-	}
-
-	messages, ok := requests[1]["messages"].([]interface{})
-	if !ok {
-		t.Fatalf("expected second request messages array, got %#v", requests[1]["messages"])
-	}
-	var foundToolCall bool
-	for _, rawMessage := range messages {
-		message, ok := rawMessage.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		toolCalls, ok := message["tool_calls"].([]interface{})
-		if !ok || len(toolCalls) == 0 {
-			continue
-		}
-		foundToolCall = true
-		toolCall := toolCalls[0].(map[string]interface{})
-		function := toolCall["function"].(map[string]interface{})
-		if _, ok := function["arguments"].(map[string]interface{}); !ok {
-			t.Fatalf("expected Ollama history tool arguments to be object, got %#v", function["arguments"])
-		}
-	}
-	if !foundToolCall {
-		t.Fatalf("expected second request to include assistant tool call history, got %#v", messages)
-	}
-}
-
-func TestOllamaPayloadIncludesOptionsOnlyWhenConfigured(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		settings    config.Settings
-		wantCtx     float64
-		wantPredict float64
-	}{
-		{
-			name: "configured",
-			settings: config.Settings{
-				DefaultLLM:            "ollama_api",
-				OllamaModel:           "llama3",
-				OllamaKeepAlive:       "30m",
-				OllamaNumCtx:          32768,
-				OllamaNumPredict:      4096,
-				MaxLLMInputChars:      900000,
-				MaxModelCallsPerPhase: 5,
-			},
-			wantCtx:     32768,
-			wantPredict: 4096,
-		},
-		{
-			name: "unset",
-			settings: config.Settings{
-				DefaultLLM:            "ollama_api",
-				OllamaModel:           "llama3",
-				MaxLLMInputChars:      900000,
-				MaxModelCallsPerPhase: 5,
-			},
-			wantCtx:     65536,
-			wantPredict: 8192,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir, err := os.MkdirTemp("", "executor_ollama_payload_test")
-			if err != nil {
-				t.Fatalf("failed to create temp dir: %v", err)
-			}
-			defer os.RemoveAll(tmpDir)
-
-			oldHome := os.Getenv("HOME")
-			oldUserProfile := os.Getenv("USERPROFILE")
-			oldWd, err := os.Getwd()
-			if err != nil {
-				t.Fatalf("failed to get wd: %v", err)
-			}
-			os.Setenv("HOME", tmpDir)
-			os.Setenv("USERPROFILE", tmpDir)
-			if err := os.Chdir(tmpDir); err != nil {
-				t.Fatalf("failed to chdir: %v", err)
-			}
-			defer func() {
-				os.Setenv("HOME", oldHome)
-				os.Setenv("USERPROFILE", oldUserProfile)
-				_ = os.Chdir(oldWd)
-			}()
-
-			var payload map[string]interface{}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				bodyBytes, _ := io.ReadAll(r.Body)
-				if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-					t.Fatalf("failed to unmarshal request payload: %v", err)
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"message":{"role":"assistant","content":"done"},"done":true,"done_reason":"stop"}` + "\n"))
-			}))
-			defer server.Close()
-
-			tc.settings.OllamaHost = server.URL
-			if err := config.SaveProjectSettings(tc.settings); err != nil {
-				t.Fatalf("failed to save settings: %v", err)
-			}
-
-			outputPath := filepath.Join(tmpDir, "output.log")
-			exitCode, runErr := runLLMOrScript(context.Background(), "ollama_api", "test-agent", "TestAgent", "prompt", outputPath, RunOptions{}, nil)
-			if exitCode != 0 || runErr != nil {
-				t.Fatalf("expected successful ollama run, exit=%d err=%v", exitCode, runErr)
-			}
-
-			if got := payload["keep_alive"]; got != "30m" && tc.name == "configured" {
-				t.Fatalf("expected configured keep_alive 30m, got %#v", got)
-			}
-			if got := payload["keep_alive"]; got != "5m" && tc.name == "unset" {
-				t.Fatalf("expected default keep_alive 5m, got %#v", got)
-			}
-
-			options, hasOptions := payload["options"].(map[string]interface{})
-			if !hasOptions {
-				t.Fatalf("expected options in payload: %#v", payload)
-			}
-			if options["num_ctx"] != tc.wantCtx || options["num_predict"] != tc.wantPredict {
-				t.Fatalf("unexpected options: %#v", options)
-			}
-		})
-	}
-}
-
-func TestAPIMetricsWrittenForSuccessLimitDuplicateAndError(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "executor_metrics_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	oldHome := os.Getenv("HOME")
-	oldUserProfile := os.Getenv("USERPROFILE")
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get wd: %v", err)
-	}
-	os.Setenv("HOME", tmpDir)
-	os.Setenv("USERPROFILE", tmpDir)
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to chdir: %v", err)
-	}
-	defer func() {
-		os.Setenv("HOME", oldHome)
-		os.Setenv("USERPROFILE", oldUserProfile)
-		_ = os.Chdir(oldWd)
-	}()
-
-	runCase := func(name string, maxCalls int, handler http.HandlerFunc, wantExit int, wantReason string) string {
-		t.Helper()
-		server := httptest.NewServer(handler)
-		defer server.Close()
-
-		if err := config.SaveProjectSettings(config.Settings{
-			DefaultLLM:            "ollama_api",
-			OllamaHost:            server.URL,
-			OllamaModel:           "llama3",
-			MaxModelCallsPerPhase: maxCalls,
-			MaxLLMInputChars:      900000,
-		}); err != nil {
-			t.Fatalf("%s: failed to save settings: %v", name, err)
-		}
-
-		outputPath := filepath.Join(tmpDir, name+".log")
-		exitCode, _ := runLLMOrScript(context.Background(), "ollama_api", "test-agent", "TestAgent", "prompt", outputPath, RunOptions{StatePath: filepath.Join(tmpDir, "state.json")}, nil)
-		if exitCode != wantExit {
-			t.Fatalf("%s: expected exit %d, got %d", name, wantExit, exitCode)
-		}
-		outBytes, err := os.ReadFile(outputPath)
-		if err != nil {
-			t.Fatalf("%s: failed to read output: %v", name, err)
-		}
-		output := string(outBytes)
-		if !strings.Contains(output, "[Metrics] runner=ollama_api model=llama3") {
-			t.Fatalf("%s: expected metrics line, got:\n%s", name, output)
-		}
-		if wantReason != "" && !strings.Contains(output, "stop_or_done_reason="+wantReason) {
-			t.Fatalf("%s: expected reason %q, got:\n%s", name, wantReason, output)
-		}
-		return output
-	}
-
-	successOut := runCase("success", 5, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"message":{"role":"assistant","content":"done"},"done":true,"done_reason":"stop"}` + "\n"))
-	}, 0, "stop")
-	if !strings.Contains(successOut, "model_calls=1 output_chars=4 tool_calls=0") {
-		t.Fatalf("success metrics missing expected counts:\n%s", successOut)
-	}
-
-	limitCalls := 0
-	limitOut := runCase("limit", 1, func(w http.ResponseWriter, r *http.Request) {
-		limitCalls++
-		w.Write([]byte(fmt.Sprintf(`{"message":{"role":"assistant","tool_calls":[{"function":{"name":"run_command","arguments":{"command":"echo %d"}}}]},"done":true}`, limitCalls) + "\n"))
-	}, 3, "")
-	if !strings.Contains(limitOut, "model_calls=1") || !strings.Contains(limitOut, "tool_calls=1") {
-		t.Fatalf("limit metrics missing expected counts:\n%s", limitOut)
-	}
-
-	duplicateOut := runCase("duplicate", 10, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"message":{"role":"assistant","tool_calls":[{"function":{"name":"run_command","arguments":{"command":"echo dup"}}}]},"done":true}` + "\n"))
-	}, 2, "")
-	if !strings.Contains(duplicateOut, "model_calls=3") || !strings.Contains(duplicateOut, "tool_calls=3") {
-		t.Fatalf("duplicate metrics missing expected counts:\n%s", duplicateOut)
-	}
-
-	errorOut := runCase("api-error", 5, func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad", http.StatusInternalServerError)
-	}, 1, "")
-	if !strings.Contains(errorOut, "model_calls=1") {
-		t.Fatalf("api error metrics missing model call count:\n%s", errorOut)
-	}
-}
-
-func TestEstimatedTokenBudgetAbortsBeforeModelCall(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "executor_token_budget_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	oldHome := os.Getenv("HOME")
-	oldUserProfile := os.Getenv("USERPROFILE")
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("failed to get wd: %v", err)
-	}
-	os.Setenv("HOME", tmpDir)
-	os.Setenv("USERPROFILE", tmpDir)
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to chdir: %v", err)
-	}
-	defer func() {
-		os.Setenv("HOME", oldHome)
-		os.Setenv("USERPROFILE", oldUserProfile)
-		_ = os.Chdir(oldWd)
-	}()
-
-	var serverCalls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalls++
-		w.Write([]byte(`{"message":{"role":"assistant","content":"done"},"done":true}` + "\n"))
-	}))
-	defer server.Close()
-
-	if err := config.SaveProjectSettings(config.Settings{
-		DefaultLLM:             "ollama_api",
-		OllamaHost:             server.URL,
-		OllamaModel:            "llama3",
-		MaxModelCallsPerPhase:  5,
-		MaxTokenBudgetPerPhase: 1,
-		MaxLLMInputChars:       900000,
-	}); err != nil {
-		t.Fatalf("failed to save settings: %v", err)
-	}
-
-	outputPath := filepath.Join(tmpDir, "output.log")
-	exitCode, runErr := runLLMOrScript(context.Background(), "ollama_api", "test-agent", "TestAgent", "prompt", outputPath, RunOptions{}, nil)
-	if exitCode != 4 {
-		t.Fatalf("expected exit 4 for token budget, got %d", exitCode)
-	}
-	if runErr == nil || !strings.Contains(runErr.Error(), "estimated token budget") {
-		t.Fatalf("expected token budget error, got %v", runErr)
-	}
-	if serverCalls != 0 {
-		t.Fatalf("expected token budget guard before model call, got %d server calls", serverCalls)
-	}
-	outBytes, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("failed to read output: %v", err)
-	}
-	if !strings.Contains(string(outBytes), "[Guard Rail] Estimated token budget") {
-		t.Fatalf("expected token budget guard in output, got:\n%s", string(outBytes))
-	}
-}
-
 func TestCompactConversationHistoryBoundsOlderToolTurns(t *testing.T) {
 	history := []UnifiedMessage{{Role: "user", Content: "initial prompt"}}
 	for i := 0; i < 6; i++ {
@@ -672,52 +175,6 @@ func TestCompactConversationHistoryKeepsLargeToolBatchOwner(t *testing.T) {
 		}
 	}
 }
-
-func TestGeminiFinishReasonCapturedInMetrics(t *testing.T) {
-	oldClient := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`[
-				{"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}
-			]`)),
-			Request: req,
-		}, nil
-	})}
-	defer func() { http.DefaultClient = oldClient }()
-
-	writer := &liveLogWriter{}
-	result, err := executeAPI(
-		context.Background(),
-		"gemini",
-		"gemini-test",
-		"test-key",
-		[]UnifiedMessage{{Role: "user", Content: "prompt"}},
-		config.Settings{},
-		writer,
-		true,
-	)
-	if err != nil {
-		t.Fatalf("executeAPI returned error: %v", err)
-	}
-	if result.Message.Content != "done" {
-		t.Fatalf("expected response content done, got %q", result.Message.Content)
-	}
-	if result.Metrics.StopOrDoneReason != "STOP" {
-		t.Fatalf("expected Gemini finish reason STOP, got %q", result.Metrics.StopOrDoneReason)
-	}
-	if result.Metrics.OutputCharCount != 4 || result.Metrics.ToolCallCount != 0 {
-		t.Fatalf("unexpected metrics: %#v", result.Metrics)
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
-}
-
 func TestOllamaPromptFooterScopedToOllamaRunner(t *testing.T) {
 	base := "prompt"
 	ollama := appendOllamaPromptFooter(base)
@@ -726,6 +183,29 @@ func TestOllamaPromptFooterScopedToOllamaRunner(t *testing.T) {
 	}
 	if appendOllamaPromptFooter(ollama) != ollama {
 		t.Fatalf("expected footer append to be idempotent")
+	}
+}
+
+func TestSetupTemporaryAiderSettingsWritesOllamaParams(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	cleanup := setupTemporaryAiderSettings("ollama_chat/qwen3-coder:480b-cloud", config.Settings{
+		OllamaNumCtx:     32768,
+		OllamaNumPredict: 4096,
+	})
+	defer cleanup()
+
+	data, err := os.ReadFile(".aider.model.settings.yml")
+	if err != nil {
+		t.Fatalf("failed to read temporary aider model settings: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "num_ctx: 32768") {
+		t.Fatalf("expected num_ctx in temporary aider model settings, got:\n%s", text)
+	}
+	if !strings.Contains(text, "num_predict: 4096") {
+		t.Fatalf("expected num_predict in temporary aider model settings, got:\n%s", text)
 	}
 }
 
@@ -760,7 +240,7 @@ func TestCodexRunnerRejectsOversizedInputBeforeExec(t *testing.T) {
 	outputPath := filepath.Join(tmpDir, "output.log")
 	input := strings.Repeat("x", 1001)
 
-	exitCode, runErr := runLLMOrScript(context.Background(), "codex", "test-agent", "TestAgent", input, outputPath, RunOptions{}, nil)
+	exitCode, runErr := runRunner(context.Background(), "codex", "test-agent", "TestAgent", input, outputPath, RunOptions{}, nil)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1 for oversized codex input, got %d", exitCode)
 	}
@@ -817,6 +297,30 @@ func TestMilestoneCreationRejectsOversizedLLMInputBeforeExec(t *testing.T) {
 	}
 	if finished.Error == nil || !strings.Contains(finished.Error.Error(), "above codex safety limit") {
 		t.Fatalf("expected input size guard error, got %v", finished.Error)
+	}
+}
+
+func TestMilestoneCreationRejectsUnsupportedRunner(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	ch := make(chan tea.Msg, 1)
+	ExecuteMilestoneCreation(context.Background(), "gemini", "prompt", RunOptions{}, ch, "MS-UNSUPPORTED", "Unsupported")
+
+	msg := <-ch
+	finished, ok := msg.(CreateMilestoneFinishedMsg)
+	if !ok {
+		t.Fatalf("expected CreateMilestoneFinishedMsg, got %T", msg)
+	}
+	if finished.Error == nil || !strings.Contains(finished.Error.Error(), "unsupported runner: gemini") {
+		t.Fatalf("expected unsupported runner error, got %v", finished.Error)
 	}
 }
 
@@ -1683,7 +1187,7 @@ echo 'done'
 	}
 
 	threadID := ""
-	pmExit, pmErr := runLLMOrScriptWithSession(context.Background(), "codex", "pm", "Project Manager", "pm prompt", "pm.log", RunOptions{}, nil, &threadID)
+	pmExit, pmErr := runRunnerWithSession(context.Background(), "codex", "pm", "Project Manager", "pm prompt", "pm.log", RunOptions{}, nil, &threadID)
 	if pmExit != 0 || pmErr != nil {
 		t.Fatalf("expected fake PM codex success, exit=%d err=%v", pmExit, pmErr)
 	}
@@ -1691,7 +1195,7 @@ echo 'done'
 		t.Fatalf("expected parsed thread id, got %q", threadID)
 	}
 
-	devExit, devErr := runLLMOrScriptWithSession(context.Background(), "codex", "developer", "Developer", "dev prompt", "dev.log", RunOptions{}, nil, &threadID)
+	devExit, devErr := runRunnerWithSession(context.Background(), "codex", "developer", "Developer", "dev prompt", "dev.log", RunOptions{}, nil, &threadID)
 	if devExit != 0 || devErr != nil {
 		t.Fatalf("expected fake developer codex success, exit=%d err=%v", devExit, devErr)
 	}
@@ -1726,7 +1230,7 @@ echo 'fallback ok'
 	}
 
 	threadID := "thread-fake"
-	exitCode, runErr := runLLMOrScriptWithSession(context.Background(), "codex", "developer", "Developer", "dev prompt", "dev.log", RunOptions{}, nil, &threadID)
+	exitCode, runErr := runRunnerWithSession(context.Background(), "codex", "developer", "Developer", "dev prompt", "dev.log", RunOptions{}, nil, &threadID)
 	if exitCode != 0 || runErr != nil {
 		t.Fatalf("expected resume fallback success, exit=%d err=%v", exitCode, runErr)
 	}
@@ -2449,86 +1953,5 @@ func TestCompactConversationHistorySelectiveRetention(t *testing.T) {
 	// Verify run_command output is NOT in retained file contents
 	if strings.Contains(systemMsg.Content, "File: go test") || strings.Contains(systemMsg.Content, "PASS\n---") {
 		t.Errorf("expected system message NOT to retain run_command output in file list, got:\n%s", systemMsg.Content)
-	}
-}
-
-type RoundTripFunc func(req *http.Request) (*http.Response, error)
-
-func (f RoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
-
-func TestWritePhaseHandoffLLMSummarizer(t *testing.T) {
-	origKey := os.Getenv("GEMINI_API_KEY")
-	os.Setenv("GEMINI_API_KEY", "mock-gemini-key")
-	defer os.Setenv("GEMINI_API_KEY", origKey)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[
-			{
-				"candidates": [
-					{
-						"content": {
-							"parts": [
-								{"text": "LLM generated summary of decisions, files, and tasks."}
-							]
-						}
-					}
-				]
-			}
-		]`))
-	}))
-	defer server.Close()
-
-	origTransport := http.DefaultClient.Transport
-	defer func() {
-		http.DefaultClient.Transport = origTransport
-	}()
-
-	http.DefaultClient.Transport = RoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		mockReq, err := http.NewRequestWithContext(req.Context(), req.Method, server.URL, req.Body)
-		if err != nil {
-			return nil, err
-		}
-		mockReq.Header = req.Header
-		// Clear transport on the sub-request so it doesn't infinite loop
-		client := &http.Client{Transport: origTransport}
-		return client.Do(mockReq)
-	})
-
-	tmpDir := t.TempDir()
-	outputPath := filepath.Join(tmpDir, "pm.log")
-	handoffPath := filepath.Join(tmpDir, "pm-handoff.json")
-
-	longText := strings.Repeat("PM Output Line: important goal and scope details\n", 500)
-	if err := os.WriteFile(outputPath, []byte(longText), 0644); err != nil {
-		t.Fatalf("failed to write log: %v", err)
-	}
-
-	settings := config.Settings{
-		GeminiModel: "gemini-1.5-flash",
-	}
-
-	err := writePhaseHandoff(context.Background(), settings, handoffPath, "MS-H", 1, "pm", "", outputPath, 100, "Note")
-	if err != nil {
-		t.Fatalf("writePhaseHandoff failed: %v", err)
-	}
-
-	content, err := os.ReadFile(handoffPath)
-	if err != nil {
-		t.Fatalf("failed to read handoff: %v", err)
-	}
-
-	var handoff struct {
-		Summary map[string]interface{} `json:"summary"`
-	}
-	if err := json.Unmarshal(content, &handoff); err != nil {
-		t.Fatalf("failed to unmarshal handoff: %v", err)
-	}
-
-	val, ok := handoff.Summary["summary"].(string)
-	if !ok || val != "LLM generated summary of decisions, files, and tasks." {
-		t.Fatalf("expected LLM summary in handoff, got: %#v", handoff.Summary)
 	}
 }

@@ -21,7 +21,7 @@ func TestParseAgentFile(t *testing.T) {
 name: "Test PM"
 description: "A test project manager agent"
 order: 5
-runner_binary: "test-runner"
+runner_binary: "aider"
 output_contract: "qa"
 ---
 # Test Agent Prompt
@@ -50,8 +50,8 @@ This is the body of the prompt.
 	if agent.Order != 5 {
 		t.Errorf("expected Order 5, got %d", agent.Order)
 	}
-	if agent.RunnerBinary != "test-runner" {
-		t.Errorf("expected runner_binary 'test-runner', got '%s'", agent.RunnerBinary)
+	if agent.RunnerBinary != "aider" {
+		t.Errorf("expected runner_binary 'aider', got '%s'", agent.RunnerBinary)
 	}
 	if agent.OutputContract != "qa" {
 		t.Errorf("expected output_contract 'qa', got '%s'", agent.OutputContract)

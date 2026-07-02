@@ -197,10 +197,12 @@ func validateRunnerAvailability(runner string) (preflightIssue, bool) {
 		if ok, _ := isRunnerAvailable("aider"); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: "Runner \"ollama\" requires the aider CLI on PATH."}, true
 		}
-	case "codex", "agy", "aider", "gemini", "openai", "anthropic":
+	case "codex", "agy", "aider":
 		if ok, reason := isRunnerAvailable(runner); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unavailable: %s.", runner, reason)}, true
 		}
+	default:
+		return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unsupported. Select codex, agy, aider, or ollama.", runner)}, true
 	}
 	return preflightIssue{}, false
 }
@@ -423,15 +425,9 @@ func (m PreflightModel) pipelineText() string {
 
 func (m PreflightModel) modelForRunner(runner string) string {
 	switch runner {
-	case "gemini":
-		return emptyFallback(m.Settings.GeminiModel, "(default)")
-	case "openai":
-		return emptyFallback(m.Settings.OpenAIModel, "(default)")
-	case "anthropic":
-		return emptyFallback(m.Settings.AnthropicModel, "(default)")
 	case "aider":
 		return emptyFallback(m.Settings.AiderModel, "(default)")
-	case "ollama", "ollama_api":
+	case "ollama":
 		return emptyFallback(m.Settings.OllamaModel, "(default)")
 	default:
 		return "(runner default)"

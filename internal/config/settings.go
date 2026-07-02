@@ -19,7 +19,7 @@ type AgentGroup struct {
 
 // Settings represents global and project configurations.
 type Settings struct {
-	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", or "" (inherit)
+	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", or "" (inherit)
 	DefaultMode            string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`                       // "sandbox", "unrestricted", or "" (inherit)
 	AutoGitBranch          *bool  `yaml:"auto_git_branch,omitempty" json:"auto_git_branch,omitempty"`                 // pointer to bool, nil if unset/inherit
 	CreateMilestoneBranch  *bool  `yaml:"create_milestone_branch,omitempty" json:"create_milestone_branch,omitempty"` // pointer to bool, nil if unset/inherit
@@ -27,9 +27,6 @@ type Settings struct {
 	DisableRoundedBorders  *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
 	DefaultGitBranchPrefix string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
 
-	GeminiModel                     string       `yaml:"gemini_model,omitempty" json:"gemini_model,omitempty"`
-	OpenAIModel                     string       `yaml:"openai_model,omitempty" json:"openai_model,omitempty"`
-	AnthropicModel                  string       `yaml:"anthropic_model,omitempty" json:"anthropic_model,omitempty"`
 	AiderModel                      string       `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
 	OllamaModel                     string       `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
 	OllamaHost                      string       `yaml:"ollama_host,omitempty" json:"ollama_host,omitempty"`
@@ -38,7 +35,6 @@ type Settings struct {
 	EnableCodexSessionResume        *bool        `yaml:"enable_codex_session_resume,omitempty" json:"enable_codex_session_resume,omitempty"`
 	CacheTTLMinutes                 int          `yaml:"cache_ttl_minutes,omitempty" json:"cache_ttl_minutes,omitempty"`
 	MaxHandoffChars                 int          `yaml:"max_handoff_chars,omitempty" json:"max_handoff_chars,omitempty"`
-	OllamaKeepAlive                 string       `yaml:"ollama_keep_alive,omitempty" json:"ollama_keep_alive,omitempty"`
 	OllamaNumCtx                    int          `yaml:"ollama_num_ctx,omitempty" json:"ollama_num_ctx,omitempty"`
 	OllamaNumPredict                int          `yaml:"ollama_num_predict,omitempty" json:"ollama_num_predict,omitempty"`
 	MaxModelCallsPerPhase           int          `yaml:"max_model_calls_per_phase,omitempty" json:"max_model_calls_per_phase,omitempty"`
@@ -48,16 +44,10 @@ type Settings struct {
 	AgentGroups                     []AgentGroup `yaml:"agent_groups,omitempty" json:"agent_groups,omitempty"`
 }
 
-// IsValidLLM checks if a given LLM runner name is standard or a valid custom wrapper script path.
+// IsValidLLM checks if a given LLM runner name is supported.
 func IsValidLLM(val string) bool {
 	switch val {
-	case "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api":
-		return true
-	}
-	if strings.HasPrefix(val, "./") || strings.HasPrefix(val, "/") {
-		return true
-	}
-	if filepath.Ext(val) != "" {
+	case "codex", "agy", "aider", "ollama":
 		return true
 	}
 	return false
@@ -111,7 +101,6 @@ func LoadDefaultSettings() Settings {
 		EnableCodexSessionResume:        &enableCodexSessionResume,
 		CacheTTLMinutes:                 30,
 		MaxHandoffChars:                 12000,
-		OllamaKeepAlive:                 "5m",
 		OllamaNumCtx:                    65536,
 		OllamaNumPredict:                8192,
 		MaxModelCallsPerPhase:           50,
@@ -211,9 +200,6 @@ func LoadMergedSettings() Settings {
 	if s.MaxHandoffChars <= 0 {
 		s.MaxHandoffChars = 12000
 	}
-	if s.OllamaKeepAlive == "" {
-		s.OllamaKeepAlive = "5m"
-	}
 	if s.MaxModelCallsPerPhase <= 0 {
 		s.MaxModelCallsPerPhase = 50
 	}
@@ -253,15 +239,6 @@ func LoadMergedSettings() Settings {
 				if projectSettings.DisableRoundedBorders != nil {
 					s.DisableRoundedBorders = projectSettings.DisableRoundedBorders
 				}
-				if projectSettings.GeminiModel != "" {
-					s.GeminiModel = projectSettings.GeminiModel
-				}
-				if projectSettings.OpenAIModel != "" {
-					s.OpenAIModel = projectSettings.OpenAIModel
-				}
-				if projectSettings.AnthropicModel != "" {
-					s.AnthropicModel = projectSettings.AnthropicModel
-				}
 				if projectSettings.AiderModel != "" {
 					s.AiderModel = projectSettings.AiderModel
 				}
@@ -285,9 +262,6 @@ func LoadMergedSettings() Settings {
 				}
 				if projectSettings.MaxHandoffChars != 0 {
 					s.MaxHandoffChars = projectSettings.MaxHandoffChars
-				}
-				if projectSettings.OllamaKeepAlive != "" {
-					s.OllamaKeepAlive = projectSettings.OllamaKeepAlive
 				}
 				if projectSettings.OllamaNumCtx != 0 {
 					s.OllamaNumCtx = projectSettings.OllamaNumCtx
@@ -365,9 +339,6 @@ func LoadMergedSettings() Settings {
 	if s.MaxHandoffChars <= 0 {
 		s.MaxHandoffChars = 12000
 	}
-	if s.OllamaKeepAlive == "" {
-		s.OllamaKeepAlive = "5m"
-	}
 	if s.MaxModelCallsPerPhase <= 0 {
 		s.MaxModelCallsPerPhase = 50
 	}
@@ -380,17 +351,13 @@ func LoadMergedSettings() Settings {
 	if s.MaxRetainedConversationMessages <= 0 {
 		s.MaxRetainedConversationMessages = 8
 	}
+	if s.OllamaNumCtx <= 0 {
+		s.OllamaNumCtx = 65536
+	}
+	if s.OllamaNumPredict <= 0 {
+		s.OllamaNumPredict = 8192
+	}
 
-	// Default LLM model defaults
-	if s.GeminiModel == "" {
-		s.GeminiModel = "gemini-1.5-flash"
-	}
-	if s.OpenAIModel == "" {
-		s.OpenAIModel = "gpt-4o"
-	}
-	if s.AnthropicModel == "" {
-		s.AnthropicModel = "claude-3-5-sonnet-20241022"
-	}
 	if s.OllamaModel == "" {
 		s.OllamaModel = DefaultOllamaModel
 	}

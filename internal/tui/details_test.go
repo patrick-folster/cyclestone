@@ -203,7 +203,7 @@ func TestNarrowWidthMetadataFormatting(t *testing.T) {
 		Status:             "In Progress",
 		Cycles:             2,
 	}
-	m.LLM = "gemini"
+	m.LLM = "ollama"
 	m.Mode = "sandbox"
 	m.BranchChange = true
 

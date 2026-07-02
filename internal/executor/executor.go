@@ -77,14 +77,8 @@ func configuredModelForRunner(runner string, settings config.Settings) string {
 	switch runner {
 	case "aider":
 		return settings.AiderModel
-	case "ollama", "ollama_api":
+	case "ollama":
 		return settings.OllamaModel
-	case "gemini":
-		return settings.GeminiModel
-	case "openai":
-		return settings.OpenAIModel
-	case "anthropic":
-		return settings.AnthropicModel
 	default:
 		return ""
 	}
@@ -94,8 +88,6 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 	switch runner {
 	case "manual":
 		return "manual phase"
-	case "gemini", "openai", "anthropic", "ollama_api":
-		return runner + " API call"
 	case "codex":
 		modeArgs := "--sandbox workspace-write --ask-for-approval never"
 		if opts.Unrestricted {
@@ -110,10 +102,7 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 	case "aider", "ollama":
 		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore"
 	default:
-		if isCustomScript(runner) {
-			return runner + " <stdin>"
-		}
-		return runner
+		return "unsupported runner"
 	}
 }
 
@@ -950,7 +939,7 @@ func extractSlugAndTitle(content string, defaultID string, defaultTitle string) 
 	return localSlugify(defaultTitle), defaultTitle
 }
 
-// ExecuteMilestoneCreation runs the creation prompt through agy, codex, or direct LLM APIs in the background.
+// ExecuteMilestoneCreation runs the creation prompt through a supported runner in the background.
 func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string, opts RunOptions, ch chan tea.Msg, milestoneID string, defaultTitle string) {
 	settings := config.LoadMergedSettings()
 	if limit, ok := inputSizeLimitForRunner(runner, settings); ok && len([]rune(prompt)) > limit {
@@ -958,72 +947,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 		return
 	}
 
-	if runner == "gemini" || runner == "openai" || runner == "anthropic" {
-		client, ok := clients[runner]
-		if !ok {
-			ch <- CreateMilestoneFinishedMsg{Error: fmt.Errorf("unsupported runner: %s", runner)}
-			return
-		}
-		model, apiKey, apiErr := client.ResolveConfig(settings)
-		if apiErr != nil {
-			ch <- CreateMilestoneFinishedMsg{Error: apiErr}
-			return
-		}
-
-		writer := &liveLogWriter{
-			agentID: "milestone_creator",
-			ch:      ch,
-			ctx:     ctx,
-			file:    nil,
-		}
-		defer writer.Close()
-
-		_, runErr := executeAPI(ctx, runner, model, apiKey, []UnifiedMessage{{Role: "user", Content: prompt}}, settings, writer, true)
-		if runErr != nil {
-			ch <- CreateMilestoneFinishedMsg{Error: runErr}
-			return
-		}
-
-		// Cleanup generated content and write to file
-		rawResponse := writer.accumulated.String()
-		content := strings.TrimSpace(rawResponse)
-		if strings.HasPrefix(content, "```markdown") {
-			content = strings.TrimPrefix(content, "```markdown")
-			content = strings.TrimSuffix(content, "```")
-			content = strings.TrimSpace(content)
-		} else if strings.HasPrefix(content, "```") {
-			content = strings.TrimPrefix(content, "```")
-			content = strings.TrimSuffix(content, "```")
-			content = strings.TrimSpace(content)
-		}
-
-		slug, _ := extractSlugAndTitle(content, milestoneID, defaultTitle)
-		if slug == "" {
-			slug = localSlugify(defaultTitle)
-		}
-
-		milestonesDir := filepath.Join(".cyclestone", "milestones")
-		if err := os.MkdirAll(milestonesDir, 0755); err != nil {
-			ch <- CreateMilestoneFinishedMsg{Error: err}
-			return
-		}
-
-		filePath := filepath.Join(milestonesDir, fmt.Sprintf("%s-%s.md", milestoneID, slug))
-		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-			ch <- CreateMilestoneFinishedMsg{Error: err}
-			return
-		}
-
-		if content == "" {
-			ch <- CreateMilestoneFinishedMsg{Error: fmt.Errorf("LLM returned empty content for milestone spec")}
-			return
-		}
-
-		ch <- CreateMilestoneFinishedMsg{Error: nil}
-		return
-	}
-
-	// Setup command for agy/codex/aider/custom scripts
+	// Setup command for agy/codex/aider/ollama.
 	var cmd *exec.Cmd
 	if runner == "agy" {
 		args := []string{"--print", "-", "--print-timeout", "30m"}
@@ -1098,7 +1022,10 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			cmd.Env = append(cmd.Env, "OLLAMA_API_BASE="+host)
 		}
 	} else {
-		// Default to codex or custom scripts
+		if runner != "codex" {
+			ch <- CreateMilestoneFinishedMsg{Error: fmt.Errorf("unsupported runner: %s", runner)}
+			return
+		}
 		var args []string
 		if opts.Unrestricted {
 			args = append(args, "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox")
@@ -1107,14 +1034,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 		}
 		args = append(args, "exec", "--cd", ".", "--skip-git-repo-check", "--", "-")
 
-		binary := "codex"
-		if isCustomScript(runner) {
-			binary = runner
-			args = nil // run script directly without codex flags
-			cmd = exec.CommandContext(ctx, binary)
-		} else {
-			cmd = exec.CommandContext(ctx, binary, args...)
-		}
+		cmd = exec.CommandContext(ctx, "codex", args...)
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 
@@ -1153,19 +1073,9 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 	}
 }
 
-func isCustomScript(runner string) bool {
-	if strings.HasPrefix(runner, "./") || strings.HasPrefix(runner, "/") || strings.Contains(runner, "/") {
-		return true
-	}
-	if filepath.Ext(runner) != "" {
-		return true
-	}
-	return false
-}
-
 func inputSizeLimitForRunner(runner string, settings config.Settings) (int, bool) {
 	switch runner {
-	case "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api":
+	case "codex", "agy", "aider", "ollama":
 		limit := settings.MaxLLMInputChars
 		if limit <= 0 {
 			limit = 900000
@@ -1178,123 +1088,6 @@ func inputSizeLimitForRunner(runner string, settings config.Settings) (int, bool
 
 func inputSizeGuardError(runner string, actualChars int, maxChars int) error {
 	return fmt.Errorf("input content is %d chars, above %s safety limit of %d chars", actualChars, runner, maxChars)
-}
-
-type liveLogWriter struct {
-	agentID     string
-	ch          chan tea.Msg
-	ctx         context.Context
-	file        *os.File
-	buffer      bytes.Buffer
-	accumulated strings.Builder
-}
-
-type apiExecutionResult struct {
-	Message UnifiedMessage
-	Metrics apiExecutionMetrics
-}
-
-type apiExecutionMetrics struct {
-	Runner           string
-	Model            string
-	ModelCallCount   int
-	OutputCharCount  int
-	ToolCallCount    int
-	EstimatedTokens  int
-	StopOrDoneReason string
-	PromptTokens     int
-	CompletionTokens int
-}
-
-func (m apiExecutionMetrics) writeTo(writer *liveLogWriter) {
-	if writer == nil {
-		return
-	}
-	reason := m.StopOrDoneReason
-	if reason == "" {
-		reason = "n/a"
-	}
-	writer.Write([]byte(fmt.Sprintf(
-		"\n[Metrics] runner=%s model=%s model_calls=%d output_chars=%d tool_calls=%d stop_or_done_reason=%s prompt_tokens=%d completion_tokens=%d\n",
-		m.Runner,
-		m.Model,
-		m.ModelCallCount,
-		m.OutputCharCount,
-		m.ToolCallCount,
-		reason,
-		m.PromptTokens,
-		m.CompletionTokens,
-	)))
-	if writer.ch != nil {
-		sendExecutorMsg(writer.ctx, writer.ch, RunnerStatusMsg{
-			AgentID:          writer.agentID,
-			Runner:           m.Runner,
-			Model:            m.Model,
-			ModelCalls:       m.ModelCallCount,
-			ToolCalls:        m.ToolCallCount,
-			EstimatedTokens:  m.EstimatedTokens,
-			PromptTokens:     m.PromptTokens,
-			CompletionTokens: m.CompletionTokens,
-			StopOrDoneReason: reason,
-		})
-	}
-}
-
-func (w *liveLogWriter) Write(p []byte) (n int, err error) {
-	if w.file != nil {
-		n, err = w.file.Write(p)
-		if err != nil {
-			return n, err
-		}
-	} else {
-		n = len(p)
-	}
-	w.accumulated.Write(p)
-	w.buffer.Write(p)
-	for {
-		line, err := w.buffer.ReadString('\n')
-		if err != nil {
-			w.buffer.Write([]byte(line))
-			break
-		}
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
-		if w.ch != nil {
-			if w.agentID == "milestone_creator" {
-				sendExecutorMsg(w.ctx, w.ch, CreateMilestoneProgressMsg{LogLine: line})
-			} else {
-				sendExecutorMsg(w.ctx, w.ch, AgentProgressMsg{AgentID: w.agentID, LogLine: line})
-			}
-		}
-	}
-	return n, nil
-}
-
-func (w *liveLogWriter) Close() {
-	if w.buffer.Len() > 0 {
-		line := w.buffer.String()
-		line = strings.TrimSuffix(line, "\n")
-		line = strings.TrimSuffix(line, "\r")
-		if w.ch != nil {
-			if w.agentID == "milestone_creator" {
-				sendExecutorMsg(w.ctx, w.ch, CreateMilestoneProgressMsg{LogLine: line})
-			} else {
-				sendExecutorMsg(w.ctx, w.ch, AgentProgressMsg{AgentID: w.agentID, LogLine: line})
-			}
-		}
-		w.buffer.Reset()
-	}
-}
-
-// executeAPI sends a request to the appropriate LLM API and streams the response via writer.
-// Set noTools=true for pure text-generation tasks (e.g. milestone creation) to prevent the
-// model from responding with tool calls instead of content, which would produce an empty result.
-func executeAPI(ctx context.Context, runner string, model string, apiKey string, conversationHistory []UnifiedMessage, settings config.Settings, writer *liveLogWriter, noTools bool) (apiExecutionResult, error) {
-	metrics := apiExecutionMetrics{Runner: runner, Model: model}
-	if client, ok := clients[runner]; ok {
-		return client.Call(ctx, model, apiKey, conversationHistory, settings, writer, noTools, metrics)
-	}
-	return apiExecutionResult{}, fmt.Errorf("unknown api runner: %s", runner)
 }
 
 func stringPtrValue(ptr *string) string {
@@ -1330,11 +1123,91 @@ func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, 
 	return exec.CommandContext(ctx, "codex", args...)
 }
 
-func runLLMOrScript(ctx context.Context, runner string, agentID string, agentName string, inputContent string, outputPath string, opts RunOptions, ch chan tea.Msg) (int, error) {
-	return runLLMOrScriptWithSession(ctx, runner, agentID, agentName, inputContent, outputPath, opts, ch, nil)
+func setupTemporaryAiderSettings(model string, settings config.Settings) func() {
+	if settings.OllamaNumCtx <= 0 && settings.OllamaNumPredict <= 0 {
+		return func() {}
+	}
+
+	const filename = ".aider.model.settings.yml"
+	var backup []byte
+	exists := false
+	if data, err := os.ReadFile(filename); err == nil {
+		backup = data
+		exists = true
+	}
+
+	type AiderModelSetting struct {
+		Name        string                 `yaml:"name"`
+		ExtraParams map[string]interface{} `yaml:"extra_params,omitempty"`
+	}
+
+	var list []AiderModelSetting
+	if exists {
+		_ = yaml.Unmarshal(backup, &list)
+	}
+
+	found := false
+	for i, entry := range list {
+		if entry.Name == model {
+			if list[i].ExtraParams == nil {
+				list[i].ExtraParams = make(map[string]interface{})
+			}
+			if settings.OllamaNumCtx > 0 {
+				list[i].ExtraParams["num_ctx"] = settings.OllamaNumCtx
+			}
+			if settings.OllamaNumPredict > 0 {
+				list[i].ExtraParams["num_predict"] = settings.OllamaNumPredict
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		extraParams := make(map[string]interface{})
+		if settings.OllamaNumCtx > 0 {
+			extraParams["num_ctx"] = settings.OllamaNumCtx
+		}
+		if settings.OllamaNumPredict > 0 {
+			extraParams["num_predict"] = settings.OllamaNumPredict
+		}
+		list = append(list, AiderModelSetting{
+			Name:        model,
+			ExtraParams: extraParams,
+		})
+	}
+
+	if mergedData, err := yaml.Marshal(list); err == nil {
+		_ = os.WriteFile(filename, mergedData, 0644)
+	}
+
+	return func() {
+		if exists {
+			_ = os.WriteFile(filename, backup, 0644)
+		} else {
+			_ = os.Remove(filename)
+		}
+	}
 }
 
-func runLLMOrScriptWithSession(ctx context.Context, runner string, agentID string, agentName string, inputContent string, outputPath string, opts RunOptions, ch chan tea.Msg, codexThreadID *string) (int, error) {
+func appendOllamaPromptFooter(input string) string {
+	footer := strings.TrimSpace(`
+## Ollama Execution Footer
+
+IMPORTANT: You are running locally. To optimize execution speed and stay within limits, be extremely concise. Avoid conversational chatter, explanations, or describing what tool you are about to call. Call your selected tools directly without writing introductory or wrap-up prose.
+
+Continue using available tools until concrete pass criteria have been checked. Before finalizing, verify changed files, run relevant local checks when possible, and state PASS or FAIL with any failing package or test names.
+`)
+	if strings.Contains(input, footer) {
+		return input
+	}
+	return strings.TrimRight(input, "\n") + "\n\n" + footer + "\n"
+}
+
+func runRunner(ctx context.Context, runner string, agentID string, agentName string, inputContent string, outputPath string, opts RunOptions, ch chan tea.Msg) (int, error) {
+	return runRunnerWithSession(ctx, runner, agentID, agentName, inputContent, outputPath, opts, ch, nil)
+}
+
+func runRunnerWithSession(ctx context.Context, runner string, agentID string, agentName string, inputContent string, outputPath string, opts RunOptions, ch chan tea.Msg, codexThreadID *string) (int, error) {
 	if runner == "manual" {
 		manualMsg := fmt.Sprintf("Manual execution requested. Prompt written to input path. Run using your preferred tool and save results to %s.", outputPath)
 		_ = os.WriteFile(outputPath, []byte(manualMsg), 0644)
@@ -1360,10 +1233,6 @@ func runLLMOrScriptWithSession(ctx context.Context, runner string, agentID strin
 		return 1, err
 	}
 
-	if isCustomScript(runner) {
-		return runCustomScript(ctx, runner, agentID, inputContent, ch, logOutFile)
-	}
-
 	switch runner {
 	case "aider", "ollama":
 		return runAiderOrOllama(ctx, runner, agentID, inputContent, settings, ch, logOutFile)
@@ -1374,9 +1243,6 @@ func runLLMOrScriptWithSession(ctx context.Context, runner string, agentID strin
 	case "codex":
 		return runCodex(ctx, agentID, inputContent, outputPath, settings, opts, ch, logOutFile, codexThreadID)
 
-	case "gemini", "openai", "anthropic", "ollama_api":
-		return runLLMAPI(ctx, runner, agentID, agentName, inputContent, settings, opts, ch, logOutFile)
-
 	default:
 		unsupportedErr := fmt.Errorf("unsupported runner: %s", runner)
 		logOutFile.WriteString(fmt.Sprintf("Error: %v\n", unsupportedErr))
@@ -1385,47 +1251,6 @@ func runLLMOrScriptWithSession(ctx context.Context, runner string, agentID strin
 		}
 		return 1, unsupportedErr
 	}
-}
-
-func runCustomScript(ctx context.Context, runner string, agentID string, inputContent string, ch chan tea.Msg, logOutFile *os.File) (int, error) {
-	cmd := exec.CommandContext(ctx, runner)
-	cmd.Stdin = strings.NewReader(inputContent)
-
-	r, w := io.Pipe()
-	cmd.Stdout = w
-	cmd.Stderr = w
-
-	logOutFile.WriteString(fmt.Sprintf("$ %s (via stdin pipe)\n\n", runner))
-
-	scanDone := make(chan struct{})
-	go func() {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			line := scanner.Text()
-			logOutFile.WriteString(line + "\n")
-			if ch != nil {
-				sendExecutorMsg(ctx, ch, AgentProgressMsg{AgentID: agentID, LogLine: line})
-			}
-		}
-		close(scanDone)
-	}()
-
-	runErr := cmd.Start()
-	if runErr == nil {
-		runErr = cmd.Wait()
-	}
-	w.Close()
-	<-scanDone
-
-	exitCode := 0
-	if runErr != nil {
-		exitCode = 1
-		if exitError, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		}
-		return exitCode, runErr
-	}
-	return 0, nil
 }
 
 func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputContent string, settings config.Settings, ch chan tea.Msg, logOutFile *os.File) (int, error) {
@@ -1655,230 +1480,6 @@ func runCodex(ctx context.Context, agentID string, inputContent string, outputPa
 	}
 	return 0, nil
 }
-
-func runLLMAPI(ctx context.Context, runner string, agentID string, agentName string, inputContent string, settings config.Settings, opts RunOptions, ch chan tea.Msg, logOutFile *os.File) (int, error) {
-	client, ok := clients[runner]
-	if !ok {
-		return 1, fmt.Errorf("unsupported runner: %s", runner)
-	}
-	model, apiKey, apiErr := client.ResolveConfig(settings)
-	if apiErr != nil {
-		return 1, apiErr
-	}
-
-	writer := &liveLogWriter{
-		agentID: agentID,
-		ch:      ch,
-		ctx:     ctx,
-		file:    logOutFile,
-	}
-	defer writer.Close()
-
-	conversationHistory := []UnifiedMessage{
-		{Role: "user", Content: inputContent},
-	}
-
-	modelCallCount := 0
-	maxCalls := normalizedMaxModelCalls(settings)
-	maxTokenBudget := normalizedMaxTokenBudget(settings)
-	if ch != nil {
-		sendExecutorMsg(ctx, ch, RunnerStatusMsg{
-			AgentID:        agentID,
-			Runner:         runner,
-			Model:          model,
-			LatestCommand:  runner + " API call",
-			MaxModelCalls:  maxCalls,
-			MaxTokenBudget: maxTokenBudget,
-		})
-	}
-
-	var lastToolCallFingerprint string
-	var consecutiveCount int
-	phaseMetrics := apiExecutionMetrics{Runner: runner, Model: model}
-	estimatedTokensUsed := 0
-
-	for {
-		select {
-		case <-ctx.Done():
-			phaseMetrics.ModelCallCount = modelCallCount
-			phaseMetrics.EstimatedTokens = estimatedTokensUsed
-			phaseMetrics.writeTo(writer)
-			return 1, ctx.Err()
-		default:
-		}
-
-		// Layer 3: Execution Ceilings
-		if modelCallCount >= maxCalls {
-			failureMsg := fmt.Sprintf("\n[Guard Rail] Strict ceiling of %d model calls exceeded for agent %s. Aborting phase execution.\n", maxCalls, agentName)
-			writer.Write([]byte(failureMsg))
-
-			// Set status to failed in state.json
-			statePath := opts.StatePath
-			if statePath != "" {
-				if state, err := config.LoadState(statePath); err == nil {
-					for mID, cycles := range state.History {
-						if len(cycles) > 0 {
-							idx := len(cycles) - 1
-							if cycles[idx].Status == "" || cycles[idx].Status == "failed" || cycles[idx].Status == "approved" {
-								state.History[mID][idx].Status = "failed"
-								state.MilestoneStatuses[mID] = "Failed"
-							}
-						}
-					}
-					_ = config.SaveState(statePath, state)
-				}
-			}
-
-			phaseMetrics.ModelCallCount = modelCallCount
-			phaseMetrics.EstimatedTokens = estimatedTokensUsed
-			phaseMetrics.writeTo(writer)
-			return 3, fmt.Errorf("model call limit of %d exceeded", maxCalls)
-		}
-
-		estimatedInputTokens := estimateMessagesTokens(conversationHistory)
-		if estimatedTokensUsed+estimatedInputTokens > maxTokenBudget {
-			failureMsg := fmt.Sprintf("\n[Guard Rail] Estimated token budget of %d exceeded for agent %s before model call %d (estimated_used=%d estimated_next_input=%d). Aborting phase execution.\n", maxTokenBudget, agentName, modelCallCount+1, estimatedTokensUsed, estimatedInputTokens)
-			writer.Write([]byte(failureMsg))
-			phaseMetrics.ModelCallCount = modelCallCount
-			phaseMetrics.EstimatedTokens = estimatedTokensUsed + estimatedInputTokens
-			phaseMetrics.writeTo(writer)
-			return 4, fmt.Errorf("estimated token budget of %d exceeded", maxTokenBudget)
-		}
-		estimatedTokensUsed += estimatedInputTokens
-
-		// Call model
-		modelCallCount++
-		if ch != nil {
-			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
-				AgentID:         agentID,
-				Runner:          runner,
-				Model:           model,
-				ModelCalls:      modelCallCount,
-				EstimatedTokens: estimatedTokensUsed,
-				MaxModelCalls:   maxCalls,
-				MaxTokenBudget:  maxTokenBudget,
-			})
-		}
-		// The recommender only produces a text score; disable tools so the model
-		// cannot reply with a tool call instead of the expected score string.
-		useNoTools := agentID == "recommender"
-		apiResult, err := executeAPI(ctx, runner, model, apiKey, conversationHistory, settings, writer, useNoTools)
-		phaseMetrics.ModelCallCount = modelCallCount
-		phaseMetrics.OutputCharCount += apiResult.Metrics.OutputCharCount
-		phaseMetrics.ToolCallCount += apiResult.Metrics.ToolCallCount
-		phaseMetrics.PromptTokens += apiResult.Metrics.PromptTokens
-		phaseMetrics.CompletionTokens += apiResult.Metrics.CompletionTokens
-		estimatedTokensUsed += estimateTextTokens(apiResult.Message.Content)
-		phaseMetrics.EstimatedTokens = estimatedTokensUsed
-		if apiResult.Metrics.StopOrDoneReason != "" {
-			phaseMetrics.StopOrDoneReason = apiResult.Metrics.StopOrDoneReason
-		}
-		if err != nil {
-			writer.Write([]byte(fmt.Sprintf("\nAPI Execution Error: %v\n", err)))
-			phaseMetrics.writeTo(writer)
-			return 1, err
-		}
-		assistantMsg := apiResult.Message
-
-		// Append assistant response to history
-		conversationHistory = append(conversationHistory, assistantMsg)
-
-		// If no tool calls, response is complete
-		if len(assistantMsg.ToolCalls) == 0 {
-			break
-		}
-
-		aborted := false
-		var abortReason error
-
-		for _, call := range assistantMsg.ToolCalls {
-			if ch != nil {
-				sendExecutorMsg(ctx, ch, RunnerStatusMsg{
-					AgentID:          agentID,
-					Runner:           runner,
-					Model:            model,
-					ModelCalls:       modelCallCount,
-					ToolCalls:        phaseMetrics.ToolCallCount,
-					EstimatedTokens:  estimatedTokensUsed,
-					PromptTokens:     phaseMetrics.PromptTokens,
-					CompletionTokens: phaseMetrics.CompletionTokens,
-					MaxModelCalls:    maxCalls,
-					MaxTokenBudget:   maxTokenBudget,
-					LatestToolCall:   call.Name,
-				})
-			}
-			// Layer 2: Duplicate Tool Call Detector
-			fingerprint := getToolCallFingerprint(call.Name, call.Arguments)
-
-			if fingerprint == lastToolCallFingerprint {
-				consecutiveCount++
-			} else {
-				lastToolCallFingerprint = fingerprint
-				consecutiveCount = 1
-			}
-
-			if consecutiveCount == 2 {
-				warningText := "System Warning: The tool call you just requested was already attempted and returned an error. Adjust parameters and try again."
-				writer.Write([]byte(fmt.Sprintf("\n[Guard Rail] Duplicate tool call detected. Injecting system warning for %s.\n", call.Name)))
-
-				conversationHistory = append(conversationHistory, UnifiedMessage{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Content:    warningText,
-				})
-				continue
-			} else if consecutiveCount >= 3 {
-				abortMsg := fmt.Sprintf("\n[Guard Rail] Consecutive duplicate tool call detected twice for name=%s args=%s. Aborting phase execution.\n", call.Name, call.Arguments)
-				writer.Write([]byte(abortMsg))
-				aborted = true
-				abortReason = fmt.Errorf("consecutive duplicate tool call detected: %s", call.Name)
-				break
-			}
-
-			// Execute tool
-			writer.Write([]byte(fmt.Sprintf("\n[System] Executing tool: %s with args: %s\n", call.Name, call.Arguments)))
-			output, err := executeTool(call.Name, call.Arguments)
-
-			var resultMsg UnifiedMessage
-			if err != nil {
-				// Layer 1: Mandatory Step Logging (TOOL_ERROR)
-				errDetails := fmt.Sprintf("TOOL_ERROR: %v", err)
-				if output != "" {
-					errDetails += fmt.Sprintf("\nOutput/stderr: %s", limitTextMiddle(output, maxToolOutputChars, call.Name+" output"))
-				}
-				writer.Write([]byte(fmt.Sprintf("[System] Tool execution failed: %s\n", errDetails)))
-				resultMsg = UnifiedMessage{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Content:    errDetails,
-				}
-			} else {
-				writer.Write([]byte(fmt.Sprintf("[System] Tool execution succeeded.\n")))
-				resultMsg = UnifiedMessage{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Content:    limitTextMiddle(output, maxToolOutputChars, call.Name+" output"),
-				}
-			}
-
-			conversationHistory = append(conversationHistory, resultMsg)
-		}
-		conversationHistory = compactConversationHistory(conversationHistory, settings.MaxRetainedConversationMessages)
-
-		if aborted {
-			phaseMetrics.writeTo(writer)
-			return 2, abortReason
-		}
-	}
-
-	phaseMetrics.writeTo(writer)
-	return 0, nil
-}
-
-// prepareCycleEnvironment resolves cycle paths, captures git snapshots or checks out branches, and writes metadata.
 func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone config.Milestone, reportsDir string) (cycleNum int, branchName string, previousReportPath string, reportPath string, metadataPath string, repos []git.RepoInfo, gitError error, err error) {
 	cycleNum = state.GetMilestoneCycles(milestone.ID) + 1
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
@@ -2072,7 +1673,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 
 		actionStartTime := time.Now()
-		exitCode, runErr := runLLMOrScriptWithSession(ctx, runner, agent.ID, agent.Name, inputContent, outputPath, opts, ch, codexThreadID)
+		exitCode, runErr := runRunnerWithSession(ctx, runner, agent.ID, agent.Name, inputContent, outputPath, opts, ch, codexThreadID)
 		actionDuration := time.Since(actionStartTime)
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
@@ -2308,7 +1909,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 			})
 			sendExecutorMsg(ctx, ch, AgentStartedMsg{AgentID: "recommender"})
 		}
-		exitCode, runErr := runLLMOrScriptWithSession(ctx, activeRunner, "recommender", "Recommender", promptText, recommenderLogPath, opts, ch, codexThreadID)
+		exitCode, runErr := runRunnerWithSession(ctx, activeRunner, "recommender", "Recommender", promptText, recommenderLogPath, opts, ch, codexThreadID)
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
 		}

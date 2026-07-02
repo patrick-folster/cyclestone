@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 )
 
@@ -58,21 +57,6 @@ func isRunnerAvailable(runner string) (bool, string) {
 			return false, "aider not found on PATH"
 		}
 		return true, "available through aider on PATH"
-	case "gemini":
-		if os.Getenv("GEMINI_API_KEY") == "" {
-			return false, "GEMINI_API_KEY is not set"
-		}
-		return true, "GEMINI_API_KEY is set"
-	case "openai":
-		if os.Getenv("OPENAI_API_KEY") == "" {
-			return false, "OPENAI_API_KEY is not set"
-		}
-		return true, "OPENAI_API_KEY is set"
-	case "anthropic":
-		if os.Getenv("ANTHROPIC_API_KEY") == "" {
-			return false, "ANTHROPIC_API_KEY is not set"
-		}
-		return true, "ANTHROPIC_API_KEY is set"
 	}
-	return true, ""
+	return false, "unsupported runner"
 }

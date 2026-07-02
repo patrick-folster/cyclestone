@@ -2,13 +2,13 @@
 
 ## Project Purpose
 
-AiCoordinator coordinates local PM, Developer, QA, and recommender agent cycles for milestone-driven work. It captures cycle reports, branch snapshots, and repository state while preserving the active repository boundaries.
+Cyclestone coordinates local PM, Developer, QA, and recommender agent cycles for milestone-driven work. It captures cycle reports, branch snapshots, and repository state while preserving the active repository boundaries.
 
 ## Active Source Roots
 
 - `cmd/cyclestone`: CLI entrypoint.
 - `internal/config`: persisted settings, milestone state, and configuration loading.
-- `internal/executor`: milestone cycle execution, API/CLI runner orchestration, reports, and git/package checks.
+- `internal/executor`: milestone cycle execution, CLI runner orchestration, reports, and git/package checks.
 - `internal/tui`: interactive Bubble Tea TUI.
 - `resources/agents`: built-in agent prompts.
 

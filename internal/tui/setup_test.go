@@ -20,9 +20,6 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", tmp)
-	t.Setenv("OPENAI_API_KEY", "test-key")
-	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	runners := detectSetupRunnerAvailability()
 	available := map[string]bool{}
