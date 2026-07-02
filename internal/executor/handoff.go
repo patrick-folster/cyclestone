@@ -72,7 +72,7 @@ type contractValidationResult struct {
 
 // writePhaseHandoff writes the phase execution results to a YAML handoff file.
 // It includes the optional human comment/note inside the human_input property.
-func writePhaseHandoff(ctx context.Context, settings config.Settings, path, milestoneID string, cycleNum int, agentID string, outputContract string, outputPath string, maxChars int, cycleNote string) error {
+func writePhaseHandoff(ctx context.Context, settings config.Settings, path, milestoneID string, cycleNum int, agentID string, outputContract string, outputPath string, maxChars int, cycleNote string, runner string) error {
 	outBytes, err := os.ReadFile(outputPath)
 	if err != nil {
 		return err
@@ -80,8 +80,35 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 	text := string(outBytes)
 	contract := effectiveOutputContract(agentID, outputContract)
 	if contract != "" {
-		validation := parseAndValidateContract(text, contract)
-		return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
+		// Agents run through the Aider CLI (aider/ollama) often write their
+		// structured output contract to a sidecar .yaml file next to the output
+		// log instead of emitting it inline. The CLI log display mangles YAML
+		// with line wrapping and intermixed UI chrome, so prefer the sidecar
+		// document when present so the contract is extracted reliably.
+		contractText := text
+		if sidecar, ok := readSidecarOutputYAML(outputPath); ok {
+			contractText = sidecar
+		}
+		validation := parseAndValidateContract(contractText, contract)
+		if validation.Status == "valid" {
+			return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
+		}
+		if contractValidationBypassed(runner) {
+			// Aider/Ollama runners bypass strict contract validation. When the
+			// agent produced a parseable YAML document, capture it as the handoff
+			// summary with the output contract set (so the TUI can render its
+			// fields) but without recording validation errors. When no parseable
+			// document was produced, fall through to the heuristic fallback
+			// summary below.
+			if validation.Summary != nil {
+				return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, contractValidationResult{
+					Summary:  validation.Summary,
+					Contract: validation.Contract,
+				})
+			}
+		} else {
+			return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
+		}
 	}
 	if parsed, ok := extractHandoffYAML(text); ok {
 		return writeParsedPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, parsed, cycleNote)
@@ -205,6 +232,41 @@ func effectiveOutputContract(_ string, configured string) string {
 	return ""
 }
 
+// contractValidationBypassed reports whether the runner bypasses strict output
+// contract validation. Aider and Ollama runners are executed through the Aider
+// CLI, which cannot reliably emit the final structured YAML document expected by
+// output contracts, so strict validation is bypassed for them.
+func contractValidationBypassed(runner string) bool {
+	return runner == "aider" || runner == "ollama"
+}
+
+// readSidecarOutputYAML reads a sibling .yaml file for an output log path (for
+// example "001-01-pm-output.log" -> "001-01-pm-output.yaml"). Agents run through
+// the Aider CLI frequently write their structured output contract to such a
+// sidecar file rather than emitting it inline in the log. It returns the trimmed
+// document content and true when the sidecar exists and is non-empty.
+func readSidecarOutputYAML(outputPath string) (string, bool) {
+	sidecarPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".yaml"
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// removeSidecarOutputYAML deletes a sibling .yaml sidecar file for an output log
+// path if it exists. It is called before a runner executes so that a sidecar left
+// over from a previous run of the same cycle cannot be mistaken for the current
+// run's structured output.
+func removeSidecarOutputYAML(outputPath string) {
+	sidecarPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".yaml"
+	_ = os.Remove(sidecarPath)
+}
+
 func parseAndValidateContract(text, contract string) contractValidationResult {
 	result := contractValidationResult{
 		Contract: contract,
@@ -231,18 +293,32 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 
 func extractFinalYAMLDocument(text string) ([]byte, error) {
 	blocks := fencedYAMLBlocks(text)
-	if len(blocks) == 0 {
-		raw := []byte(strings.TrimSpace(text))
-		var decoded map[string]interface{}
-		if err := unmarshalYAMLMap(raw, &decoded); err == nil && hasKnownHandoffKey(decoded) {
-			return raw, nil
-		}
-		return nil, fmt.Errorf("missing yaml document for output contract")
+	if len(blocks) > 0 {
+		sort.SliceStable(blocks, func(i, j int) bool {
+			return blocks[i].position < blocks[j].position
+		})
+		return normalizeBulletedYAML([]byte(strings.TrimSpace(blocks[len(blocks)-1].text))), nil
 	}
-	sort.SliceStable(blocks, func(i, j int) bool {
-		return blocks[i].position < blocks[j].position
+	// No fenced blocks: scan for inline YAML blocks that agents emit
+	// without markdown fences (common with Aider/Ollama CLI output).
+	inlineBlocks := scanInlineYAMLBlocks(text)
+	sort.SliceStable(inlineBlocks, func(i, j int) bool {
+		return inlineBlocks[i].position < inlineBlocks[j].position
 	})
-	return []byte(strings.TrimSpace(blocks[len(blocks)-1].text)), nil
+	for i := len(inlineBlocks) - 1; i >= 0; i-- {
+		candidate := normalizeBulletedYAML([]byte(strings.TrimSpace(inlineBlocks[i].text)))
+		var decoded map[string]interface{}
+		if err := unmarshalYAMLMap(candidate, &decoded); err == nil && hasKnownHandoffKey(decoded) {
+			return candidate, nil
+		}
+	}
+	// Last resort: try the entire text as a single YAML document.
+	raw := normalizeBulletedYAML([]byte(strings.TrimSpace(text)))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err == nil && hasKnownHandoffKey(decoded) {
+		return raw, nil
+	}
+	return nil, fmt.Errorf("missing yaml document for output contract")
 }
 
 func validateContractSummary(summary map[string]interface{}, contract string) []string {
@@ -455,6 +531,7 @@ func parseRecommendationScore(handoffPath string) int {
 
 func extractHandoffYAML(text string) ([]byte, bool) {
 	candidates := fencedYAMLBlocks(text)
+	candidates = append(candidates, scanInlineYAMLBlocks(text)...)
 	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].position < candidates[j].position
@@ -470,12 +547,7 @@ func extractHandoffYAML(text string) ([]byte, bool) {
 }
 
 func hasKnownHandoffKey(decoded map[string]interface{}) bool {
-	for _, key := range []string{
-		"scope", "non_goals", "target_paths", "acceptance_map",
-		"changed_files", "implemented_behavior", "checks_run", "decisions",
-		"verdict", "criteria_results", "reviewed_files", "failing_checks", "required_fixes",
-		"score", "reason", "next_cycle_focus",
-	} {
+	for _, key := range handoffKeyPrefixes {
 		if _, ok := decoded[key]; ok {
 			return true
 		}
@@ -527,9 +599,116 @@ func handoffRawYAMLCandidate(text string) []handoffDocumentCandidate {
 	return []handoffDocumentCandidate{{position: 0, text: trimmed}}
 }
 
+// normalizeBulletedYAML replaces Unicode bullet characters (•, U+2022) that
+// appear as the first non-whitespace on a line with the YAML list marker "- ".
+// Agents running through the Aider CLI often use "• " instead of "- " for
+// list items. The YAML parser accepts "• text" as a plain scalar string rather
+// than a list item, so without this normalization the resulting values are
+// strings instead of arrays, failing contract validation.
+func normalizeBulletedYAML(data []byte) []byte {
+	bullet := "\u2022" // • (U+2022 BULLET)
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		content := strings.TrimLeft(line, " \t")
+		if !strings.HasPrefix(content, bullet) {
+			continue
+		}
+		leading := line[:len(line)-len(content)]
+		afterBullet := content[len(bullet):]
+		afterBullet = strings.TrimLeft(afterBullet, " \t")
+		lines[i] = leading + "- " + afterBullet
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+// handoffKeyPrefixes lists all YAML keys that are part of the known handoff
+// schemas. It is used to detect the start of an inline YAML block within a
+// log file.
+var handoffKeyPrefixes = []string{
+	"scope", "non_goals", "target_paths", "acceptance_map",
+	"changed_files", "implemented_behavior", "checks_run", "decisions", "risks",
+	"verdict", "criteria_results", "reviewed_files", "failing_checks", "required_fixes",
+	"score", "reason", "next_cycle_focus",
+}
+
+// isHandoffKeyLine reports whether a line begins with a known handoff key
+// followed by a colon at column 0 (no indentation). Trailing whitespace from
+// Aider CLI display padding is stripped before checking.
+func isHandoffKeyLine(line string) bool {
+	trimmed := strings.TrimRight(line, " \t")
+	for _, key := range handoffKeyPrefixes {
+		if strings.HasPrefix(trimmed, key+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// scanInlineYAMLBlocks scans a log file for contiguous YAML document blocks
+// that are not wrapped in markdown fences. Agents running through the Aider
+// CLI often emit the YAML handoff inline at the end of their output without
+// fence delimiters. The scanner identifies regions that begin with a known
+// handoff key at column 0 and extend through subsequent indented lines, blank
+// lines, and additional key lines until a non-YAML line is encountered.
+// Trailing whitespace from Aider CLI display padding is stripped from every
+// line before scanning.
+func scanInlineYAMLBlocks(text string) []handoffDocumentCandidate {
+	lines := strings.Split(text, "\n")
+	// Right-trim each line to remove Aider CLI padding.
+	trimmedLines := make([]string, len(lines))
+	for i, line := range lines {
+		trimmedLines[i] = strings.TrimRight(line, " \t")
+	}
+
+	var candidates []handoffDocumentCandidate
+	i := 0
+	for i < len(trimmedLines) {
+		if !isHandoffKeyLine(trimmedLines[i]) {
+			i++
+			continue
+		}
+		// Found a key line — extend the block forward.
+		blockStart := i
+		j := i + 1
+		for j < len(trimmedLines) {
+			line := trimmedLines[j]
+			if line == "" {
+				// Blank line: check if the next non-blank line is still YAML.
+				k := j + 1
+				for k < len(trimmedLines) && trimmedLines[k] == "" {
+					k++
+				}
+				if k >= len(trimmedLines) {
+					break
+				}
+				next := trimmedLines[k]
+				if isHandoffKeyLine(next) || (len(next) > 0 && (next[0] == ' ' || next[0] == '\t')) {
+					j = k
+					continue
+				}
+				break
+			}
+			if isHandoffKeyLine(line) || (line[0] == ' ' || line[0] == '\t') {
+				j++
+				continue
+			}
+			break
+		}
+		blockText := strings.Join(trimmedLines[blockStart:j], "\n")
+		pos := 0
+		for k := 0; k < blockStart; k++ {
+			pos += len(lines[k]) + 1
+		}
+		candidates = append(candidates, handoffDocumentCandidate{position: pos, text: blockText})
+		i = j
+	}
+	return candidates
+}
+
 func parseHandoffYAMLDocument(candidate string) ([]byte, map[string]interface{}, bool) {
 	var decoded map[string]interface{}
-	if err := unmarshalYAMLMap([]byte(strings.TrimSpace(candidate)), &decoded); err != nil {
+	normalized := normalizeBulletedYAML([]byte(strings.TrimSpace(candidate)))
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
 		return nil, nil, false
 	}
 	pretty, err := yaml.Marshal(decoded)

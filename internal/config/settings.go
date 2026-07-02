@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultOllamaModel = "qwen3-coder:480b-cloud"
+const DefaultOllamaModel = "glm-5.2:cloud"
 
 // AgentGroup represents a serialized pipeline group of agents.
 type AgentGroup struct {

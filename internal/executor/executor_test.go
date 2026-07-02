@@ -685,7 +685,7 @@ func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	if err := os.WriteFile(yamlLog, []byte("report\n```yaml\nscope:\n  - one\nrisks:\n  - low\n```\n"), 0644); err != nil {
 		t.Fatalf("failed to write yaml log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, yamlHandoff, "MS-H", 1, "pm", "", yamlLog, 1000, "Test human comment"); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, yamlHandoff, "MS-H", 1, "pm", "", yamlLog, 1000, "Test human comment", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff YAML failed: %v", err)
 	}
 	yamlBytes, err := os.ReadFile(yamlHandoff)
@@ -706,7 +706,7 @@ func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	if err := os.WriteFile(fallbackLog, []byte("Verdict: blocked\nRequired fix: add tests\n"), 0644); err != nil {
 		t.Fatalf("failed to write fallback log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, fallbackHandoff, "MS-H", 1, "custom", "", fallbackLog, 1000, ""); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, fallbackHandoff, "MS-H", 1, "custom", "", fallbackLog, 1000, "", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff fallback failed: %v", err)
 	}
 	fallbackBytes, err := os.ReadFile(fallbackHandoff)
@@ -737,7 +737,7 @@ func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "developer", logPath, 1000, ""); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "developer", logPath, 1000, "", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff failed: %v", err)
 	}
 	var handoff phaseHandoff
@@ -764,7 +764,7 @@ func TestAgentIDAloneDoesNotForceOutputContract(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte("custom developer output without structured YAML"), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "", logPath, 1000, ""); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "", logPath, 1000, "", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff failed: %v", err)
 	}
 	var handoff phaseHandoff
@@ -777,6 +777,155 @@ func TestAgentIDAloneDoesNotForceOutputContract(t *testing.T) {
 	}
 	if handoff.OutputContract != "" || handoff.ValidationStatus != "" || !handoff.Fallback {
 		t.Fatalf("expected fallback without explicit output_contract, got %#v", handoff)
+	}
+}
+
+func TestAiderOllamaBypassesMissingContractDocument(t *testing.T) {
+	for _, runner := range []string{"aider", "ollama"} {
+		t.Run(runner, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "pm.log")
+			handoffPath := filepath.Join(tmpDir, "pm-handoff.yaml")
+			// No structured YAML document: just conversational Aider output.
+			if err := os.WriteFile(logPath, []byte("I'll create a test milestone as requested.\nApplied edit to milestone.md\n"), 0644); err != nil {
+				t.Fatalf("failed to write log: %v", err)
+			}
+			if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-B", 1, "pm", "pm", logPath, 1000, "", runner); err != nil {
+				t.Fatalf("writePhaseHandoff failed: %v", err)
+			}
+			handoff, err := loadPhaseHandoff(handoffPath)
+			if err != nil {
+				t.Fatalf("failed to load handoff: %v", err)
+			}
+			if handoff.ValidationStatus == "invalid" || len(handoff.ValidationErrors) > 0 {
+				t.Fatalf("expected bypassed fallback handoff without validation errors for %s, got status=%q errors=%#v", runner, handoff.ValidationStatus, handoff.ValidationErrors)
+			}
+			if handoff.OutputContract != "" {
+				t.Fatalf("expected no output_contract on bypassed fallback handoff, got %q", handoff.OutputContract)
+			}
+			if !handoff.Fallback {
+				t.Fatalf("expected fallback handoff for bypassed %s runner", runner)
+			}
+		})
+	}
+}
+
+func TestStrictRunnerStillRecordsMissingContractDocument(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "pm.log")
+	handoffPath := filepath.Join(tmpDir, "pm-handoff.yaml")
+	if err := os.WriteFile(logPath, []byte("conversational output with no yaml"), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-S", 1, "pm", "pm", logPath, 1000, "", "codex"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.ValidationStatus != "invalid" {
+		t.Fatalf("expected invalid status for strict runner missing document, got %q", handoff.ValidationStatus)
+	}
+	if !strings.Contains(strings.Join(handoff.ValidationErrors, "\n"), "missing yaml document for output contract") {
+		t.Fatalf("expected missing document error for strict runner, got %#v", handoff.ValidationErrors)
+	}
+}
+
+func TestSidecarOutputYAMLSatisfiesContract(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "developer.log")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	sidecarPath := strings.TrimSuffix(logPath, filepath.Ext(logPath)) + ".yaml"
+	// The CLI log is mangled Aider display output with no clean fenced YAML.
+	if err := os.WriteFile(logPath, []byte("$ aider ...\nApplied edit to developer-output.yaml\n"), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	// The agent wrote a valid contract document to the sidecar file.
+	sidecar := "changed_files:\n  - internal/executor/handoff.go\nimplemented_behavior:\n  - validated output\nchecks_run:\n  - go test\ndecisions: []\nrisks: []\n"
+	if err := os.WriteFile(sidecarPath, []byte(sidecar), 0644); err != nil {
+		t.Fatalf("failed to write sidecar: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-Y", 1, "developer", "developer", logPath, 1000, "", "codex"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.ValidationStatus != "valid" {
+		t.Fatalf("expected valid status from sidecar yaml, got %q errors=%#v", handoff.ValidationStatus, handoff.ValidationErrors)
+	}
+	files := handoff.Summary["changed_files"].([]interface{})
+	if files[0] != "internal/executor/handoff.go" {
+		t.Fatalf("expected sidecar changed_files, got %#v", files)
+	}
+}
+
+func TestAiderOllamaBypassCapturesInvalidContractDocument(t *testing.T) {
+	for _, runner := range []string{"aider", "ollama"} {
+		t.Run(runner, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "developer.log")
+			handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+			sidecarPath := strings.TrimSuffix(logPath, filepath.Ext(logPath)) + ".yaml"
+			if err := os.WriteFile(logPath, []byte("$ aider ...\nApplied edit\n"), 0644); err != nil {
+				t.Fatalf("failed to write log: %v", err)
+			}
+			// Contract document present but implemented_behavior is a string,
+			// not an array of strings: a strict runner would record this invalid.
+			sidecar := "changed_files: []\nimplemented_behavior: |\n  did the thing\nchecks_run: []\ndecisions: []\nrisks: []\n"
+			if err := os.WriteFile(sidecarPath, []byte(sidecar), 0644); err != nil {
+				t.Fatalf("failed to write sidecar: %v", err)
+			}
+			if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-P", 1, "developer", "developer", logPath, 1000, "", runner); err != nil {
+				t.Fatalf("writePhaseHandoff failed: %v", err)
+			}
+			handoff, err := loadPhaseHandoff(handoffPath)
+			if err != nil {
+				t.Fatalf("failed to load handoff: %v", err)
+			}
+			if handoff.ValidationStatus == "invalid" || len(handoff.ValidationErrors) > 0 {
+				t.Fatalf("expected bypassed handoff without validation errors for %s, got status=%q errors=%#v", runner, handoff.ValidationStatus, handoff.ValidationErrors)
+			}
+			// The output contract must still be set so the TUI details view can
+			// render the structured fields for the bypassed handoff.
+			if handoff.OutputContract != "developer" {
+				t.Fatalf("expected output_contract to remain set for TUI rendering, got %q", handoff.OutputContract)
+			}
+			if _, ok := handoff.Summary["implemented_behavior"]; !ok {
+				t.Fatalf("expected parsed summary to retain implemented_behavior, got %#v", handoff.Summary)
+			}
+		})
+	}
+}
+
+func TestAiderOllamaBypassMalformedContractFallsBack(t *testing.T) {
+	for _, runner := range []string{"aider", "ollama"} {
+		t.Run(runner, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "developer.log")
+			handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+			// A fenced yaml block that is syntactically broken: extractable but
+			// not parseable, so validation.Summary is nil while RawYAML is set.
+			body := "draft\n```yaml\nchanged_files:\n  - [\n```\n"
+			if err := os.WriteFile(logPath, []byte(body), 0644); err != nil {
+				t.Fatalf("failed to write log: %v", err)
+			}
+			if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-M", 1, "developer", "developer", logPath, 1000, "", runner); err != nil {
+				t.Fatalf("writePhaseHandoff failed for malformed bypass: %v", err)
+			}
+			handoff, err := loadPhaseHandoff(handoffPath)
+			if err != nil {
+				t.Fatalf("failed to load handoff: %v", err)
+			}
+			if handoff.ValidationStatus == "invalid" || len(handoff.ValidationErrors) > 0 {
+				t.Fatalf("expected no validation errors for malformed bypass %s, got status=%q errors=%#v", runner, handoff.ValidationStatus, handoff.ValidationErrors)
+			}
+			if !handoff.Fallback {
+				t.Fatalf("expected heuristic fallback handoff for malformed bypass %s, got %#v", runner, handoff)
+			}
+		})
 	}
 }
 
@@ -885,7 +1034,7 @@ func TestRecommenderHandoffPersistsMissingVerdictValidationError(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(body), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "recommender", "recommender", logPath, 1000, ""); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "recommender", "recommender", logPath, 1000, "", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff failed: %v", err)
 	}
 	handoff, err := loadPhaseHandoff(handoffPath)
@@ -1013,7 +1162,7 @@ func TestWritePhaseHandoffCapsFallbackSize(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(sb.String()), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
-	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-H", 1, "custom-developer", "", logPath, 12000, "Developer note"); err != nil {
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-H", 1, "custom-developer", "", logPath, 12000, "Developer note", "codex"); err != nil {
 		t.Fatalf("writePhaseHandoff fallback failed: %v", err)
 	}
 	bytes, err := os.ReadFile(handoffPath)
@@ -1954,5 +2103,345 @@ func TestCompactConversationHistorySelectiveRetention(t *testing.T) {
 	// Verify run_command output is NOT in retained file contents
 	if strings.Contains(systemMsg.Content, "File: go test") || strings.Contains(systemMsg.Content, "PASS\n---") {
 		t.Errorf("expected system message NOT to retain run_command output in file list, got:\n%s", systemMsg.Content)
+	}
+}
+
+func TestRemoveSidecarOutputYAMLClearsStaleFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "pm.log")
+	sidecarPath := strings.TrimSuffix(logPath, filepath.Ext(logPath)) + ".yaml"
+	if err := os.WriteFile(sidecarPath, []byte("scope: []\n"), 0644); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	if _, err := os.Stat(sidecarPath); err != nil {
+		t.Fatalf("sidecar should exist before cleanup: %v", err)
+	}
+	removeSidecarOutputYAML(logPath)
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Fatalf("expected sidecar removed, got err=%v", err)
+	}
+	// Removing a missing sidecar must not error.
+	removeSidecarOutputYAML(logPath)
+}
+
+// --- Tests for inline YAML extraction and bullet normalization ---
+
+func TestNormalizeBulletedYAMLConvertsBulletsToHyphens(t *testing.T) {
+	raw := "scope:\n \u2022 first item\n \u2022 second item\nrisks: []\n"
+	normalized := normalizeBulletedYAML([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("normalized YAML failed to parse: %v", err)
+	}
+	scope, ok := decoded["scope"].([]interface{})
+	if !ok {
+		t.Fatalf("expected scope to be an array, got %T", decoded["scope"])
+	}
+	if len(scope) != 2 || scope[0] != "first item" || scope[1] != "second item" {
+		t.Fatalf("unexpected scope values: %#v", scope)
+	}
+}
+
+func TestNormalizeBulletedYAMLIgnoresBulletsInsideStrings(t *testing.T) {
+	// A bullet inside a quoted string value should not be affected because it
+	// is not the first non-whitespace character on its line.
+	raw := "decisions:\n  - \"Use bullet \u2022 for emphasis\"\nrisks: []\n"
+	normalized := normalizeBulletedYAML([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("normalized YAML failed to parse: %v", err)
+	}
+	decisions, ok := decoded["decisions"].([]interface{})
+	if !ok || len(decisions) != 1 {
+		t.Fatalf("expected one decision, got %#v", decoded["decisions"])
+	}
+	if decisions[0] != "Use bullet \u2022 for emphasis" {
+		t.Fatalf("expected bullet preserved in string value, got %#v", decisions[0])
+	}
+}
+
+func TestScanInlineYAMLBlocksFindsYAMLWithoutFences(t *testing.T) {
+	text := strings.Join([]string{
+		"$ aider --model ollama_chat/glm-5.2:cloud",
+		"Applied edit to milestone.md",
+		"",
+		"scope:",
+		"  - implement parser",
+		"non_goals: []",
+		"target_paths:",
+		"  - internal/executor/executor.go",
+		"risks: []",
+		"",
+		"Tokens: 64k sent, 1.8k received.",
+	}, "\n")
+
+	blocks := scanInlineYAMLBlocks(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 inline block, got %d", len(blocks))
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalizeBulletedYAML([]byte(strings.TrimSpace(blocks[0].text))), &decoded); err != nil {
+		t.Fatalf("inline block failed to parse: %v", err)
+	}
+	if !hasKnownHandoffKey(decoded) {
+		t.Fatalf("expected known handoff keys in parsed block, got %#v", decoded)
+	}
+	scope, ok := decoded["scope"].([]interface{})
+	if !ok || len(scope) != 1 || scope[0] != "implement parser" {
+		t.Fatalf("unexpected scope: %#v", decoded["scope"])
+	}
+}
+
+func TestScanInlineYAMLBlocksFindsBlockWithBulletsAndBlankLines(t *testing.T) {
+	// Simulates the real Aider CLI output pattern: keys at column 0, bullet
+	// list items with blank lines between entries, trailing whitespace padding.
+	text := "Aider reasoning here.\n\nscope:                          \n\n \u2022 No actions required\n\nnon_goals:                     \n\n \u2022 Do not make any code changes\n \u2022 Do not modify any files\n\ntarget_paths: []\n\nrisks: []\n\nTokens: 64k sent.\n"
+
+	blocks := scanInlineYAMLBlocks(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 inline block, got %d: %#v", len(blocks), blocks)
+	}
+	normalized := normalizeBulletedYAML([]byte(strings.TrimSpace(blocks[0].text)))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("inline block with bullets failed to parse: %v", err)
+	}
+	scope, ok := decoded["scope"].([]interface{})
+	if !ok || len(scope) != 1 || scope[0] != "No actions required" {
+		t.Fatalf("expected scope array with one item, got %#v", decoded["scope"])
+	}
+	nonGoals, ok := decoded["non_goals"].([]interface{})
+	if !ok || len(nonGoals) != 2 {
+		t.Fatalf("expected non_goals array with two items, got %#v", decoded["non_goals"])
+	}
+}
+
+func TestScanInlineYAMLBlocksFindsMultipleBlocks(t *testing.T) {
+	text := strings.Join([]string{
+		"reasoning about the task",
+		"scope:",
+		"  - draft item",
+		"risks: []",
+		"",
+		"More reasoning here.",
+		"",
+		"changed_files:",
+		"  - executor.go",
+		"checks_run: []",
+		"",
+		"Done.",
+	}, "\n")
+
+	blocks := scanInlineYAMLBlocks(text)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 inline blocks, got %d", len(blocks))
+	}
+}
+
+func TestExtractFinalYAMLDocumentFindsInlineBlock(t *testing.T) {
+	text := strings.Join([]string{
+		"$ aider ...",
+		"Applied edit",
+		"",
+		"verdict: blocked",
+		"criteria_results:",
+		"  - criterion: test",
+		"    result: fail",
+		"reviewed_files:",
+		"  - executor.go",
+		"failing_checks:",
+		"  - something broke",
+		"required_fixes: []",
+		"",
+		"Tokens: 64k sent.",
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected inline extraction, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted inline YAML failed to parse: %v", err)
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "blocked" {
+		t.Fatalf("expected verdict=blocked, got %#v", decoded["verdict"])
+	}
+}
+
+func TestExtractHandoffYAMLFindsInlineBlockWithBullets(t *testing.T) {
+	text := strings.Join([]string{
+		"PM reasoning about the milestone.",
+		"",
+		"scope:",
+		" \u2022 implement parser",
+		"non_goals:",
+		" \u2022 no code changes",
+		"target_paths: []",
+		"acceptance_map: {}",
+		"risks: []",
+		"",
+		"Tokens: 64k sent.",
+	}, "\n")
+
+	parsed, ok := extractHandoffYAML(text)
+	if !ok {
+		t.Fatalf("expected inline YAML handoff to parse")
+	}
+	var summary map[string]interface{}
+	if err := yaml.Unmarshal(parsed, &summary); err != nil {
+		t.Fatalf("expected valid YAML: %v", err)
+	}
+	scope, ok := summary["scope"].([]interface{})
+	if !ok || len(scope) != 1 || scope[0] != "implement parser" {
+		t.Fatalf("expected scope array with one item after normalization, got %#v", summary["scope"])
+	}
+}
+
+func TestParseAndValidateContractParsesInlineBulletedYAML(t *testing.T) {
+	text := strings.Join([]string{
+		"$ aider --model ollama_chat/glm-5.2:cloud",
+		"Applied edit",
+		"",
+		"changed_files: []",
+		"implemented_behavior:",
+		" \u2022 No changes were made as requested.",
+		"checks_run: []",
+		"decisions:",
+		" \u2022 Honored the no-action goal.",
+		"risks: []",
+		"",
+		"Tokens: 65k sent.",
+	}, "\n")
+
+	result := parseAndValidateContract(text, "developer")
+	if result.Status != "valid" {
+		t.Fatalf("expected valid developer contract from inline bulleted YAML, got status=%q errors=%#v", result.Status, result.Errors)
+	}
+	behavior, ok := result.Summary["implemented_behavior"].([]interface{})
+	if !ok || len(behavior) != 1 {
+		t.Fatalf("expected implemented_behavior array with one item, got %#v", result.Summary["implemented_behavior"])
+	}
+}
+
+func TestScanInlineYAMLBlocksIgnoresProseWithColons(t *testing.T) {
+	// Lines that contain colons in prose should not be treated as key lines
+	// unless they start with a known handoff key at column 0.
+	text := strings.Join([]string{
+		"The scope: of this project is testing.",
+		"We need to review the verdict: it should be approved.",
+		"",
+		"scope:",
+		"  - testing",
+		"risks: []",
+	}, "\n")
+
+	blocks := scanInlineYAMLBlocks(text)
+	// Should only find the block starting at "scope:" (line 3, 0-indexed)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 inline block (ignoring prose), got %d", len(blocks))
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap([]byte(strings.TrimSpace(blocks[0].text)), &decoded); err != nil {
+		t.Fatalf("block failed to parse: %v", err)
+	}
+	if _, ok := decoded["scope"]; !ok {
+		t.Fatalf("expected scope key in parsed block, got %#v", decoded)
+	}
+}
+
+func TestWritePhaseHandoffParsesInlineBulletedYAMLWithoutContract(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "pm.log")
+	handoffPath := filepath.Join(tmpDir, "pm-handoff.yaml")
+	// Simulates real Aider CLI output: YAML inline with bullet characters
+	// and trailing whitespace padding, no markdown fences.
+	text := strings.Join([]string{
+		"$ aider --model ollama_chat/glm-5.2:cloud",
+		"Applied edit",
+		"",
+		"scope:                          ",
+		"",
+		" \u2022 No actions required for this test milestone",
+		"",
+		"non_goals:                      ",
+		"",
+		" \u2022 Do not make any code changes",
+		" \u2022 Do not modify any files",
+		"",
+		"target_paths: []",
+		"",
+		"acceptance_map: {}",
+		"",
+		"risks: []",
+		"",
+		"Tokens: 64k sent, 1.8k received.",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-I", 1, "pm", "", logPath, 1000, "", "codex"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.Fallback {
+		t.Fatalf("expected non-fallback handoff from inline YAML, got fallback=true")
+	}
+	scope, ok := handoff.Summary["scope"].([]interface{})
+	if !ok || len(scope) != 1 || scope[0] != "No actions required for this test milestone" {
+		t.Fatalf("expected scope array with one string, got %#v", handoff.Summary["scope"])
+	}
+}
+
+func TestWritePhaseHandoffAiderParsesInlineBulletedContractYAML(t *testing.T) {
+	for _, runner := range []string{"aider", "ollama"} {
+		t.Run(runner, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			logPath := filepath.Join(tmpDir, "developer.log")
+			handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+			text := strings.Join([]string{
+				"$ aider --model ollama_chat/glm-5.2:cloud",
+				"Applied edit",
+				"",
+				"changed_files: []",
+				"",
+				"implemented_behavior:",
+				"",
+				" \u2022 No changes were made as the milestone requires no actions.",
+				"",
+				"checks_run: []",
+				"",
+				"decisions:",
+				"",
+				" \u2022 Honored the no-action goal.",
+				"",
+				"risks: []",
+				"",
+				"Tokens: 65k sent, 1.0k received.",
+			}, "\n")
+			if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+				t.Fatalf("failed to write log: %v", err)
+			}
+			if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-A", 1, "developer", "developer", logPath, 1000, "", runner); err != nil {
+				t.Fatalf("writePhaseHandoff failed: %v", err)
+			}
+			handoff, err := loadPhaseHandoff(handoffPath)
+			if err != nil {
+				t.Fatalf("failed to load handoff: %v", err)
+			}
+			if handoff.Fallback {
+				t.Fatalf("expected non-fallback handoff for %s, got fallback=true", runner)
+			}
+			if handoff.OutputContract != "developer" {
+				t.Fatalf("expected output_contract=developer, got %q", handoff.OutputContract)
+			}
+			behavior, ok := handoff.Summary["implemented_behavior"].([]interface{})
+			if !ok || len(behavior) != 1 {
+				t.Fatalf("expected implemented_behavior array with one item, got %#v", handoff.Summary["implemented_behavior"])
+			}
+		})
 	}
 }

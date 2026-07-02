@@ -199,7 +199,7 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 | `codex` | Codex CLI on `PATH` and authenticated | Default. Uses Codex CLI sandbox/approval behavior. |
 | `agy` | `agy` CLI on `PATH` and authenticated | External CLI runner. |
 | `aider` | Aider CLI on `PATH` | Python-based coding assistant. Defaults to `--no-auto-commits`, `--no-dirty-commits`, and `--no-gitignore`. |
-| `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to `qwen3-coder:480b-cloud` unless `ollama_model` is configured. |
+| `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to `glm-5.2:cloud` unless `ollama_model` is configured. |
 
 ### Known Limitations
 

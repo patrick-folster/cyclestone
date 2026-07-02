@@ -1225,6 +1225,9 @@ func runRunner(ctx context.Context, runner string, agentID string, agentName str
 }
 
 func runRunnerWithSession(ctx context.Context, runner string, agentID string, agentName string, inputContent string, outputPath string, opts RunOptions, ch chan tea.Msg, codexThreadID *string) (int, error) {
+	// Clear any sidecar .yaml output left from a previous run of the same cycle
+	// so it cannot be mistaken for the current run's structured output.
+	removeSidecarOutputYAML(outputPath)
 	if runner == "manual" {
 		manualMsg := fmt.Sprintf("Manual execution requested. Prompt written to input path. Run using your preferred tool and save results to %s.", outputPath)
 		_ = os.WriteFile(outputPath, []byte(manualMsg), 0644)
@@ -1698,7 +1701,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		handoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, agentFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, agent.OutputContract)
 		if writeHandoff {
-			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote)
+			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote, runner)
 		}
 
 		if agent.ID == "recommender" {
@@ -1774,29 +1777,24 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 		if writeHandoff {
 			if status, errors := phaseHandoffStatus(handoffPath); status == "invalid" {
-				if runner == "aider" || runner == "ollama" {
-					writeReportDetailf(reportFile, "\n### Output Contract Validation Warning\n\n")
-					writeReportDetailf(reportFile, "Aider/Ollama runner detected. Bypassing strict contract validation.\n")
-					for _, validationErr := range errors {
-						writeReportDetailf(reportFile, "- %s\n", validationErr)
-					}
-				} else {
-					cycleStatus = contractValidationCycleStatus(agent.ID, cycleStatus)
-					if ch != nil {
-						sendExecutorMsg(ctx, ch, RunnerStatusMsg{
-							MilestoneID:         milestone.ID,
-							CycleNumber:         cycleNum,
-							CycleStatus:         cycleStatus,
-							Phase:               agent.ID,
-							AgentID:             agent.ID,
-							Runner:              runner,
-							Model:               configuredModelForRunner(runner, settings),
-							ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
-							OutputFile:          outputPath,
-							LastError:           strings.Join(errors, "; "),
-							NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
-						})
-					}
+				// Only strict runners (codex/agy) reach here: Aider/Ollama bypass
+				// strict contract validation inside writePhaseHandoff and never
+				// persist an invalid handoff, so their status is never "invalid".
+				cycleStatus = contractValidationCycleStatus(agent.ID, cycleStatus)
+				if ch != nil {
+					sendExecutorMsg(ctx, ch, RunnerStatusMsg{
+						MilestoneID:         milestone.ID,
+						CycleNumber:         cycleNum,
+						CycleStatus:         cycleStatus,
+						Phase:               agent.ID,
+						AgentID:             agent.ID,
+						Runner:              runner,
+						Model:               configuredModelForRunner(runner, settings),
+						ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
+						OutputFile:          outputPath,
+						LastError:           strings.Join(errors, "; "),
+						NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
+					})
 				}
 			} else if agent.ID == "qa" {
 				if verdict := qaVerdictFromHandoff(handoffPath); verdict != "" {
@@ -1936,7 +1934,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		recommenderHandoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, recommenderFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, "recommender")
 		if writeHandoff {
-			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote)
+			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote, activeRunner)
 		}
 
 		recommenderScore := parseRecommendationScore(recommenderHandoffPath)
