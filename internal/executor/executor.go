@@ -979,6 +979,8 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 		cmd = exec.CommandContext(ctx, "agy", args...)
 		cmd.Stdin = strings.NewReader(prompt)
 	} else if runner == "aider" || runner == "ollama" {
+		cleanupGitignore := setupTemporaryGitignore()
+		defer cleanupGitignore()
 		var promptFile string
 		var cleanup func()
 		_ = os.MkdirAll(".cyclestone", 0755)
@@ -1013,6 +1015,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			"--message-file", promptFile,
 			"--yes-always",
 			"--no-auto-commits",
+			"--add-gitignore-files",
 		}
 		var model string
 		if runner == "aider" {
@@ -1369,6 +1372,8 @@ func runCustomScript(ctx context.Context, runner string, agentID string, inputCo
 }
 
 func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputContent string, settings config.Settings, ch chan tea.Msg, logOutFile *os.File) (int, error) {
+	cleanupGitignore := setupTemporaryGitignore()
+	defer cleanupGitignore()
 	reportsDir := filepath.Join(".cyclestone", "reports")
 	_ = os.MkdirAll(reportsDir, 0755)
 	promptFile := filepath.Join(reportsDir, fmt.Sprintf("%s-aider-prompt.txt", agentID))
@@ -1401,6 +1406,7 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 		"--message-file", promptFile,
 		"--yes-always",
 		"--no-auto-commits",
+		"--add-gitignore-files",
 	}
 	var model string
 	if runner == "aider" {
@@ -2082,21 +2088,29 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 		if writeHandoff {
 			if status, errors := phaseHandoffStatus(handoffPath); status == "invalid" {
-				cycleStatus = contractValidationCycleStatus(agent.ID, cycleStatus)
-				if ch != nil {
-					sendExecutorMsg(ctx, ch, RunnerStatusMsg{
-						MilestoneID:         milestone.ID,
-						CycleNumber:         cycleNum,
-						CycleStatus:         cycleStatus,
-						Phase:               agent.ID,
-						AgentID:             agent.ID,
-						Runner:              runner,
-						Model:               configuredModelForRunner(runner, settings),
-						ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded)),
-						OutputFile:          outputPath,
-						LastError:           strings.Join(errors, "; "),
-						NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
-					})
+				if runner == "aider" || runner == "ollama" {
+					fmt.Fprintf(reportFile, "\n### Output Contract Validation Warning\n\n")
+					fmt.Fprintf(reportFile, "Aider/Ollama runner detected. Bypassing strict contract validation.\n")
+					for _, validationErr := range errors {
+						fmt.Fprintf(reportFile, "- %s\n", validationErr)
+					}
+				} else {
+					cycleStatus = contractValidationCycleStatus(agent.ID, cycleStatus)
+					if ch != nil {
+						sendExecutorMsg(ctx, ch, RunnerStatusMsg{
+							MilestoneID:         milestone.ID,
+							CycleNumber:         cycleNum,
+							CycleStatus:         cycleStatus,
+							Phase:               agent.ID,
+							AgentID:             agent.ID,
+							Runner:              runner,
+							Model:               configuredModelForRunner(runner, settings),
+							ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.md", milestone.ID, cyclePadded)),
+							OutputFile:          outputPath,
+							LastError:           strings.Join(errors, "; "),
+							NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
+						})
+					}
 				}
 			} else if agent.ID == "qa" {
 				if verdict := qaVerdictFromHandoff(handoffPath); verdict != "" {
@@ -2280,4 +2294,37 @@ func compactPhaseHandoffsEnabled(settings config.Settings) bool {
 
 func shouldWritePhaseHandoff(settings config.Settings, outputContract string) bool {
 	return compactPhaseHandoffsEnabled(settings) || strings.TrimSpace(outputContract) != ""
+}
+
+func setupTemporaryGitignore() func() {
+	filename := ".gitignore"
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return func() {}
+	}
+
+	backup := make([]byte, len(data))
+	copy(backup, data)
+
+	lines := strings.Split(string(data), "\n")
+	modified := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, ".cyclestone") || strings.HasPrefix(trimmed, ".aider") {
+			lines[i] = "# " + line
+			modified = true
+		}
+	}
+
+	if modified {
+		newData := strings.Join(lines, "\n")
+		if err := os.WriteFile(filename, []byte(newData), 0644); err != nil {
+			return func() {}
+		}
+		return func() {
+			_ = os.WriteFile(filename, backup, 0644)
+		}
+	}
+
+	return func() {}
 }

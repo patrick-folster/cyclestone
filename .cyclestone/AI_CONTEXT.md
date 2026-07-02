@@ -22,15 +22,15 @@ AiCoordinator coordinates local PM, Developer, QA, and recommender agent cycles 
 ## Repository Constraints
 
 - Keep work inside `{{WORKSPACE_ROOT}}`.
-- Do not change branches when the milestone runner uses `--no-branch-change`.
-- Do not load unrelated milestone specs, reports, state entries, or index entries during scoped milestone continuation.
-- Do not depend on live network or live Ollama for unit tests; use local unit tests or `httptest`.
+- Don't change branches when the milestone runner uses `--no-branch-change`.
+- Don't load unrelated milestone specs, reports, state entries, or index entries during scoped milestone continuation.
+- Don't depend on live network or live Ollama for unit tests; use local unit tests or `httptest`.
 - Preserve behavior for non-target runners unless the active milestone explicitly requires a narrow change.
 
 ## TUI Constraints
 
-- Ensure the TUI startup issues a sizing command (returning `tea.WindowSizeMsg`) to prevent "Loading..." hangs.
-- Sizing queries must degrade gracefully to a default fallback (e.g. 80x24) in non-TTY, redirected, or test environments.
+- Make sure the TUI startup issues a sizing command (returning `tea.WindowSizeMsg`) to prevent "Loading..." hangs.
+- Sizing queries should degrade gracefully to a default fallback (e.g. 80x24) in non-TTY, redirected, or test environments.
 - Default the bold style to disabled when running inside the VS Code integrated terminal (`TERM_PROGRAM == "vscode"`) via `config.DefaultDisableBoldForEnvironment()`, unless explicitly configured otherwise.
 - Default rounded borders to disabled (using normal rectangular borders instead) when running inside the VS Code integrated terminal (`TERM_PROGRAM == "vscode"`) via `config.DefaultDisableRoundedBordersForEnvironment()`, unless explicitly configured otherwise.
 - Select ASCII-safe glyphs (such as `>` and `*`) instead of Unicode characters (`›` and `◆`) when inside the VS Code integrated terminal to avoid font rendering, spacing, and double-width representation bugs.

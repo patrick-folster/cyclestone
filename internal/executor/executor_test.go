@@ -356,8 +356,8 @@ func TestOllamaPayloadIncludesOptionsOnlyWhenConfigured(t *testing.T) {
 				MaxLLMInputChars:      900000,
 				MaxModelCallsPerPhase: 5,
 			},
-			wantCtx:     8192,
-			wantPredict: 4096,
+			wantCtx:     65536,
+			wantPredict: 8192,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

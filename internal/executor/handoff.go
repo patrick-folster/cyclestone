@@ -244,6 +244,21 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 func extractFinalFencedJSONBlock(text string) ([]byte, error) {
 	blocks := fencedJSONBlocks(text)
 	if len(blocks) == 0 {
+		candidates := jsonObjectsFromText(text)
+		if len(candidates) > 0 {
+			sort.SliceStable(candidates, func(i, j int) bool {
+				return candidates[i].position < candidates[j].position
+			})
+			for i := len(candidates) - 1; i >= 0; i-- {
+				var decoded map[string]interface{}
+				if err := json.Unmarshal([]byte(candidates[i].text), &decoded); err == nil {
+					if hasKnownHandoffKey(decoded) {
+						return []byte(strings.TrimSpace(candidates[i].text)), nil
+					}
+				}
+			}
+			return []byte(strings.TrimSpace(candidates[len(candidates)-1].text)), nil
+		}
 		return nil, fmt.Errorf("missing final fenced json block")
 	}
 	sort.SliceStable(blocks, func(i, j int) bool {

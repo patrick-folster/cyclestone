@@ -153,8 +153,8 @@ max_llm_input_chars: 900000
 Ollama-only generation/context settings are also supported. When unset, they are omitted from `/api/chat` and Ollama defaults apply:
 
 ```yaml
-ollama_num_ctx: 32768
-ollama_num_predict: 4096
+ollama_num_ctx: 65536
+ollama_num_predict: 8192
 ```
 
 ### Sandbox and Consent

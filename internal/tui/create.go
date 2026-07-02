@@ -853,7 +853,7 @@ func slugifyTitle(title string) string {
 }
 
 func getCreateRunnerOptions(defaultLLM string) []string {
-	opts := []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama"}
+	opts := []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api"}
 	isStandard := false
 	for _, o := range opts {
 		if o == defaultLLM {

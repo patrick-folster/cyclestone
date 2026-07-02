@@ -807,9 +807,9 @@ func (m *SettingsModel) syncInputValuesToDraft() {
 
 func getLLMOptions(scope string) []string {
 	if scope == settingsScopeGlobal {
-		return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "custom"}
+		return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "custom"}
 	}
-	return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "custom", "inherit"}
+	return []string{"codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "custom", "inherit"}
 }
 
 func getCurrentLLMOptIndex(val string, options []string) int {
@@ -1358,6 +1358,9 @@ func (m SettingsModel) rowValue(row int) string {
 			if opt == "ollama" {
 				return "ollama via aider"
 			}
+			if opt == "ollama_api" {
+				return "ollama directly"
+			}
 			return opt
 		}, func(opt string) bool {
 			return (opt == "custom" && isCustomLLM(draft.DefaultLLM)) || (opt == "inherit" && draft.DefaultLLM == "") || opt == draft.DefaultLLM
@@ -1418,9 +1421,9 @@ func (m SettingsModel) rowValue(row int) string {
 	case settingOllamaKeepAlive:
 		return m.renderStringInputWithInherit(m.KeepAliveInput.View(), defaultString(m.GlobalDraft.OllamaKeepAlive, "5m"))
 	case settingOllamaNumCtx:
-		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "8192")
+		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "65536")
 	case settingOllamaNumPredict:
-		return m.renderInputWithInherit(m.OllamaPredictInput.View(), m.GlobalDraft.OllamaNumPredict, "4096")
+		return m.renderInputWithInherit(m.OllamaPredictInput.View(), m.GlobalDraft.OllamaNumPredict, "8192")
 	case settingAgentGroups:
 		return "Enter to edit pipeline groups"
 	default:

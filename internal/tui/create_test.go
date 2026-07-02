@@ -18,17 +18,17 @@ func TestGetCreateRunnerOptions(t *testing.T) {
 		{
 			name:       "empty defaultLLM",
 			defaultLLM: "",
-			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama"},
+			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api"},
 		},
 		{
 			name:       "standard defaultLLM",
 			defaultLLM: "gemini",
-			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama"},
+			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api"},
 		},
 		{
 			name:       "custom defaultLLM",
 			defaultLLM: "custom-runner",
-			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "custom-runner"},
+			expected:   []string{"template", "codex", "agy", "aider", "gemini", "openai", "anthropic", "ollama", "ollama_api", "custom-runner"},
 		},
 	}
 
