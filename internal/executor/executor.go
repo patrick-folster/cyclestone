@@ -31,6 +31,11 @@ type RunOptions struct {
 	Unrestricted   bool
 	SingleAgentID  string // if non-empty, only run this agent
 	CycleNote      string
+	// HandoffYAMLPath is the dedicated temp YAML handoff file path the agent is
+	// instructed to write (substituted into the prompt as {{HANDOFF_YAML_PATH}}).
+	// For Aider/ollama runners it is also passed to Aider with --file so the
+	// agent can write structured YAML there instead of relying on log scraping.
+	HandoffYAMLPath string
 }
 
 func sendExecutorMsg(ctx context.Context, ch chan tea.Msg, msg tea.Msg) bool {
@@ -1229,7 +1234,7 @@ func runRunnerWithSession(ctx context.Context, runner string, agentID string, ag
 
 	switch runner {
 	case "aider", "ollama":
-		return runAiderOrOllama(ctx, runner, agentID, inputContent, settings, ch, logOutFile)
+		return runAiderOrOllama(ctx, runner, agentID, inputContent, settings, opts.HandoffYAMLPath, ch, logOutFile)
 
 	case "agy":
 		return runAgy(ctx, agentID, inputContent, opts, ch, logOutFile)
@@ -1274,7 +1279,7 @@ var aiderQuietFlags = []string{
 // agent is instructed to write; when that file is absent the handoff parser
 // falls back to extracting inline YAML from the model's response text or a
 // sibling sidecar .yaml file.
-func buildAiderArgs(agentID, promptFile, model string) []string {
+func buildAiderArgs(agentID, promptFile, model, handoffYAMLPath string) []string {
 	args := []string{
 		"--message-file", promptFile,
 		"--yes-always",
@@ -1290,10 +1295,19 @@ func buildAiderArgs(agentID, promptFile, model string) []string {
 	if model != "" {
 		args = append(args, "--model", model)
 	}
+	// Add the dedicated temp handoff file to the Aider chat as an editable
+	// file. Without this, Aider refuses the agent's SEARCH/REPLACE for the
+	// handoff ("file not found" / "NoneType ... splitlines") and the file is
+	// never written. Non-developer agents still run with --dry-run above so
+	// source files cannot be modified; the --file edit is shown in the log and
+	// captured by the handoff extractor.
+	if handoffYAMLPath != "" {
+		args = append(args, "--file", handoffYAMLPath)
+	}
 	return args
 }
 
-func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputContent string, settings config.Settings, ch chan tea.Msg, logOutFile *os.File) (int, error) {
+func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputContent string, settings config.Settings, handoffYAMLPath string, ch chan tea.Msg, logOutFile *os.File) (int, error) {
 	cleanupGitignore := setupTemporaryGitignore()
 	defer cleanupGitignore()
 	reportsDir := filepath.Join(".cyclestone", "reports")
@@ -1335,7 +1349,7 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 		cleanup := setupTemporaryAiderSettings(model, settings)
 		defer cleanup()
 	}
-	args := buildAiderArgs(agentID, promptFile, model)
+	args := buildAiderArgs(agentID, promptFile, model, handoffYAMLPath)
 	cmd := exec.CommandContext(ctx, "aider", args...)
 	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 	if runner == "ollama" {
@@ -1689,6 +1703,12 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		_ = os.MkdirAll(tempDir, 0755)
 		handoffYAMLPath := handoffTempYAMLPath(milestone.ID, cyclePadded, agentFileID)
 		_ = os.Remove(handoffYAMLPath) // clear any stale file from a previous run
+		// Pre-create an empty handoff file so Aider can accept it via --file
+		// (Aider refuses to edit a file that is not in the chat) and so a Codex
+		// runner can overwrite it directly. Agents that write structured YAML
+		// here let cyclestone read clean YAML instead of scraping the log.
+		_ = os.WriteFile(handoffYAMLPath, []byte{}, 0644)
+		opts.HandoffYAMLPath = handoffYAMLPath
 		inputContent = strings.ReplaceAll(inputContent, "{{HANDOFF_YAML_PATH}}", handoffYAMLPath)
 
 		_ = os.WriteFile(inputPath, []byte(inputContent), 0644)
@@ -1928,6 +1948,8 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		_ = os.MkdirAll(recommenderTempDir, 0755)
 		recommenderHandoffYAMLPath := handoffTempYAMLPath(milestone.ID, cyclePadded, recommenderFileID)
 		_ = os.Remove(recommenderHandoffYAMLPath)
+		_ = os.WriteFile(recommenderHandoffYAMLPath, []byte{}, 0644)
+		opts.HandoffYAMLPath = recommenderHandoffYAMLPath
 		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_YAML_PATH}}", recommenderHandoffYAMLPath)
 
 		if ch != nil {

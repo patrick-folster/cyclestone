@@ -373,7 +373,72 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 	return result
 }
 
+// stripAiderChatter removes Aider CLI chrome and SEARCH/REPLACE edit-block
+// markers from a runner output log before YAML extraction so they cannot be
+// absorbed into block-scalar values by the inline scanner. When the dedicated
+// temp handoff file cannot be written (for example because the runner is in
+// --dry-run mode or the file was not added to the Aider chat), agents
+// frequently emit their structured handoff inside a SEARCH/REPLACE block, and
+// Aider appends a token-usage summary plus edit/IO diagnostics after the
+// model's answer. The greedy block-scalar flattening logic treats these
+// column-0 lines as content, polluting list/scalar values. Stripping them
+// upfront keeps the fallback log extraction faithful to the agent's intent.
+func stripAiderChatter(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isAiderChatterLine(strings.TrimSpace(line)) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// isAiderChatterLine reports whether a (already whitespace-trimmed) log line is
+// Aider CLI chrome or a leaked diagnostic that must not appear in a handoff
+// document. Blank lines are never chatter.
+func isAiderChatterLine(trimmed string) bool {
+	if trimmed == "" {
+		return false
+	}
+	// Aider SEARCH/REPLACE edit-block fences. The "=======" divider is matched
+	// exactly (seven equals) so a legitimate YAML value of repeated "=" cannot
+	// be dropped.
+	if strings.HasPrefix(trimmed, "<<<<<<< SEARCH") ||
+		strings.HasPrefix(trimmed, ">>>>>>> REPLACE") ||
+		trimmed == "=======" {
+		return true
+	}
+	// Aider token-usage summary, e.g. "Tokens: 40k sent, 2.1k received."
+	if strings.HasPrefix(trimmed, "Tokens: ") &&
+		strings.Contains(trimmed, " sent, ") &&
+		strings.Contains(trimmed, " received") {
+		return true
+	}
+	// Aider/orchestrator diagnostics leaked from a failed temp-file write.
+	if strings.Contains(trimmed, "file not found error") ||
+		strings.Contains(trimmed, "'NoneType' object has no attribute 'splitlines'") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "Unable to read ") &&
+		(strings.Contains(trimmed, "No such file or directory") ||
+			strings.Contains(trimmed, "[Errno 2]")) {
+		return true
+	}
+	// Bare echoes of the dedicated temp handoff file path (absolute or
+	// relative), with or without a trailing diagnostic suffix such as
+	// ": file not found error". Aider wraps long paths across two display
+	// lines, so match on the temp directory prefix alone: a line containing
+	// ".cyclestone/temp/" is never legitimate handoff YAML content.
+	if strings.Contains(trimmed, ".cyclestone/temp/") {
+		return true
+	}
+	return false
+}
+
 func extractFinalYAMLDocument(text string) ([]byte, error) {
+	text = stripAiderChatter(text)
 	candidates := fencedYAMLBlocks(text)
 	// Scan for inline YAML blocks that agents emit without markdown fences
 	// (common with Aider/Ollama CLI output). Prefer the answer region (after
@@ -623,6 +688,7 @@ func parseRecommendationScore(handoffPath string) int {
 }
 
 func extractHandoffYAML(text string) ([]byte, bool) {
+	text = stripAiderChatter(text)
 	candidates := fencedYAMLBlocks(text)
 	// Prefer the answer region for inline blocks to avoid picking up
 	// YAML-like content from the model's thinking/reasoning section.

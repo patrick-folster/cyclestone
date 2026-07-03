@@ -2800,7 +2800,7 @@ func TestWritePhaseHandoffAiderParsesInlineBulletedContractYAML(t *testing.T) {
 }
 
 func TestBuildAiderArgsIncludesQuietFlags(t *testing.T) {
-	args := buildAiderArgs("pm", "prompt.txt", "ollama_chat/glm-5.2:cloud")
+	args := buildAiderArgs("pm", "prompt.txt", "ollama_chat/glm-5.2:cloud", "")
 	// Core run flags are preserved.
 	if !sliceHas(args, "--message-file", "prompt.txt") {
 		t.Fatalf("expected --message-file prompt.txt, got %v", args)
@@ -2829,7 +2829,7 @@ func TestBuildAiderArgsDryRunForNonDeveloper(t *testing.T) {
 	// must run with --dry-run so Aider never writes to disk.
 	nonDeveloperAgents := []string{"pm", "qa", "recommender", "custom-agent"}
 	for _, agentID := range nonDeveloperAgents {
-		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud")
+		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud", "")
 		if !sliceHas(args, "--dry-run") {
 			t.Fatalf("expected --dry-run for non-developer agent %q, got %v", agentID, args)
 		}
@@ -2837,9 +2837,33 @@ func TestBuildAiderArgsDryRunForNonDeveloper(t *testing.T) {
 }
 
 func TestBuildAiderArgsNoDryRunForDeveloper(t *testing.T) {
-	args := buildAiderArgs("developer", "prompt.txt", "ollama_chat/glm-5.2:cloud")
+	args := buildAiderArgs("developer", "prompt.txt", "ollama_chat/glm-5.2:cloud", "")
 	if sliceHas(args, "--dry-run") {
 		t.Fatalf("--dry-run must not be set for developer agent, got %v", args)
+	}
+}
+
+func TestBuildAiderArgsIncludesHandoffFile(t *testing.T) {
+	// The dedicated temp handoff file must be added to the Aider chat via
+	// --file so the agent can write structured YAML to it. Without --file,
+	// Aider refuses the agent's SEARCH/REPLACE for the handoff with a
+	// "file not found" / "NoneType ... splitlines" error (the cycle-003
+	// regression). All agents get --file; non-developer agents are still
+	// guarded by --dry-run so source files cannot be modified.
+	for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
+		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud", ".cyclestone/temp/ms-cycle-001-01-pm-handoff.yaml")
+		if !sliceHas(args, "--file", ".cyclestone/temp/ms-cycle-001-01-pm-handoff.yaml") {
+			t.Fatalf("expected --file <handoff> for %q, got %v", agentID, args)
+		}
+	}
+}
+
+func TestBuildAiderArgsOmitsHandoffFileWhenEmpty(t *testing.T) {
+	args := buildAiderArgs("pm", "prompt.txt", "ollama_chat/glm-5.2:cloud", "")
+	for _, v := range args {
+		if v == "--file" {
+			t.Fatalf("expected no --file when handoff path is empty, got %v", args)
+		}
 	}
 }
 
@@ -2847,7 +2871,7 @@ func TestBuildAiderArgsNeverDisablesRepoMap(t *testing.T) {
 	// --map-tokens 0 must never be used: it disables the repo map, which the
 	// developer (and other agents) rely on to understand the codebase.
 	for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
-		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud")
+		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud", "")
 		for _, v := range args {
 			if v == "--map-tokens" {
 				t.Fatalf("--map-tokens must never be set for %q, got %v", agentID, args)
@@ -2857,7 +2881,7 @@ func TestBuildAiderArgsNeverDisablesRepoMap(t *testing.T) {
 }
 
 func TestBuildAiderArgsOmitsModelWhenEmpty(t *testing.T) {
-	args := buildAiderArgs("pm", "prompt.txt", "")
+	args := buildAiderArgs("pm", "prompt.txt", "", "")
 	for _, v := range args {
 		if v == "--model" {
 			t.Fatalf("expected no --model when model is empty, got %v", args)
@@ -3172,6 +3196,122 @@ func TestExtractFinalYAMLDocumentPrefersRepeatedRecommenderYAMLAfterTokenFooter(
 	}
 	if strings.Contains(string(raw), "tokens used") {
 		t.Fatalf("extracted YAML must not include token footer, got:\n%s", string(raw))
+	}
+}
+
+// TestExtractFinalYAMLDocumentStripsAiderChatterFromSearchReplaceBlock is the
+// cycle-003 PM regression: the agent emitted its handoff inside an Aider
+// SEARCH/REPLACE block (because the dedicated temp handoff file could not be
+// written), and Aider appended a token-usage summary plus edit/IO diagnostics
+// after the answer. Before the fix, the greedy block-scalar flattening logic
+// absorbed the ">>>>>>> REPLACE" fence, the "Tokens:" line, the temp-path
+// echo, and the "file not found"/"NoneType ... splitlines" diagnostics into
+// the second risks entry. The extracted risks must be clean.
+func TestExtractFinalYAMLDocumentStripsAiderChatterFromSearchReplaceBlock(t *testing.T) {
+	handoff := strings.Join([]string{
+		"scope:",
+		"  - Verify the ollama-codex runner is fully integrated across config, executor, and TUI",
+		"non_goals:",
+		"  - Do not change existing runner behavior",
+		"risks:",
+		"  - |",
+		"    The Codex CLI argument order must match the existing codex runner exactly;",
+		"    reuse the shared argument builder to avoid drift.",
+		"  - |",
+		"    Ensure tests follow existing patterns and do not depend on live network.",
+	}, "\n")
+	text := strings.Join([]string{
+		"► THINKING",
+		"I will create this file using a SEARCH/REPLACE block as required by my system instructions.",
+		"--------------------------------------------------------------------------------",
+		"► ANSWER",
+		"",
+		".cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml",
+		"",
+		"<<<<<<< SEARCH",
+		"=======",
+		handoff,
+		">>>>>>> REPLACE",
+		"",
+		"Tokens: 40k sent, 2.1k received.",
+		"",
+		".cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml",
+		"/home/patrick_dev/Develop/Cyclestone/.cyclestone/temp/0001-introduce-new-llm-run",
+		"ner-cycle-003-01-pm-handoff.yaml: file not found error",
+		"'NoneType' object has no attribute 'splitlines'",
+		"Unable to read /home/patrick_dev/Develop/Cyclestone/.cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml: [Errno 2] No such file or directory: '/home/patrick_dev/Develop/Cyclestone/.cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml'",
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	rawStr := string(raw)
+	for _, frag := range []string{">>>>>>> REPLACE", "<<<<<<< SEARCH", "=======", "Tokens:", "file not found", "NoneType", "Unable to read", ".cyclestone/temp/", "-handoff.yaml"} {
+		if strings.Contains(rawStr, frag) {
+			t.Fatalf("extracted YAML must not contain chatter fragment %q, got:\n%s", frag, rawStr)
+		}
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v\nraw:\n%s", err, rawStr)
+	}
+	risks, ok := decoded["risks"].([]interface{})
+	if !ok || len(risks) != 2 {
+		t.Fatalf("expected 2 risks, got %#v", decoded["risks"])
+	}
+	first, _ := risks[0].(string)
+	if !strings.Contains(first, "Codex CLI argument order") {
+		t.Fatalf("unexpected first risk: %q", first)
+	}
+	second, _ := risks[1].(string)
+	if !strings.Contains(second, "Ensure tests follow existing patterns") {
+		t.Fatalf("unexpected second risk: %q", second)
+	}
+	if strings.Contains(second, "REPLACE") || strings.Contains(second, "Tokens") {
+		t.Fatalf("second risk absorbed Aider chatter: %q", second)
+	}
+	scope, ok := decoded["scope"].([]interface{})
+	if !ok || len(scope) != 1 {
+		t.Fatalf("expected 1 scope entry, got %#v", decoded["scope"])
+	}
+}
+
+// TestIsAiderChatterLine covers the chatter detector directly so future
+// Aider output formats are caught by an explicit assertion.
+func TestIsAiderChatterLine(t *testing.T) {
+	chatter := []string{
+		"<<<<<<< SEARCH",
+		">>>>>>> REPLACE",
+		"=======",
+		"Tokens: 40k sent, 2.1k received.",
+		"Tokens: 97k sent, 2.9k received.",
+		"file not found error",
+		".cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml",
+		"/home/patrick_dev/Develop/Cyclestone/.cyclestone/temp/0001-introduce-new-llm-runner-cycle-003-01-pm-handoff.yaml: file not found error",
+		"'NoneType' object has no attribute 'splitlines'",
+		"Unable to read /home/patrick_dev/Develop/Cyclestone/.cyclestone/temp/x-handoff.yaml: [Errno 2] No such file or directory: '...'",
+	}
+	for _, line := range chatter {
+		if !isAiderChatterLine(line) {
+			t.Errorf("expected %q to be chatter", line)
+		}
+	}
+	legit := []string{
+		"",
+		"risks:",
+		"  - |",
+		"    Ensure tests follow existing patterns and do not depend on live network.",
+		"verdict: approved",
+		"next_cycle_focus: []",
+		"Unable to read the report; please retry.", // prose, not a file-not-found diagnostic
+		"========",                  // not exactly seven '='
+		"Note: tokens used were 5.", // not the Aider token-summary shape
+	}
+	for _, line := range legit {
+		if isAiderChatterLine(line) {
+			t.Errorf("did not expect %q to be chatter", line)
+		}
 	}
 }
 
