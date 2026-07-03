@@ -1,0 +1,5 @@
+default_llm: ollama
+default_mode: unrestricted
+auto_git_branch: false
+create_milestone_branch: false
+default_git_branch_prefix: cyclestone/milestones/

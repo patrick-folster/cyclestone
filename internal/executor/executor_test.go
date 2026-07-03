@@ -2445,3 +2445,164 @@ func TestWritePhaseHandoffAiderParsesInlineBulletedContractYAML(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildAiderArgsIncludesQuietFlags(t *testing.T) {
+	args := buildAiderArgs("pm", "prompt.txt", "ollama_chat/glm-5.2:cloud")
+	// Core run flags are preserved.
+	if !sliceHas(args, "--message-file", "prompt.txt") {
+		t.Fatalf("expected --message-file prompt.txt, got %v", args)
+	}
+	if !sliceHas(args, "--yes-always") || !sliceHas(args, "--no-auto-commits") || !sliceHas(args, "--no-dirty-commits") || !sliceHas(args, "--no-gitignore") {
+		t.Fatalf("expected core run flags, got %v", args)
+	}
+	// Quiet flags suppress CLI chrome that leaks into fallback handoffs.
+	for _, flag := range aiderQuietFlags {
+		if !sliceHas(args, flag) {
+			t.Fatalf("expected quiet flag %q in args, got %v", flag, args)
+		}
+	}
+	// Model is forwarded when provided.
+	if !sliceHas(args, "--model", "ollama_chat/glm-5.2:cloud") {
+		t.Fatalf("expected --model forwarded, got %v", args)
+	}
+}
+
+func TestBuildAiderArgsNeverDisablesRepoMap(t *testing.T) {
+	// --map-tokens 0 must never be used: it disables the repo map, which the
+	// developer (and other agents) rely on to understand the codebase.
+	for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
+		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud")
+		for _, v := range args {
+			if v == "--map-tokens" {
+				t.Fatalf("--map-tokens must never be set for %q, got %v", agentID, args)
+			}
+		}
+	}
+}
+
+func TestBuildAiderArgsOmitsModelWhenEmpty(t *testing.T) {
+	args := buildAiderArgs("pm", "prompt.txt", "")
+	for _, v := range args {
+		if v == "--model" {
+			t.Fatalf("expected no --model when model is empty, got %v", args)
+		}
+	}
+}
+
+// sliceHas reports whether the given values appear consecutively in args.
+func sliceHas(args []string, values ...string) bool {
+	for i := 0; i+len(values) <= len(args); i++ {
+		match := true
+		for j, v := range values {
+			if args[i+j] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAnswerRegionSlicesAfterLastAnswerMarker(t *testing.T) {
+	text := "Aider v0.86.2\n► THINKING\n\nsome reasoning\n► ANSWER\n\nNo changes are needed.\n"
+	got := answerRegion(text)
+	if !strings.Contains(got, "No changes are needed.") {
+		t.Fatalf("expected answer text after marker, got %q", got)
+	}
+	if strings.Contains(got, "Aider v0.86.2") || strings.Contains(got, "some reasoning") {
+		t.Fatalf("expected chrome/reasoning stripped, got %q", got)
+	}
+}
+
+func TestAnswerRegionUsesLastAnswerMarker(t *testing.T) {
+	text := "► ANSWER\nfirst answer\n► ANSWER\nsecond answer\n"
+	got := answerRegion(text)
+	if !strings.Contains(got, "second answer") || strings.Contains(got, "first answer") {
+		t.Fatalf("expected text after the last marker, got %q", got)
+	}
+}
+
+func TestAnswerRegionReturnsFullTextWhenNoMarker(t *testing.T) {
+	text := "just prose\nno marker\n"
+	if got := answerRegion(text); got != text {
+		t.Fatalf("expected full text when no marker, got %q", got)
+	}
+}
+
+func TestFallbackHandoffExcludesCLIChromeAndEmitsEmptyContractFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "developer.log")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	// Simulates a real Aider log: CLI chrome + reasoning before ► ANSWER, then
+	// a prose answer with no structured YAML document.
+	text := strings.Join([]string{
+		"Aider v0.86.2",
+		"Model: ollama_chat/glm-5.2:cloud with whole edit format",
+		"Git repo: .git with 69 files",
+		"► THINKING",
+		"",
+		"The milestone says no code changes.",
+		"► ANSWER",
+		"",
+		"No code changes are needed based on the milestone goal.",
+		"Tokens: 8.1k sent, 262 received.",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "developer", logPath, 1000, "", "aider"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if !handoff.Fallback {
+		t.Fatalf("expected fallback handoff, got %#v", handoff)
+	}
+	// Contract fields must be clean empty arrays, not CLI chrome.
+	changed, ok := handoff.Summary["changed_files"].([]interface{})
+	if !ok || len(changed) != 0 {
+		t.Fatalf("expected empty changed_files, got %#v", handoff.Summary["changed_files"])
+	}
+	behavior, ok := handoff.Summary["implemented_behavior"].([]interface{})
+	if !ok || len(behavior) != 0 {
+		t.Fatalf("expected empty implemented_behavior, got %#v", handoff.Summary["implemented_behavior"])
+	}
+	// The model's actual answer is preserved in the note, not the chrome.
+	note, _ := handoff.Summary["note"].(string)
+	if !strings.Contains(note, "No code changes are needed") {
+		t.Fatalf("expected note to contain the model answer, got %q", note)
+	}
+	if strings.Contains(note, "Aider v0.86.2") || strings.Contains(note, "Git repo") || strings.Contains(note, "glm-5.2:cloud") {
+		t.Fatalf("expected note to exclude CLI chrome, got %q", note)
+	}
+}
+
+func TestRecommenderFallbackOmitsScore(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "recommender.log")
+	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
+	text := "► ANSWER\n\nI cannot evaluate without clarification.\n"
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-R", 1, "recommender", "recommender", logPath, 1000, "", "aider"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	// A numeric score must not be fabricated: -1 means "no recommendation",
+	// which is correct when the recommender produced no structured output.
+	if got := parseRecommendationScore(handoffPath); got != -1 {
+		t.Fatalf("expected -1 (no recommendation) for recommender fallback, got %d", got)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if _, hasScore := handoff.Summary["score"]; hasScore {
+		t.Fatalf("expected score to be absent from recommender fallback, got %#v", handoff.Summary["score"])
+	}
+}

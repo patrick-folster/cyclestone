@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -116,48 +115,52 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 	if maxChars <= 0 {
 		maxChars = 12000
 	}
-
-	summaryText := ""
-
 	fieldMaxChars := maxChars
 	if fieldMaxChars > maxFallbackHandoffFieldChars {
 		fieldMaxChars = maxFallbackHandoffFieldChars
 	}
-	totalMaxChars := maxChars
-	if totalMaxChars > maxFallbackHandoffChars {
-		totalMaxChars = maxFallbackHandoffChars
-	}
-	summary := map[string]interface{}{}
 
-	if summaryText != "" {
-		summary["summary"] = summaryText
-	} else {
-		switch agentID {
-		case "pm":
-			summary["scope"] = boundedLineMatches(text, []string{"scope", "in-scope", "goal"}, fieldMaxChars)
-			summary["non_goals"] = boundedLineMatches(text, []string{"non-goal", "out of scope"}, fieldMaxChars)
-			summary["target_paths"] = boundedLineMatches(text, []string{"path", "file", "folder"}, fieldMaxChars)
-			summary["acceptance_map"] = boundedLineMatches(text, []string{"acceptance", "criteria"}, fieldMaxChars)
-			summary["risks"] = boundedLineMatches(text, []string{"risk", "unknown", "blocker"}, fieldMaxChars)
-		case "developer":
-			summary["implemented_behavior"] = boundedLineMatches(text, []string{"implemented", "summary", "behavior"}, fieldMaxChars)
-			summary["changed_files"] = boundedLineMatches(text, []string{"file", "changed"}, fieldMaxChars)
-			summary["checks_run"] = boundedLineMatches(text, []string{"pass", "fail", "test", "lint", "build", "check"}, fieldMaxChars)
-			summary["decisions"] = boundedLineMatches(text, []string{"decision", "decided"}, fieldMaxChars)
-			summary["risks"] = boundedLineMatches(text, []string{"risk", "skipped", "follow-up"}, fieldMaxChars)
-		case "qa":
-			summary["verdict"] = boundedLineMatches(text, []string{"verdict", "approved", "blocked", "needs-human-review"}, fieldMaxChars)
-			summary["criteria_results"] = boundedLineMatches(text, []string{"criteria", "acceptance", "pass", "fail"}, fieldMaxChars)
-			summary["reviewed_files"] = boundedLineMatches(text, []string{"reviewed", "file"}, fieldMaxChars)
-			summary["failing_checks"] = boundedLineMatches(text, []string{"fail", "failed", "error"}, fieldMaxChars)
-			summary["required_fixes"] = boundedLineMatches(text, []string{"fix", "required", "blocker"}, fieldMaxChars)
-		case "recommender":
-			summary["score"] = boundedLineMatches(text, []string{"score"}, fieldMaxChars)
-			summary["reason"] = boundedLineMatches(text, []string{"reason", "gap", "recommend"}, fieldMaxChars)
-		default:
-			summary["summary"] = limitTextMiddle(text, fieldMaxChars, outputPath)
-		}
-		summary = limitFallbackSummary(summary, totalMaxChars, fieldMaxChars)
+	// No structured YAML document was produced. Emit a clean, contract-shaped
+	// fallback with empty fields rather than keyword-scraping the raw log: the
+	// agent produced no structured output, so fabricating field values from
+	// prose or CLI chrome would be misleading. The model's actual answer is
+	// preserved verbatim (truncated) in a "note" field for human inspection.
+	answerText := strings.TrimSpace(answerRegion(text))
+	summary := map[string]interface{}{}
+	switch agentID {
+	case "pm":
+		summary["scope"] = []string{}
+		summary["non_goals"] = []string{}
+		summary["target_paths"] = []string{}
+		summary["acceptance_map"] = map[string]interface{}{}
+		summary["risks"] = []string{}
+	case "developer":
+		summary["changed_files"] = []string{}
+		summary["implemented_behavior"] = []string{}
+		summary["checks_run"] = []string{}
+		summary["decisions"] = []string{}
+		summary["risks"] = []string{}
+	case "qa":
+		summary["verdict"] = ""
+		summary["criteria_results"] = []interface{}{}
+		summary["reviewed_files"] = []string{}
+		summary["failing_checks"] = []string{}
+		summary["required_fixes"] = []string{}
+	case "recommender":
+		// score is intentionally omitted: a numeric default (e.g. 0) would be
+		// mistaken for a real recommendation. parseRecommendationScore returns
+		// -1 ("no recommendation") when score is absent, which is the correct
+		// signal when the recommender produced no structured output.
+		summary["verdict"] = ""
+		summary["reason"] = ""
+		summary["next_cycle_focus"] = []string{}
+	default:
+		summary["summary"] = limitTextMiddle(answerText, fieldMaxChars, outputPath)
+	}
+	// For the default agent the answer already lives in summary["summary"]; for
+	// the contract-shaped agents, preserve the raw answer in a note field.
+	if _, hasSummary := summary["summary"]; !hasSummary && answerText != "" {
+		summary["note"] = limitTextMiddle(answerText, fieldMaxChars, "agent answer")
 	}
 
 	handoff := phaseHandoff{
@@ -800,127 +803,24 @@ func numericValueAsIntInRange(value interface{}, min, max int) (int, bool) {
 	return asInt, true
 }
 
-func limitFallbackSummary(summary map[string]interface{}, totalMaxChars, fieldMaxChars int) map[string]interface{} {
-	if totalMaxChars <= 0 {
-		totalMaxChars = maxFallbackHandoffChars
-	}
-	if fieldMaxChars <= 0 || fieldMaxChars > maxFallbackHandoffFieldChars {
-		fieldMaxChars = maxFallbackHandoffFieldChars
-	}
-	for key, value := range summary {
-		summary[key] = limitFallbackValue(value, fieldMaxChars)
-	}
-	for marshaledFallbackSummaryLen(summary) > totalMaxChars {
-		changed := false
-		for key, value := range summary {
-			nextLimit := fieldMaxChars / 2
-			if nextLimit < 160 {
-				nextLimit = 160
-			}
-			limited := limitFallbackValue(value, nextLimit)
-			if fmt.Sprintf("%v", limited) != fmt.Sprintf("%v", value) {
-				summary[key] = limited
-				changed = true
-			}
-		}
-		if !changed {
-			break
-		}
-		fieldMaxChars /= 2
-		if fieldMaxChars < 160 {
-			break
+// answerRegion returns the portion of a runner output log that contains the
+// model's actual answer, stripping preceding CLI chrome and reasoning. Aider
+// separates its output with "► ANSWER" (and "► THINKING") section markers; the
+// answer is the text after the last "► ANSWER" marker. When no marker is
+// present (for example non-Aider runners or plain logs), the full text is
+// returned so behaviour degrades gracefully.
+func answerRegion(text string) string {
+	lines := strings.Split(text, "\n")
+	lastAnswer := -1
+	for i, line := range lines {
+		if strings.Contains(strings.TrimSpace(line), "► ANSWER") {
+			lastAnswer = i
 		}
 	}
-	return summary
-}
-
-func limitFallbackValue(value interface{}, maxChars int) interface{} {
-	switch typed := value.(type) {
-	case string:
-		return limitTextMiddle(typed, maxChars, "handoff field")
-	case []string:
-		var out []string
-		used := 0
-		for _, item := range typed {
-			itemLimit := maxChars / 3
-			if itemLimit <= 0 || itemLimit > maxChars {
-				itemLimit = maxChars
-			}
-			limited := limitTextMiddle(item, itemLimit, "handoff item")
-			itemLen := len([]rune(limited))
-			if used+itemLen > maxChars && len(out) > 0 {
-				break
-			}
-			out = append(out, limited)
-			used += itemLen
-			if len(out) >= 8 {
-				break
-			}
-		}
-		return out
-	default:
-		return value
+	if lastAnswer < 0 {
+		return text
 	}
-}
-
-func marshaledFallbackSummaryLen(summary map[string]interface{}) int {
-	data, err := json.Marshal(summary)
-	if err != nil {
-		return 0
-	}
-	return len([]rune(string(data)))
-}
-
-func boundedLineMatches(text string, needles []string, maxChars int) []string {
-	var lines []string
-	seen := map[string]bool{}
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || seen[trimmed] {
-			continue
-		}
-		lower := strings.ToLower(trimmed)
-		for _, needle := range needles {
-			if strings.Contains(lower, strings.ToLower(needle)) {
-				lines = append(lines, trimmed)
-				seen[trimmed] = true
-				break
-			}
-		}
-		if len(lines) >= 12 {
-			break
-		}
-	}
-	if len(lines) == 0 {
-		limited := limitTextMiddle(text, maxChars, "phase output")
-		for _, line := range strings.Split(limited, "\n") {
-			if trimmed := strings.TrimSpace(line); trimmed != "" {
-				lines = append(lines, trimmed)
-				if len(lines) >= 12 {
-					break
-				}
-			}
-		}
-	}
-	limited := make([]string, 0, len(lines))
-	used := 0
-	for _, line := range lines {
-		lineLimit := maxChars / 3
-		if lineLimit < 160 && maxChars >= 160 {
-			lineLimit = 160
-		}
-		if lineLimit <= 0 || lineLimit > maxChars {
-			lineLimit = maxChars
-		}
-		item := limitTextMiddle(line, lineLimit, "handoff line")
-		itemLen := len([]rune(item))
-		if used+itemLen > maxChars && len(limited) > 0 {
-			break
-		}
-		limited = append(limited, item)
-		used += itemLen
-	}
-	return limited
+	return strings.Join(lines[lastAnswer+1:], "\n")
 }
 
 func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars int, pipeline []config.Agent) string {

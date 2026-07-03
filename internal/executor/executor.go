@@ -1273,6 +1273,40 @@ func runRunnerWithSession(ctx context.Context, runner string, agentID string, ag
 	}
 }
 
+// aiderQuietFlags are Aider CLI flags that suppress non-essential UI chrome,
+// update checks, analytics, model-metadata warnings, shell-command suggestions,
+// and fancy-input handling. They reduce the amount of CLI noise captured in the
+// phase output log so it does not leak into fallback handoff summaries. They do
+// not alter the model's capabilities or the content of its answer.
+var aiderQuietFlags = []string{
+	"--no-show-model-warnings",
+	"--no-check-update",
+	"--no-show-release-notes",
+	"--analytics-disable",
+	"--no-suggest-shell-commands",
+	"--no-fancy-input",
+}
+
+// buildAiderArgs constructs the Aider CLI argument list for a phase run. It
+// appends aiderQuietFlags to suppress non-essential CLI chrome so it does not
+// leak into fallback handoff summaries, then forwards the model when set. The
+// agentID parameter is reserved for future per-agent flag tuning; all agents
+// share flags today.
+func buildAiderArgs(agentID, promptFile, model string) []string {
+	args := []string{
+		"--message-file", promptFile,
+		"--yes-always",
+		"--no-auto-commits",
+		"--no-dirty-commits",
+		"--no-gitignore",
+	}
+	args = append(args, aiderQuietFlags...)
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
+}
+
 func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputContent string, settings config.Settings, ch chan tea.Msg, logOutFile *os.File) (int, error) {
 	cleanupGitignore := setupTemporaryGitignore()
 	defer cleanupGitignore()
@@ -1304,13 +1338,6 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 	if cleanup != nil {
 		defer cleanup()
 	}
-	args := []string{
-		"--message-file", promptFile,
-		"--yes-always",
-		"--no-auto-commits",
-		"--no-dirty-commits",
-		"--no-gitignore",
-	}
 	var model string
 	if runner == "aider" {
 		model = settings.AiderModel
@@ -1322,9 +1349,7 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 		cleanup := setupTemporaryAiderSettings(model, settings)
 		defer cleanup()
 	}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
+	args := buildAiderArgs(agentID, promptFile, model)
 	cmd := exec.CommandContext(ctx, "aider", args...)
 	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 	if runner == "ollama" {
@@ -1338,8 +1363,6 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 	r, w := io.Pipe()
 	cmd.Stdout = w
 	cmd.Stderr = w
-
-	logOutFile.WriteString(fmt.Sprintf("$ %s %s\n\n", cmd.Path, strings.Join(cmd.Args[1:], " ")))
 
 	scanDone := make(chan struct{})
 	go func() {
