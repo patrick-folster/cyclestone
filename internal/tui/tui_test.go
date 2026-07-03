@@ -218,7 +218,10 @@ func TestMissingConfigRoutesToSetupWizardAndConfirmCreatesProject(t *testing.T) 
 	model.Setup.Width = 80
 	model.Setup.Height = 24
 	model.Setup.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.Setup.RunnerInherit = false
 	model.Setup.Runner = "codex"
+	model.Setup.SafetyInherit = false
+	model.Setup.BranchesInherit = false
 	model.Setup.CreateFirst = true
 	model.Setup.MilestoneIDInput.SetValue("0001-first-run")
 	model.Setup.MilestoneTitleInput.SetValue("First Run")

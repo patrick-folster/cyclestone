@@ -866,8 +866,16 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.StatePath = msg.StatePath
 		m.Config = cfg
 		m.State = st
-		m.NoBranchChange = !m.Setup.AutoBranches
-		m.Unrestricted = m.Setup.Unrestricted
+		// Derive NoBranchChange and Unrestricted from the merged settings so
+		// that inherited (empty/nil) project values resolve correctly from
+		// the global configuration, matching the SettingsSavedMsg behaviour.
+		mergedSettings := config.LoadMergedSettings()
+		autoGit := true
+		if mergedSettings.AutoGitBranch != nil {
+			autoGit = *mergedSettings.AutoGitBranch
+		}
+		m.NoBranchChange = !autoGit
+		m.Unrestricted = mergedSettings.DefaultMode == "unrestricted"
 		m.Dashboard.Config = cfg
 		m.Dashboard.State = st
 		m.Dashboard.updateTableRows()

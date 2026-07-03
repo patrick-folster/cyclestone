@@ -37,15 +37,24 @@ type SetupWizardModel struct {
 	// ConfigPath and StatePath are startup-owned paths displayed as read-only setup details.
 	ConfigPath          string
 	StatePath           string
+	// GlobalSettings holds the resolved global settings used to preview the
+	// effective value of any field set to "inherit" on the init screen.
+	GlobalSettings      config.Settings
 	MilestoneIDInput    textinput.Model
 	MilestoneTitleInput textinput.Model
 	MilestoneGoalInput  textarea.Model
 	MilestoneCriteria   textarea.Model
 	Runners             []runnerAvailability
 	Runner              string
+	// RunnerInherit, SafetyInherit, and BranchesInherit mirror the settings
+	// screen "inherit" option: when true the corresponding project setting is
+	// saved empty/nil so it resolves from the global settings at merge time.
+	RunnerInherit       bool
 	Unrestricted        bool
+	SafetyInherit       bool
 	UnrestrictedAck     bool
 	AutoBranches        bool
+	BranchesInherit     bool
 	CreateFirst         bool
 	IsGitWorktree       bool
 	FocusIndex          int
@@ -82,20 +91,30 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 	criteria.Cursor.Style = styles.AccentText
 
 	runners := detectSetupRunnerAvailability()
+	global, _ := config.LoadGlobalSettings()
 	m := SetupWizardModel{
 		ConfigPath:          configPath,
-		StatePath:           statePath,
+		StatePath:          statePath,
+		GlobalSettings:     global,
 		MilestoneIDInput:    newInput("0001-first-milestone", 36, 100),
 		MilestoneTitleInput: newInput("First milestone", 56, 160),
 		MilestoneGoalInput:  goal,
 		MilestoneCriteria:   criteria,
 		Runners:             runners,
-		Runner:              defaultSetupRunner(runners),
-		AutoBranches:        true,
-		CreateFirst:         false,
-		IsGitWorktree:       git.IsGitRepository(),
-		FocusIndex:          setupFieldRunner,
-		Styles:              styles,
+		// "inherit" is the default for runner, safety, and branches so the
+		// project settings defer to the global configuration, matching the
+		// settings screen project-scope behavior. Runner is left empty
+		// because RunnerInherit is true; the cycling logic discovers the
+		// first available runner when the user switches away from inherit.
+		Runner:          "",
+		RunnerInherit:   true,
+		SafetyInherit:   true,
+		AutoBranches:    true,
+		BranchesInherit: true,
+		CreateFirst:     false,
+		IsGitWorktree:   git.IsGitRepository(),
+		FocusIndex:      setupFieldRunner,
+		Styles:          styles,
 	}
 	m.updateFocus()
 	return m
@@ -202,36 +221,110 @@ func (m SetupWizardModel) isChoiceField(idx int) bool {
 	return idx == setupFieldRunner || idx == setupFieldSafetyMode || idx == setupFieldUnrestrictedAck || idx == setupFieldBranchBehavior || idx == setupFieldCreateFirstMilestone
 }
 
+// runnerCycleOptions builds the ordered list of selectable runner options for
+// the init screen: "inherit" first, then every available runner. Inherit lets
+// the project setting resolve from the global configuration at merge time.
+func (m SetupWizardModel) runnerCycleOptions() []struct {
+	inherit bool
+	id      string
+} {
+	var opts []struct {
+		inherit bool
+		id      string
+	}
+	opts = append(opts, struct {
+		inherit bool
+		id      string
+	}{inherit: true})
+	for _, r := range m.Runners {
+		if r.Available {
+			opts = append(opts, struct {
+				inherit bool
+				id      string
+			}{id: r.ID})
+		}
+	}
+	return opts
+}
+
 func (m *SetupWizardModel) adjustChoice(delta int) {
 	switch m.FocusIndex {
 	case setupFieldRunner:
-		var available []runnerAvailability
-		for _, runner := range m.Runners {
-			if runner.Available {
-				available = append(available, runner)
-			}
-		}
-		if len(available) == 0 {
+		opts := m.runnerCycleOptions()
+		if len(opts) <= 1 {
+			m.RunnerInherit = true
 			m.Runner = ""
 			return
 		}
 		cur := 0
-		for i, runner := range available {
-			if runner.ID == m.Runner {
-				cur = i
-				break
+		if !m.RunnerInherit {
+			for i, opt := range opts {
+				if !opt.inherit && opt.id == m.Runner {
+					cur = i
+					break
+				}
 			}
 		}
-		m.Runner = available[(cur+delta+len(available))%len(available)].ID
+		next := (cur + delta + len(opts)) % len(opts)
+		m.RunnerInherit = opts[next].inherit
+		if !opts[next].inherit {
+			m.Runner = opts[next].id
+		} else {
+			m.Runner = ""
+		}
 	case setupFieldSafetyMode:
-		m.Unrestricted = !m.Unrestricted
-		if !m.Unrestricted {
+		// Cycle: inherit -> sandbox -> unrestricted -> inherit.
+		switch {
+		case m.SafetyInherit:
+			m.SafetyInherit = false
+			if delta > 0 {
+				m.Unrestricted = false
+			} else {
+				m.Unrestricted = true
+			}
+		case !m.Unrestricted:
+			if delta > 0 {
+				m.Unrestricted = true
+			} else {
+				m.SafetyInherit = true
+				m.Unrestricted = false
+			}
+		default:
+			if delta > 0 {
+				m.SafetyInherit = true
+				m.Unrestricted = false
+			} else {
+				m.Unrestricted = false
+			}
+		}
+		if m.SafetyInherit {
 			m.UnrestrictedAck = false
 		}
 	case setupFieldUnrestrictedAck:
 		m.UnrestrictedAck = !m.UnrestrictedAck
 	case setupFieldBranchBehavior:
-		m.AutoBranches = !m.AutoBranches
+		// Cycle: inherit -> automatic -> manual -> inherit.
+		switch {
+		case m.BranchesInherit:
+			m.BranchesInherit = false
+			if delta > 0 {
+				m.AutoBranches = true
+			} else {
+				m.AutoBranches = false
+			}
+		case m.AutoBranches:
+			if delta > 0 {
+				m.AutoBranches = false
+			} else {
+				m.BranchesInherit = true
+			}
+		default:
+			if delta > 0 {
+				m.BranchesInherit = true
+			} else {
+				m.AutoBranches = true
+			}
+		}
 	case setupFieldCreateFirstMilestone:
 		m.CreateFirst = !m.CreateFirst
 	}
@@ -267,9 +360,11 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 	configPath := m.ConfigPath
 	statePath := m.StatePath
-	if m.Runner == "" || !isSetupRunnerSelectable(m.Runners, m.Runner) {
-		m.ErrorMsg = "Select an available runner before confirming setup."
-		return m, nil
+	if !m.RunnerInherit {
+		if m.Runner == "" || !isSetupRunnerSelectable(m.Runners, m.Runner) {
+			m.ErrorMsg = "Select an available runner before confirming setup."
+			return m, nil
+		}
 	}
 	if m.Unrestricted && !m.UnrestrictedAck {
 		m.ErrorMsg = "Confirm unrestricted mode before saving that setting."
@@ -296,17 +391,26 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 		return m, nil
 	}
 
-	autoBranches := m.AutoBranches
 	settings := config.Settings{
-		DefaultLLM:             m.Runner,
-		DefaultMode:            "sandbox",
-		AutoGitBranch:          &autoBranches,
-		CreateMilestoneBranch:  &autoBranches,
 		DefaultGitBranchPrefix: "cyclestone/milestones/",
 	}
-	if m.Unrestricted {
-		settings.DefaultMode = "unrestricted"
+	// Save explicit values only for non-inherited fields so the project
+	// settings defer to the global configuration for inherited ones.
+	if !m.RunnerInherit {
+		settings.DefaultLLM = m.Runner
 	}
+	if !m.SafetyInherit {
+		settings.DefaultMode = "sandbox"
+		if m.Unrestricted {
+			settings.DefaultMode = "unrestricted"
+		}
+	}
+	if !m.BranchesInherit {
+		autoBranches := m.AutoBranches
+		settings.AutoGitBranch = &autoBranches
+		settings.CreateMilestoneBranch = &autoBranches
+	}
+
 	settingsPath := filepath.Join(filepath.Dir(configPath), "settings.yml")
 	if err := config.SaveProjectSettingsAt(settingsPath, settings); err != nil {
 		m.ErrorMsg = fmt.Sprintf("Error saving settings: %v", err)
@@ -372,11 +476,11 @@ func (m SetupWizardModel) View() string {
 	sb.WriteString(m.renderStaticValue("Milestone config", m.ConfigPath) + "\n")
 	sb.WriteString(m.renderStaticValue("State file", m.StatePath) + "\n")
 	sb.WriteString(m.renderChoice(setupFieldRunner, "Runner", m.runnerSummary()) + "\n")
-	sb.WriteString(m.renderChoice(setupFieldSafetyMode, "Safety", boolLabel(!m.Unrestricted, "Sandbox", "Unrestricted")) + "\n")
+	sb.WriteString(m.renderChoice(setupFieldSafetyMode, "Safety", m.safetySummary()) + "\n")
 	if m.Unrestricted {
 		sb.WriteString(m.renderChoice(setupFieldUnrestrictedAck, "Confirm", boolLabel(m.UnrestrictedAck, "I understand unrestricted mode", "Required before save")) + "\n")
 	}
-	sb.WriteString(m.renderChoice(setupFieldBranchBehavior, "Branches", boolLabel(m.AutoBranches, "Automatic milestone branches", "No branch changes")) + "\n")
+	sb.WriteString(m.renderChoice(setupFieldBranchBehavior, "Branches", m.branchesSummary()) + "\n")
 	sb.WriteString(m.renderChoice(setupFieldCreateFirstMilestone, "First milestone", boolLabel(m.CreateFirst, "Create now", "Skip")) + "\n")
 	if m.CreateFirst {
 		sb.WriteString(m.renderInput(setupFieldMilestoneID, "Milestone ID", m.MilestoneIDInput.View()) + "\n")
@@ -431,18 +535,99 @@ func (m SetupWizardModel) renderButtons() string {
 	return confirm + "  " + cancel
 }
 
+// setupOptionLabel represents one selectable option in a multi-option setup
+// choice field.
+type setupOptionLabel struct {
+	Label    string
+	Selected bool
+}
+
+// renderSetupOptions renders multiple choice options with "(*)" for the
+// selected option and "( )" for unselected ones, matching the existing setup
+// screen convention used by the setup choice fields.
+func renderSetupOptions(options []setupOptionLabel) string {
+	parts := make([]string, 0, len(options))
+	for _, opt := range options {
+		if opt.Selected {
+			parts = append(parts, "(*) "+opt.Label)
+		} else {
+			parts = append(parts, "( ) "+opt.Label)
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// setupInheritLabel renders the "inherit" option label, showing the effective
+// global value in wide terminals and a compact "inherit" label in narrow ones.
+func (m SetupWizardModel) setupInheritLabel(globalValue, fallback string) string {
+	resolved := defaultString(globalValue, fallback)
+	if m.Width < 60 {
+		return "inherit"
+	}
+	return fmt.Sprintf("inherit (global: %s)", resolved)
+}
+
+// safetySummary renders the Safety field with three options: inherit, Sandbox,
+// and Unrestricted, mirroring the settings screen project-scope "inherit" option.
+func (m SetupWizardModel) safetySummary() string {
+	globalMode := defaultString(m.GlobalSettings.DefaultMode, "sandbox")
+	return renderSetupOptions([]setupOptionLabel{
+		{Label: m.setupInheritLabel(globalMode, "sandbox"), Selected: m.SafetyInherit},
+		{Label: "Sandbox", Selected: !m.SafetyInherit && !m.Unrestricted},
+		{Label: "Unrestricted", Selected: !m.SafetyInherit && m.Unrestricted},
+	})
+}
+
+// branchesSummary renders the Branches field with three options: inherit,
+// Automatic, and No branch changes (abbreviated to Auto/Manual in narrow
+// terminals). The compact labels keep all three options visible on one line
+// even at 80-column widths alongside the inherit (global: ...) preview.
+func (m SetupWizardModel) branchesSummary() string {
+	globalBranches := boolValue(m.GlobalSettings.AutoGitBranch, true)
+	branchLeft, branchRight := "Automatic", "No branch changes"
+	if m.Width < 60 {
+		branchLeft, branchRight = "Auto", "Manual"
+	}
+	return renderSetupOptions([]setupOptionLabel{
+		{Label: m.setupInheritLabel(yesNo(globalBranches), "yes"), Selected: m.BranchesInherit},
+		{Label: branchLeft, Selected: !m.BranchesInherit && m.AutoBranches},
+		{Label: branchRight, Selected: !m.BranchesInherit && !m.AutoBranches},
+	})
+}
+
+// runnerSummary renders every supported runner plus a leading "inherit" option
+// so all runner choices stay visible regardless of terminal width. The
+// "inherit" option lets the project defer runner selection to the global
+// configuration. Unavailable runners are shown with their ID only in narrow
+// terminals to keep the line compact; wider terminals append an "unavailable"
+// suffix for clarity. The currently selected runner (or inherit) is wrapped in
+// parentheses, matching the existing selection indicator.
 func (m SetupWizardModel) runnerSummary() string {
 	var parts []string
+	globalRunner := defaultString(m.GlobalSettings.DefaultLLM, "codex")
+	inheritLabel := "inherit"
+	if m.Width >= 70 {
+		inheritLabel = fmt.Sprintf("inherit (global: %s)", globalRunner)
+	}
+	if m.RunnerInherit {
+		parts = append(parts, m.Styles.SuccessText.Render("("+inheritLabel+")"))
+	} else {
+		parts = append(parts, m.Styles.HelpStyle.Render(inheritLabel))
+	}
 	for _, runner := range m.Runners {
 		name := runner.ID
-		if runner.ID == m.Runner {
+		if runner.ID == m.Runner && !m.RunnerInherit {
 			name = "(" + runner.ID + ")"
 		}
 		if runner.Available {
 			parts = append(parts, m.Styles.SuccessText.Render(name))
-		} else if m.Width >= 70 {
-			parts = append(parts, m.Styles.SubtleText.Render(runner.ID+" unavailable"))
+			continue
 		}
+		label := runner.ID
+		if m.Width >= 70 {
+			label = runner.ID + " unavailable"
+		}
+		parts = append(parts, m.Styles.SubtleText.Render(label))
 	}
 	if len(parts) == 0 {
 		return m.Styles.RenderError("No supported runner detected")
