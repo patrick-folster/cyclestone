@@ -723,7 +723,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-generate title if empty
 		if title == "" {
 			firstLine := strings.Split(goal, "\n")[0]
-			firstLine = strings.TrimSpace(firstLine)
+			firstLine = cleanAutoTitle(firstLine)
 			if len(firstLine) > 50 {
 				title = firstLine[:50] + "..."
 			} else if firstLine != "" {

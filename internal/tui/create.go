@@ -365,7 +365,7 @@ func (m CreateMilestoneModel) handleSubmit() (CreateMilestoneModel, tea.Cmd) {
 	// Auto-generate title if not set
 	if title == "" {
 		firstLine := strings.Split(goal, "\n")[0]
-		firstLine = strings.TrimSpace(firstLine)
+		firstLine = cleanAutoTitle(firstLine)
 		if len(firstLine) > 50 {
 			title = firstLine[:50] + "..."
 		} else if firstLine != "" {
@@ -809,12 +809,101 @@ func (m CreateMilestoneModel) View() string {
 	return formBox
 }
 
+// cleanAutoTitle strips leading politeness/filler phrases from a goal first
+// line and capitalises the first letter so the auto-generated milestone title
+// is concise and professional rather than echoing raw prose like "Please create ...".
+func cleanAutoTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	// Repeatedly strip leading politeness / filler phrases.
+	fillerPrefixes := []string{
+		"please", "kindly", "could you", "would you",
+		"can you", "will you", "i need", "i want", "we need",
+		"we want", "need to", "need", "want to", "want", "to",
+	}
+	for {
+		lower := strings.ToLower(s)
+		stripped := false
+		for _, prefix := range fillerPrefixes {
+			if !strings.HasPrefix(lower, prefix) {
+				continue
+			}
+			rest := s[len(prefix):]
+			// Require a word boundary: the character immediately after the
+			// prefix must be a separator or the end of the string, otherwise
+			// the prefix is part of a longer word (e.g. "to" in "token").
+			if len(rest) > 0 {
+				c := rest[0]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+					continue
+				}
+			}
+			rest = strings.TrimLeft(rest, " ,:;-.!?")
+			if rest != "" {
+				s = rest
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+
+	// Trim trailing filler so titles like "create test milestone without any changes"
+	// do not end with noise.
+	trailingFiller := []string{
+		"without any changes", "without changes", "if possible",
+		"when you can", "thanks", "thank you",
+	}
+	for _, suffix := range trailingFiller {
+		lower := strings.ToLower(s)
+		if strings.HasSuffix(lower, suffix) {
+			s = strings.TrimSpace(s[:len(s)-len(suffix)])
+			s = strings.TrimRight(s, " ,:;-.!?")
+		}
+	}
+
+	// Capitalise the first letter.
+	if r := []rune(s); len(r) > 0 && r[0] >= 'a' && r[0] <= 'z' {
+		r[0] = r[0] - 32
+		s = string(r)
+	}
+
+	return s
+}
+
 func slugifyTitle(title string) string {
 	stopWords := map[string]bool{
-		"a": true, "an": true, "the": true, "and": true, "or": true, "but": true,
+		// Articles
+		"a": true, "an": true, "the": true,
+		// Conjunctions
+		"and": true, "or": true, "but": true,
+		// Prepositions
 		"for": true, "to": true, "in": true, "on": true, "at": true, "by": true,
-		"of": true, "with": true, "is": true, "are": true, "do": true, "does": true,
-		"did": true, "be": true, "been": true, "as": true, "it": true, "its": true,
+		"of": true, "with": true, "as": true, "from": true, "into": true,
+		"about": true, "than": true,
+		// Be-verbs / auxiliaries
+		"is": true, "are": true, "be": true, "been": true,
+		// Do-verbs
+		"do": true, "does": true, "did": true,
+		// Pronouns
+		"it": true, "its": true, "that": true, "this": true,
+		"these": true, "those": true,
+		"i": true, "you": true, "we": true, "they": true,
+		"me": true, "my": true, "our": true, "your": true,
+		"their": true, "us": true, "them": true,
+		// Politeness / filler words
+		"please": true, "kindly": true,
+		// Modal verbs
+		"could": true, "would": true, "should": true, "will": true,
+		"shall": true, "may": true, "might": true, "must": true, "can": true,
+		// Filler / qualifiers
+		"just": true, "also": true, "then": true, "some": true, "any": true,
+		"too": true, "very": true,
 	}
 
 	var clean []string

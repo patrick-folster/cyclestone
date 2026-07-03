@@ -894,68 +894,6 @@ type CreateMilestoneFinishedMsg struct {
 	Error error
 }
 
-func localSlugify(title string) string {
-	stopWords := map[string]bool{
-		"a": true, "an": true, "the": true, "and": true, "or": true, "but": true,
-		"for": true, "to": true, "in": true, "on": true, "at": true, "by": true,
-		"of": true, "with": true, "is": true, "are": true, "do": true, "does": true,
-		"did": true, "be": true, "been": true, "as": true, "it": true, "its": true,
-	}
-
-	var clean []string
-	var currentWord strings.Builder
-
-	for _, r := range title {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			currentWord.WriteRune(r)
-		} else {
-			if currentWord.Len() > 0 {
-				word := strings.ToLower(currentWord.String())
-				if !stopWords[word] {
-					clean = append(clean, word)
-				}
-				currentWord.Reset()
-			}
-		}
-	}
-	if currentWord.Len() > 0 {
-		word := strings.ToLower(currentWord.String())
-		if !stopWords[word] {
-			clean = append(clean, word)
-		}
-	}
-	return strings.Join(clean, "-")
-}
-
-func extractSlugAndTitle(content string, defaultID string, defaultTitle string) (string, string) {
-	lines := strings.Split(content, "\n")
-	var firstLine string
-	for _, l := range lines {
-		trimmed := strings.TrimSpace(l)
-		if trimmed != "" {
-			firstLine = trimmed
-			break
-		}
-	}
-	prefix := "# Milestone Spec:"
-	if strings.HasPrefix(firstLine, prefix) {
-		rest := strings.TrimSpace(strings.TrimPrefix(firstLine, prefix))
-		parts := strings.SplitN(rest, " - ", 2)
-		if len(parts) < 2 {
-			parts = strings.SplitN(rest, ":", 2)
-		}
-		if len(parts) >= 2 {
-			idSlug := strings.TrimSpace(parts[0])
-			title := strings.TrimSpace(parts[1])
-			if strings.HasPrefix(idSlug, defaultID+"-") {
-				slug := strings.TrimPrefix(idSlug, defaultID+"-")
-				return slug, title
-			}
-		}
-	}
-	return localSlugify(defaultTitle), defaultTitle
-}
-
 // ExecuteMilestoneCreation runs the creation prompt through a supported runner in the background.
 func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string, opts RunOptions, ch chan tea.Msg, milestoneID string, defaultTitle string) {
 	settings := config.LoadMergedSettings()

@@ -66,7 +66,22 @@ func TestSlugifyTitle(t *testing.T) {
 		{
 			name:     "excessively long title",
 			title:    "This is a very long title with many words that will be trimmed to four words",
-			expected: "this-very-long-title",
+			expected: "long-title-many-words",
+		},
+		{
+			name:     "title with politeness filler",
+			title:    "Please create a test milestone without any changes",
+			expected: "create-test-milestone-changes",
+		},
+		{
+			name:     "cleaned title from cleanAutoTitle",
+			title:    "Create a test milestone",
+			expected: "create-test-milestone",
+		},
+		{
+			name:     "title with modal verbs",
+			title:    "Could you implement caching that would improve performance",
+			expected: "implement-caching-improve-performance",
 		},
 		{
 			name:     "only stop words",
@@ -80,6 +95,99 @@ func TestSlugifyTitle(t *testing.T) {
 			got := slugifyTitle(tt.title)
 			if got != tt.expected {
 				t.Errorf("slugifyTitle(%q) = %q; want %q", tt.title, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCleanAutoTitle(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple goal",
+			input:    "Implement caching controls",
+			expected: "Implement caching controls",
+		},
+		{
+			name:     "leading please",
+			input:    "Please create a test milestone without any changes",
+			expected: "Create a test milestone",
+		},
+		{
+			name:     "leading kindly with comma",
+			input:    "Kindly, implement the caching layer",
+			expected: "Implement the caching layer",
+		},
+		{
+			name:     "could you phrase",
+			input:    "Could you please add input validation",
+			expected: "Add input validation",
+		},
+		{
+			name:     "i need phrase",
+			input:    "I need to refactor the config parser",
+			expected: "Refactor the config parser",
+		},
+		{
+			name:     "want to phrase",
+			input:    "Want to optimize the runner loop",
+			expected: "Optimize the runner loop",
+		},
+		{
+			name:     "trailing thanks",
+			input:    "Add error handling thanks",
+			expected: "Add error handling",
+		},
+		{
+			name:     "trailing without changes",
+			input:    "Create test milestone without any changes",
+			expected: "Create test milestone",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "only politeness",
+			input:    "Please",
+			expected: "Please",
+		},
+		{
+			name:     "already capitalized",
+			input:    "Refactor config parser",
+			expected: "Refactor config parser",
+		},
+		{
+			name:     "word starting with to prefix",
+			input:    "Token authentication support",
+			expected: "Token authentication support",
+		},
+		{
+			name:     "word starting with need prefix",
+			input:    "Needle search optimization",
+			expected: "Needle search optimization",
+		},
+		{
+			name:     "word starting with want prefix",
+			input:    "Wanted feature toggle",
+			expected: "Wanted feature toggle",
+		},
+		{
+			name:     "please followed by punctuation",
+			input:    "Please, add error handling",
+			expected: "Add error handling",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanAutoTitle(tt.input)
+			if got != tt.expected {
+				t.Errorf("cleanAutoTitle(%q) = %q; want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
