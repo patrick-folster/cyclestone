@@ -2501,6 +2501,25 @@ func TestBuildAiderArgsIncludesQuietFlags(t *testing.T) {
 	}
 }
 
+func TestBuildAiderArgsDryRunForNonDeveloper(t *testing.T) {
+	// Only the developer agent may modify repository files. All other agents
+	// must run with --dry-run so Aider never writes to disk.
+	nonDeveloperAgents := []string{"pm", "qa", "recommender", "custom-agent"}
+	for _, agentID := range nonDeveloperAgents {
+		args := buildAiderArgs(agentID, "prompt.txt", "ollama_chat/glm-5.2:cloud")
+		if !sliceHas(args, "--dry-run") {
+			t.Fatalf("expected --dry-run for non-developer agent %q, got %v", agentID, args)
+		}
+	}
+}
+
+func TestBuildAiderArgsNoDryRunForDeveloper(t *testing.T) {
+	args := buildAiderArgs("developer", "prompt.txt", "ollama_chat/glm-5.2:cloud")
+	if sliceHas(args, "--dry-run") {
+		t.Fatalf("--dry-run must not be set for developer agent, got %v", args)
+	}
+}
+
 func TestBuildAiderArgsNeverDisablesRepoMap(t *testing.T) {
 	// --map-tokens 0 must never be used: it disables the repo map, which the
 	// developer (and other agents) rely on to understand the codebase.

@@ -1227,9 +1227,15 @@ var aiderQuietFlags = []string{
 
 // buildAiderArgs constructs the Aider CLI argument list for a phase run. It
 // appends aiderQuietFlags to suppress non-essential CLI chrome so it does not
-// leak into fallback handoff summaries, then forwards the model when set. The
-// agentID parameter is reserved for future per-agent flag tuning; all agents
-// share flags today.
+// leak into fallback handoff summaries, then forwards the model when set.
+//
+// Only the developer agent is permitted to modify repository files. All other
+// agents (PM, QA, Recommender, and any custom agents) run with --dry-run so
+// Aider displays any proposed edits in the output log without writing them to
+// disk. This prevents non-developer phases from accidentally touching source
+// files when the model suggests changes. The structured output contract is
+// still captured because the handoff parser extracts inline YAML from the
+// model's response text, not only from sidecar files.
 func buildAiderArgs(agentID, promptFile, model string) []string {
 	args := []string{
 		"--message-file", promptFile,
@@ -1237,6 +1243,9 @@ func buildAiderArgs(agentID, promptFile, model string) []string {
 		"--no-auto-commits",
 		"--no-dirty-commits",
 		"--no-gitignore",
+	}
+	if agentID != "developer" {
+		args = append(args, "--dry-run")
 	}
 	args = append(args, aiderQuietFlags...)
 	if model != "" {
