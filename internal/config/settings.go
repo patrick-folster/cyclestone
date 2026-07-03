@@ -101,8 +101,8 @@ func LoadDefaultSettings() Settings {
 		EnableCodexSessionResume:        &enableCodexSessionResume,
 		CacheTTLMinutes:                 30,
 		MaxHandoffChars:                 12000,
-		OllamaNumCtx:                    65536,
-		OllamaNumPredict:                8192,
+		OllamaNumCtx:                    -1,
+		OllamaNumPredict:                -1,
 		MaxModelCallsPerPhase:           50,
 		MaxTokenBudgetPerPhase:          1000000,
 		MaxLLMInputChars:                900000,
@@ -351,11 +351,11 @@ func LoadMergedSettings() Settings {
 	if s.MaxRetainedConversationMessages <= 0 {
 		s.MaxRetainedConversationMessages = 8
 	}
-	if s.OllamaNumCtx <= 0 {
-		s.OllamaNumCtx = 65536
+	if s.OllamaNumCtx == 0 {
+		s.OllamaNumCtx = -1
 	}
-	if s.OllamaNumPredict <= 0 {
-		s.OllamaNumPredict = 8192
+	if s.OllamaNumPredict == 0 {
+		s.OllamaNumPredict = -1
 	}
 
 	if s.OllamaModel == "" {

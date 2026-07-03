@@ -515,9 +515,9 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	if model.CacheTTLInput.Placeholder != "30" {
 		t.Errorf("expected CacheTTL placeholder to default to '30', got %q", model.CacheTTLInput.Placeholder)
 	}
-	// "65536" is the OllamaNumCtx system default
-	if model.OllamaNumCtxInput.Placeholder != "65536" {
-		t.Errorf("expected OllamaNumCtx placeholder to default to '65536', got %q", model.OllamaNumCtxInput.Placeholder)
+	// "-1" is the OllamaNumCtx system default (unlimited)
+	if model.OllamaNumCtxInput.Placeholder != "-1" {
+		t.Errorf("expected OllamaNumCtx placeholder to default to '-1', got %q", model.OllamaNumCtxInput.Placeholder)
 	}
 
 	// Switch to global scope and verify placeholders show system defaults

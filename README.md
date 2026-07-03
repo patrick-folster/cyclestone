@@ -148,11 +148,11 @@ auto_git_branch: true
 max_llm_input_chars: 900000
 ```
 
-Ollama-via-Aider generation/context settings are also supported. `ollama_num_ctx` and `ollama_num_predict` are written to Aider's temporary model settings when configured; otherwise Aider and Ollama defaults apply:
+Ollama-via-Aider generation/context settings are also supported. Set either to `-1` for unlimited (Ollama defaults). `ollama_num_ctx` and `ollama_num_predict` are written to Aider's temporary model settings when configured; otherwise Aider and Ollama defaults apply:
 
 ```yaml
-ollama_num_ctx: 65536
-ollama_num_predict: 8192
+ollama_num_ctx: -1
+ollama_num_predict: -1
 ```
 
 ### Sandbox and Consent

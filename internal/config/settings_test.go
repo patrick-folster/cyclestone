@@ -79,8 +79,8 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if defaults.OllamaModel != DefaultOllamaModel {
 		t.Errorf("expected default OllamaModel %q, got %q", DefaultOllamaModel, defaults.OllamaModel)
 	}
-	if defaults.OllamaNumPredict != 8192 {
-		t.Errorf("expected default OllamaNumPredict 8192, got %d", defaults.OllamaNumPredict)
+	if defaults.OllamaNumPredict != -1 {
+		t.Errorf("expected default OllamaNumPredict -1, got %d", defaults.OllamaNumPredict)
 	}
 	if defaults.MaxModelCallsPerPhase != 50 {
 		t.Errorf("expected default MaxModelCallsPerPhase 50, got %d", defaults.MaxModelCallsPerPhase)
@@ -399,7 +399,7 @@ func TestOllamaGenerationSettingsSerializeAndMerge(t *testing.T) {
 	if merged.OllamaModel != DefaultOllamaModel {
 		t.Fatalf("expected default ollama model for sparse settings, got %q", merged.OllamaModel)
 	}
-	if merged.OllamaNumCtx != 65536 || merged.OllamaNumPredict != 8192 {
+	if merged.OllamaNumCtx != -1 || merged.OllamaNumPredict != -1 {
 		t.Fatalf("expected default ollama options for sparse settings, got ctx=%d predict=%d", merged.OllamaNumCtx, merged.OllamaNumPredict)
 	}
 }

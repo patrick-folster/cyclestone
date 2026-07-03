@@ -101,7 +101,7 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 		}
 		return "agy --print - --print-timeout 30m --sandbox --dangerously-skip-permissions"
 	case "aider", "ollama":
-		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore"
+		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore --edit-mode diff"
 	default:
 		return "unsupported runner"
 	}
@@ -952,6 +952,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			"--no-auto-commits",
 			"--no-dirty-commits",
 			"--no-gitignore",
+			"--edit-mode", "diff",
 		}
 		var model string
 		if runner == "aider" {
@@ -1079,7 +1080,7 @@ func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, 
 }
 
 func setupTemporaryAiderSettings(model string, settings config.Settings) func() {
-	if settings.OllamaNumCtx <= 0 && settings.OllamaNumPredict <= 0 {
+	if settings.OllamaNumCtx == 0 && settings.OllamaNumPredict == 0 {
 		return func() {}
 	}
 
@@ -1107,10 +1108,10 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 			if list[i].ExtraParams == nil {
 				list[i].ExtraParams = make(map[string]interface{})
 			}
-			if settings.OllamaNumCtx > 0 {
+			if settings.OllamaNumCtx != 0 {
 				list[i].ExtraParams["num_ctx"] = settings.OllamaNumCtx
 			}
-			if settings.OllamaNumPredict > 0 {
+			if settings.OllamaNumPredict != 0 {
 				list[i].ExtraParams["num_predict"] = settings.OllamaNumPredict
 			}
 			found = true
@@ -1119,10 +1120,10 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 	}
 	if !found {
 		extraParams := make(map[string]interface{})
-		if settings.OllamaNumCtx > 0 {
+		if settings.OllamaNumCtx != 0 {
 			extraParams["num_ctx"] = settings.OllamaNumCtx
 		}
-		if settings.OllamaNumPredict > 0 {
+		if settings.OllamaNumPredict != 0 {
 			extraParams["num_predict"] = settings.OllamaNumPredict
 		}
 		list = append(list, AiderModelSetting{
@@ -1243,6 +1244,7 @@ func buildAiderArgs(agentID, promptFile, model string) []string {
 		"--no-auto-commits",
 		"--no-dirty-commits",
 		"--no-gitignore",
+		"--edit-mode", "diff",
 	}
 	if agentID != "developer" {
 		args = append(args, "--dry-run")

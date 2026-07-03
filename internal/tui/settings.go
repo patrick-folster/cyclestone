@@ -684,11 +684,11 @@ func (m *SettingsModel) updatePlaceholders() {
 
 	getIntPlaceholder := func(globalVal, defaultVal int) string {
 		if m.Scope == settingsScopeProject {
-			if globalVal > 0 {
+			if globalVal != 0 {
 				return fmt.Sprintf("%d", globalVal)
 			}
 		}
-		if defaultVal > 0 {
+		if defaultVal != 0 {
 			return fmt.Sprintf("%d", defaultVal)
 		}
 		return ""
@@ -710,7 +710,7 @@ func (m *SettingsModel) updatePlaceholders() {
 }
 
 func setIntInput(input *textinput.Model, val int) {
-	if val > 0 {
+	if val != 0 {
 		input.SetValue(fmt.Sprintf("%d", val))
 	} else {
 		input.SetValue("")
@@ -955,10 +955,10 @@ func (m *SettingsModel) normalizeGlobalDraft() {
 	if m.GlobalDraft.MaxHandoffChars <= 0 {
 		m.GlobalDraft.MaxHandoffChars = defaults.MaxHandoffChars
 	}
-	if m.GlobalDraft.OllamaNumCtx <= 0 {
+	if m.GlobalDraft.OllamaNumCtx == 0 {
 		m.GlobalDraft.OllamaNumCtx = defaults.OllamaNumCtx
 	}
-	if m.GlobalDraft.OllamaNumPredict <= 0 {
+	if m.GlobalDraft.OllamaNumPredict == 0 {
 		m.GlobalDraft.OllamaNumPredict = defaults.OllamaNumPredict
 	}
 	if m.GlobalDraft.MaxModelCallsPerPhase <= 0 {
@@ -1311,9 +1311,9 @@ func (m SettingsModel) rowValue(row int) string {
 	case settingOllamaHost:
 		return m.renderStringInputWithInherit(m.OllamaHostInput.View(), defaultString(m.GlobalDraft.OllamaHost, "http://localhost:11434"))
 	case settingOllamaNumCtx:
-		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "65536")
+		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "-1")
 	case settingOllamaNumPredict:
-		return m.renderInputWithInherit(m.OllamaPredictInput.View(), m.GlobalDraft.OllamaNumPredict, "8192")
+		return m.renderInputWithInherit(m.OllamaPredictInput.View(), m.GlobalDraft.OllamaNumPredict, "-1")
 	case settingAgentGroups:
 		return "Enter to edit pipeline groups"
 	default:
@@ -1356,7 +1356,7 @@ func (m SettingsModel) renderBool(value *bool, global bool) string {
 func (m SettingsModel) renderInputWithInherit(view string, global int, fallback string) string {
 	if m.Scope == settingsScopeProject {
 		globalText := fallback
-		if global > 0 {
+		if global != 0 {
 			globalText = fmt.Sprintf("%d", global)
 		}
 		return fmt.Sprintf("%s  %s", view, m.Styles.HelpStyle.Render("(global: "+globalText+")"))

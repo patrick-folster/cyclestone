@@ -208,6 +208,31 @@ func TestSetupTemporaryAiderSettingsWritesOllamaParams(t *testing.T) {
 	}
 }
 
+func TestSetupTemporaryAiderSettingsWritesNegativeOneDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// With -1 (unlimited) values, the settings file must still be written
+	// so that Ollama receives num_ctx: -1 and num_predict: -1.
+	cleanup := setupTemporaryAiderSettings("ollama_chat/glm-5.2:cloud", config.Settings{
+		OllamaNumCtx:     -1,
+		OllamaNumPredict: -1,
+	})
+	defer cleanup()
+
+	data, err := os.ReadFile(".aider.model.settings.yml")
+	if err != nil {
+		t.Fatalf("expected .aider.model.settings.yml to be written for -1 values, got error: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "num_ctx: -1") {
+		t.Fatalf("expected num_ctx: -1 in temporary aider model settings, got:\n%s", text)
+	}
+	if !strings.Contains(text, "num_predict: -1") {
+		t.Fatalf("expected num_predict: -1 in temporary aider model settings, got:\n%s", text)
+	}
+}
+
 func TestCodexRunnerRejectsOversizedInputBeforeExec(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "executor_test_codex_size")
 	if err != nil {
@@ -2494,6 +2519,10 @@ func TestBuildAiderArgsIncludesQuietFlags(t *testing.T) {
 		if !sliceHas(args, flag) {
 			t.Fatalf("expected quiet flag %q in args, got %v", flag, args)
 		}
+	}
+	// Edit mode is always diff to avoid whole-file replacement truncation.
+	if !sliceHas(args, "--edit-mode", "diff") {
+		t.Fatalf("expected --edit-mode diff, got %v", args)
 	}
 	// Model is forwarded when provided.
 	if !sliceHas(args, "--model", "ollama_chat/glm-5.2:cloud") {
