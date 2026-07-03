@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -307,12 +308,12 @@ func extractFinalYAMLDocument(text string) ([]byte, error) {
 	// Prefer the answer region (after the last "► ANSWER" marker) to avoid
 	// picking up YAML-like content from the model's thinking/reasoning
 	// section, which can contain handoff keys quoted out of context.
-	scanText := answerRegion(text)
+	scanText := normalizeForScan(answerRegion(text))
 	inlineBlocks := scanInlineYAMLBlocks(scanText)
 	if len(inlineBlocks) == 0 {
 		// Fall back to the full text when no answer marker is present
 		// (e.g. sidecar files, non-Aider runners).
-		inlineBlocks = scanInlineYAMLBlocks(text)
+		inlineBlocks = scanInlineYAMLBlocks(normalizeForScan(text))
 	}
 	sort.SliceStable(inlineBlocks, func(i, j int) bool {
 		return inlineBlocks[i].position < inlineBlocks[j].position
@@ -545,10 +546,10 @@ func extractHandoffYAML(text string) ([]byte, bool) {
 	candidates := fencedYAMLBlocks(text)
 	// Prefer the answer region for inline blocks to avoid picking up
 	// YAML-like content from the model's thinking/reasoning section.
-	scanText := answerRegion(text)
+	scanText := normalizeForScan(answerRegion(text))
 	inlineBlocks := scanInlineYAMLBlocks(scanText)
 	if len(inlineBlocks) == 0 {
-		inlineBlocks = scanInlineYAMLBlocks(text)
+		inlineBlocks = scanInlineYAMLBlocks(normalizeForScan(text))
 	}
 	candidates = append(candidates, inlineBlocks...)
 	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
@@ -618,6 +619,15 @@ func handoffRawYAMLCandidate(text string) []handoffDocumentCandidate {
 	return []handoffDocumentCandidate{{position: 0, text: trimmed}}
 }
 
+// normalizeForScan applies the line-level normalizations (bullet conversion
+// and merged-key splitting) to a log prior to inline-block scanning. Splitting
+// collapsed keys first ensures block-scalar indicators land on their own line,
+// so scanInlineYAMLBlocks can track flattened block-scalar content and capture
+// the full document instead of stopping at the first column-0 content line.
+func normalizeForScan(text string) string {
+	return string(normalizeMergedKeys(normalizeBulletedYAML([]byte(text))))
+}
+
 // normalizeBulletedYAML replaces Unicode bullet characters (•, U+2022) that
 // appear as the first non-whitespace on a line with the YAML list marker "- ".
 // Agents running through the Aider CLI often use "• " instead of "- " for
@@ -638,6 +648,437 @@ func normalizeBulletedYAML(data []byte) []byte {
 		lines[i] = leading + "- " + afterBullet
 	}
 	return []byte(strings.Join(lines, "\n"))
+}
+
+// compoundHandoffKeys are the multi-word handoff schema keys whose names are
+// distinctive enough that they will not appear as ordinary prose inside a
+// block-scalar value. They are used to detect a top-level handoff key that an
+// agent has appended to the end of a flattened block-scalar content line
+// (e.g. "...complete and passing. next_cycle_focus: []"). The short generic
+// keys (scope, risks, verdict, score, reason, decisions) are intentionally
+// excluded because they can occur naturally in prose.
+var compoundHandoffKeys = []string{
+	"non_goals", "target_paths", "acceptance_map",
+	"changed_files", "implemented_behavior", "checks_run",
+	"criteria_results", "reviewed_files", "failing_checks",
+	"required_fixes", "next_cycle_focus",
+}
+
+// trailingHandoffKeyRe matches a compound handoff key with an empty flow
+// collection value ("[]" or "{}") that an agent has appended to the end of a
+// block-scalar content line (e.g. "...passing. next_cycle_focus: []"). The
+// value is restricted to empty collections so ordinary prose mentioning a
+// handoff key (e.g. "... next_cycle_focus: none") is never split out of
+// block-scalar content. The leading whitespace requirement avoids matching a
+// key that begins a line (those are handled as structural lines).
+var trailingHandoffKeyRe = regexp.MustCompile(`[ \t](` + strings.Join(compoundHandoffKeys, "|") + `):[ \t]*(\[\]|\{\})$`)
+
+// normalizeMergedKeys splits lines where an agent has collapsed several YAML
+// mapping keys onto a single line back into one key per line, and moves
+// block-scalar content that shares a line with its "|" / ">" indicator onto
+// its own line. Agents running through the Aider CLI (notably with
+// ollama/glm-5.2:cloud) frequently emit handoff YAML as if it were a flat
+// label list, producing lines such as:
+//
+//	verdict: approved criteria_results:
+//	  - criterion: "..." result: pass notes: "..."
+//	  - "internal/foo.go" reviewed_files: []   (last list item + next key)
+//	score: 2 verdict: approved reason: | The latest cycle report ...
+//
+// It also tracks double-quoted scalars that span multiple lines: when a quote
+// closes mid-line, any keys appended after it (e.g. "notes: ..." on the line
+// where a criterion's quoted value finally closes) are split off with the
+// correct indentation. The function is block-scalar aware so it never splits
+// keys out of genuine block-scalar content except when an agent has appended a
+// trailing top-level handoff key to a content line. It must run after
+// normalizeBulletedYAML (so "• " has become "- ") and before
+// normalizeFlattenedBlockScalars (so block-scalar indicators are on their own
+// lines and flattened content can be re-indented).
+func normalizeMergedKeys(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines)+8)
+	inBlockScalar := false
+	inQuote := false
+	quoteIndent := 0
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, " \t")
+		content := strings.TrimLeft(line, " ")
+		currentIndent := len(line) - len(content)
+		hasIndent := currentIndent > 0
+
+		if inBlockScalar {
+			// A handoff key at column 0 terminates the block scalar and is
+			// processed as a structural line below.
+			if !hasIndent && isHandoffKeyLine(line) {
+				inBlockScalar = false
+			} else {
+				// Block-scalar content. An agent may have appended a trailing
+				// top-level handoff key to this content line; split it off so
+				// the key is not swallowed into the scalar value.
+				if before, key, ok := splitTrailingHandoffKey(content); ok {
+					out = append(out, strings.Repeat(" ", currentIndent)+before)
+					out = append(out, key)
+					inBlockScalar = false
+					continue
+				}
+				out = append(out, line)
+				continue
+			}
+		}
+
+		if content == "" {
+			out = append(out, line)
+			continue // a blank line does not close an open quote
+		}
+
+		if inQuote {
+			pos, found := findClosingQuote(content)
+			if !found {
+				out = append(out, line)
+				continue // scalar continues onto further lines
+			}
+			// The quote closes at pos. Keep the head (through the closing
+			// quote) on this line; the remainder may hold appended keys.
+			head := content[:pos+1]
+			out = append(out, strings.Repeat(" ", currentIndent)+head)
+			inQuote = false
+			remainder := strings.TrimLeft(content[pos+1:], " \t")
+			if remainder == "" {
+				continue
+			}
+			remLines, opened, qIndent, decBlock := splitMergedFragment(remainder, quoteIndent)
+			out = append(out, remLines...)
+			inQuote = opened
+			quoteIndent = qIndent
+			inBlockScalar = decBlock
+			continue
+		}
+
+		// Normal line: only structural lines (mapping keys or sequence items)
+		// can contain collapsed keys. Block-scalar content is handled above.
+		isSeq := strings.HasPrefix(content, "- ") || content == "-"
+		isStructural := isInlineYAMLStructuralLine(line) || isSeq
+		if !isStructural {
+			out = append(out, line)
+			continue
+		}
+		split, opened, qIndent, decBlock := splitMergedLine(line, currentIndent, isSeq)
+		out = append(out, split...)
+		inQuote = opened
+		quoteIndent = qIndent
+		inBlockScalar = decBlock
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// splitTrailingHandoffKey checks whether a block-scalar content line ends
+// with a compound handoff key (e.g. "next_cycle_focus: []") and, if so,
+// returns the prose prefix and the "key: value" text to emit on its own line
+// at column 0.
+func splitTrailingHandoffKey(content string) (before, key string, ok bool) {
+	loc := trailingHandoffKeyRe.FindStringSubmatchIndex(content)
+	if loc == nil {
+		return "", "", false
+	}
+	matchStart := loc[0]
+	before = strings.TrimRight(content[:matchStart], " \t")
+	key = strings.TrimSpace(content[loc[0]:])
+	return before, key, true
+}
+
+// splitMergedLine rewrites a single structural YAML line that may contain
+// several collapsed mapping keys into one key per line. It returns the
+// rewritten lines, whether the last value is an open double-quoted scalar
+// (and the indentation of its key, for splitting keys appended after the
+// quote closes on a later line), and whether the last key declares a block
+// scalar.
+func splitMergedLine(line string, indent int, isSeq bool) ([]string, bool, int, bool) {
+	content := strings.TrimLeft(line, " ")
+	rest := content
+	prefix := strings.Repeat(" ", indent)
+	if isSeq {
+		if strings.HasPrefix(rest, "- ") {
+			rest = rest[2:]
+			prefix += "- "
+		} else if rest == "-" {
+			return []string{line}, false, 0, false
+		}
+	}
+	firstKeyCol := len(prefix)
+	segs := parseMergedSegments(rest)
+	if len(segs) == 0 {
+		return []string{line}, false, 0, false
+	}
+	// A single clean segment (no merge, no open quote, no block-scalar trailing
+	// content) is preserved verbatim to avoid spurious whitespace changes.
+	if len(segs) == 1 && !segs[0].blockInd && segs[0].trailing == "" && !segs[0].valueOpen {
+		return []string{line}, false, 0, false
+	}
+	firstIsScalar := !segs[0].isKey
+	return emitMergedSegments(segs, prefix, firstKeyCol, firstIsScalar)
+}
+
+// splitMergedFragment processes a fragment of appended keys (the text left on a
+// line after a multi-line double-quoted scalar closes). contentIndent is the
+// indentation of the mapping the scalar belonged to; sub-keys are aligned to
+// it, while top-level handoff keys are emitted at column 0.
+func splitMergedFragment(rest string, contentIndent int) ([]string, bool, int, bool) {
+	segs := parseMergedSegments(rest)
+	if len(segs) == 0 {
+		return nil, false, 0, false
+	}
+	firstPrefix := strings.Repeat(" ", contentIndent)
+	if segs[0].isKey && isHandoffKeyName(segs[0].keyName) {
+		firstPrefix = "" // a top-level handoff key starts at column 0
+	}
+	return emitMergedSegments(segs, firstPrefix, contentIndent, false)
+}
+
+// emitMergedSegments renders parsed segments as one line per key. firstPrefix
+// is prepended to the first emitted line (it carries the original "- " marker
+// for sequence items); firstKeyCol is the indentation used for non-top-level
+// sub-keys; firstIsScalar indicates the first segment is a bare sequence
+// scalar value (so any following keys are new top-level keys).
+func emitMergedSegments(segs []mergedSegment, firstPrefix string, firstKeyCol int, firstIsScalar bool) ([]string, bool, int, bool) {
+	var out []string
+	openedQuote := false
+	quoteIndent := 0
+	declaresBlock := false
+	for i, seg := range segs {
+		var text string
+		var emitIndent int
+		if i == 0 {
+			text = firstPrefix + seg.text
+			emitIndent = firstKeyCol
+		} else {
+			switch {
+			case firstIsScalar:
+				text = seg.text
+				emitIndent = 0
+			case seg.isKey && isHandoffKeyName(seg.keyName):
+				text = seg.text
+				emitIndent = 0
+			default:
+				text = strings.Repeat(" ", firstKeyCol) + seg.text
+				emitIndent = firstKeyCol
+			}
+		}
+		out = append(out, text)
+		if seg.blockInd && seg.trailing != "" {
+			out = append(out, seg.trailing)
+		}
+		declaresBlock = seg.blockInd
+		openedQuote = seg.valueOpen
+		if seg.valueOpen {
+			quoteIndent = emitIndent
+		}
+	}
+	return out, openedQuote, quoteIndent, declaresBlock
+}
+
+// mergedSegment describes one key/value (or scalar) parsed from a collapsed
+// line.
+type mergedSegment struct {
+	text      string // the segment text (e.g. "key: value")
+	isKey     bool   // true for a "key: value" mapping entry
+	keyName   string // the key name when isKey
+	blockInd  bool   // true if the value is a "|" / ">" block-scalar indicator
+	trailing  string // block-scalar same-line content (column 0) after an indicator
+	valueOpen bool   // true if a double-quoted value is not closed on this line
+}
+
+// parseMergedSegments tokenises the content of a collapsed line (after leading
+// whitespace and an optional "- " marker) into ordered key/value segments.
+func parseMergedSegments(rest string) []mergedSegment {
+	var segs []mergedSegment
+	i := 0
+	n := len(rest)
+	for {
+		for i < n && (rest[i] == ' ' || rest[i] == '\t') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		// Quoted/flow value, or the start of a (possibly multi-word) bare
+		// scalar value: collect all consecutive non-key tokens into one
+		// segment so sequence items like "- implement parser" stay intact.
+		if rest[i] == '"' || rest[i] == '[' || rest[i] == '{' {
+			text, _, _, open := collectValue(rest, &i)
+			seg := mergedSegment{text: text, valueOpen: open}
+			segs = append(segs, seg)
+			if open {
+				break // value continues on subsequent lines; stop here
+			}
+			continue
+		}
+		// Bare token: read until whitespace. A token ending with ":" is a key.
+		j := i
+		for j < n && rest[j] != ' ' && rest[j] != '\t' {
+			j++
+		}
+		token := rest[i:j]
+		if strings.HasSuffix(token, ":") && len(token) > 1 {
+			keyName := token[:len(token)-1]
+			i = j
+			valueText, blockInd, trailing, open := collectValue(rest, &i)
+			seg := mergedSegment{isKey: true, keyName: keyName, valueOpen: open}
+			if blockInd {
+				seg.text = token + " " + valueText
+				seg.blockInd = true
+				seg.trailing = trailing
+			} else {
+				seg.text = token
+				if valueText != "" {
+					seg.text += " " + valueText
+				}
+			}
+			segs = append(segs, seg)
+			if open || blockInd {
+				break // open quote continues later; block indicator ends the line
+			}
+			continue
+		}
+		// Bare scalar value: collect the whole (possibly multi-word) value.
+		text, _, _, open := collectValue(rest, &i)
+		segs = append(segs, mergedSegment{text: text, valueOpen: open})
+		if open {
+			break
+		}
+	}
+	return segs
+}
+
+// collectValue reads the value tokens following a key (or starting a bare
+// scalar) until the next key token or end of line. It returns the joined value
+// text, whether the value is a block-scalar indicator, any same-line content
+// trailing the indicator, and whether a quoted value is left open (continues
+// on later lines). i is advanced past the consumed tokens.
+func collectValue(rest string, i *int) (string, bool, string, bool) {
+	n := len(rest)
+	var parts []string
+	for {
+		for *i < n && (rest[*i] == ' ' || rest[*i] == '\t') {
+			*i++
+		}
+		if *i >= n {
+			break
+		}
+		if rest[*i] == '"' {
+			end, closed := scanDoubleQuoted(rest, *i)
+			parts = append(parts, rest[*i:end])
+			*i = end
+			if !closed {
+				return strings.Join(parts, " "), false, "", true
+			}
+			continue
+		}
+		if rest[*i] == '[' || rest[*i] == '{' {
+			end, _ := scanFlowCollection(rest, *i)
+			parts = append(parts, rest[*i:end])
+			*i = end
+			continue
+		}
+		j := *i
+		for j < n && rest[j] != ' ' && rest[j] != '\t' {
+			j++
+		}
+		token := rest[*i:j]
+		// A token ending with ":" is the start of the next key: stop here.
+		if strings.HasSuffix(token, ":") && len(token) > 1 {
+			break
+		}
+		*i = j
+		if isBlockScalarIndicator(token) {
+			// Remaining same-line content after the indicator is block-scalar
+			// content flattened onto the indicator line.
+			trailing := ""
+			for *i < n && (rest[*i] == ' ' || rest[*i] == '\t') {
+				*i++
+			}
+			if *i < n {
+				trailing = rest[*i:]
+				*i = n
+			}
+			return token, true, trailing, false
+		}
+		parts = append(parts, token)
+	}
+	return strings.Join(parts, " "), false, "", false
+}
+
+// scanDoubleQuoted returns the index just past the closing double quote and
+// whether the quote was closed on this line.
+func scanDoubleQuoted(s string, start int) (int, bool) {
+	j := start + 1
+	for j < len(s) {
+		switch s[j] {
+		case '\\':
+			j += 2
+		case '"':
+			return j + 1, true
+		default:
+			j++
+		}
+	}
+	return j, false
+}
+
+// scanFlowCollection returns the index just past the closing "]" or "}".
+func scanFlowCollection(s string, start int) (int, bool) {
+	close := byte(']')
+	if s[start] == '{' {
+		close = '}'
+	}
+	j := start + 1
+	for j < len(s) {
+		if s[j] == close {
+			return j + 1, true
+		}
+		j++
+	}
+	return j, false
+}
+
+// isBlockScalarIndicator reports whether a bare token is a YAML block-scalar
+// indicator ("|" or ">") optionally followed by chomping/indent modifiers.
+func isBlockScalarIndicator(token string) bool {
+	if token == "" || (token[0] != '|' && token[0] != '>') {
+		return false
+	}
+	for _, r := range token[1:] {
+		if r != '-' && r != '+' && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// findClosingQuote returns the index of the first unescaped double quote in s,
+// i.e. the closing quote of a double-quoted scalar whose opening quote was on
+// a previous line. Returns false if not found.
+func findClosingQuote(s string) (int, bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i] == '"' {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// isHandoffKeyName reports whether name is a known top-level handoff schema
+// key.
+func isHandoffKeyName(name string) bool {
+	for _, key := range handoffKeyPrefixes {
+		if key == name {
+			return true
+		}
+	}
+	return false
 }
 
 // blockScalarContentIndent is the number of indentation spaces added beyond
@@ -793,7 +1234,7 @@ func normalizeFlattenedBlockScalars(data []byte) []byte {
 // characters to YAML list markers, then re-indenting block-scalar content that
 // Aider's CLI display has flattened (to column 0 or to the key's own indentation).
 func normalizeHandoffYAML(data []byte) []byte {
-	return normalizeFlattenedBlockScalars(normalizeBulletedYAML(data))
+	return normalizeFlattenedBlockScalars(normalizeMergedKeys(normalizeBulletedYAML(data)))
 }
 
 // handoffKeyPrefixes lists all YAML keys that are part of the known handoff

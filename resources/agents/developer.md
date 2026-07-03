@@ -80,3 +80,30 @@ Provide:
 - Each YAML field must be an array of strings, even when empty.
 - Use YAML block scalars (`|`) for long string values, especially multi-sentence summaries, check output notes, decisions, and risks.
 - No text after the YAML document.
+
+
+## Required YAML Handoff
+
+You are running inside the Aider coding assistant, whose system prompt demands code changes in SEARCH/REPLACE blocks. **Make your code changes with SEARCH/REPLACE blocks as usual — that is your implementation work.** After all code edits are done, you MUST finish your response with the YAML handoff document below.
+
+The YAML handoff is structured data describing what you did — it is **not code**. Emit it as plain text as the very last thing in your response. Do **not** wrap it in a SEARCH/REPLACE block or in Markdown fences. Aider will not try to apply it; it is recorded separately as your handoff. If you do not emit this YAML document as your final output, your work cannot be recorded and QA has nothing to review.
+
+Emit one key per line, using `-` for list items and `[]` for empty arrays. The block below shows the exact shape (fenced here only for readability — emit your own **unfenced**, with real values):
+
+```yaml
+changed_files:
+  - internal/executor/executor.go
+  - internal/config/settings.go
+implemented_behavior:
+  - |
+    Added the foo runner by reusing the shared codex argument builder and
+    prefixing it with the ollama launch command.
+checks_run:
+  - "go test ./internal/executor/... -> PASS"
+  - "go test ./internal/config/... -> PASS"
+decisions:
+  - |
+    Reused buildCodexArgs for both the codex and ollama-codex runners so the
+    argument lists cannot drift.
+risks: []
+```

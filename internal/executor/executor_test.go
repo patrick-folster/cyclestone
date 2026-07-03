@@ -3332,3 +3332,191 @@ func TestWritePhaseHandoffOllamaQACapturesNestedBlockScalar(t *testing.T) {
 		t.Fatalf("QA handoff must not contain implemented_behavior (THINKING-section leakage)")
 	}
 }
+
+// --- Regression tests for collapsed-key normalization (cycle 0001 real output) ---
+
+// TestExtractFinalYAMLDocumentParsesCollapsedQAHandoff reproduces the exact
+// malformation seen in the real ollama/glm-5.2:cloud QA output of milestone
+// cycle 0001: several mapping keys collapsed onto single lines
+// ("verdict: approved criteria_results:", "result: pass notes: \"...\""), a
+// multi-line double-quoted criterion value whose closing quote is followed by
+// more merged keys on the continuation line, a top-level key
+// ("reviewed_files:") appended after a quoted value closes, and a final list
+// item with two trailing top-level keys. Before the merged-key normalization
+// the document failed to parse and the QA handoff fell back, losing the
+// verdict and criteria_results.
+func TestExtractFinalYAMLDocumentParsesCollapsedQAHandoff(t *testing.T) {
+	text := "► THINKING\n\nI should output the QA report.\n\n--------------------------------------------------------------------------------\n\n► ANSWER\n\n" + strings.Join([]string{
+		`verdict: approved criteria_results:`,
+		``,
+		` • criterion: "Add ollama-codex runner that launches Codex CLI through Ollama"`,
+		`   result: pass notes: "Implemented in internal/executor/executor.go via`,
+		`   runOllamaCodex and buildOllamaCodexCommand."`,
+		` • criterion: "Extract buildCodexArgs from buildCodexCommand" result: pass`,
+		`   notes: "buildCodexArgs is now a separate function used by both`,
+		`   buildCodexCommand and buildOllamaCodexCommand."`,
+		` • criterion: "Runner selectable in setup when both ollama and codex are on`,
+		`   PATH" result: pass notes: "internal/tui/runner_availability.go checks for`,
+		`   both binaries."`,
+		` • criterion: "EnableCodexSessionResume honored for ollama-codex" result: pass`,
+		`   notes: "runOllamaCodex includes resume logic and fallback retry identical to`,
+		`   runCodex." reviewed_files:`,
+		` • ".cyclestone/DECISIONS.md"`,
+		` • "README.md"`,
+		` • "internal/config/settings.go"`,
+		` • "internal/executor/executor.go"`,
+		` • "internal/tui/settings.go" failing_checks: [] required_fixes: []`,
+		``,
+		`Tokens: 51k sent, 1.9k received.`,
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v\nraw:\n%s", err, string(raw))
+	}
+	if v, _ := decoded["verdict"].(string); v != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	cr, ok := decoded["criteria_results"].([]interface{})
+	if !ok || len(cr) != 4 {
+		t.Fatalf("expected 4 criteria_results, got %#v", decoded["criteria_results"])
+	}
+	// The third criterion has a multi-line quoted value whose closing quote is
+	// followed by merged keys on the continuation line; verify it survived.
+	item, _ := cr[2].(map[string]interface{})
+	if c, _ := item["criterion"].(string); c != "Runner selectable in setup when both ollama and codex are on PATH" {
+		t.Fatalf("expected folded criterion text, got %q", c)
+	}
+	if r, _ := item["result"].(string); r != "pass" {
+		t.Fatalf("expected result=pass, got %q", r)
+	}
+	if n, _ := item["notes"].(string); n != "internal/tui/runner_availability.go checks for both binaries." {
+		t.Fatalf("expected folded notes, got %q", n)
+	}
+	// reviewed_files was appended after a quoted value closed; it must be a
+	// top-level array, not a nested string.
+	rf, ok := decoded["reviewed_files"].([]interface{})
+	if !ok || len(rf) != 5 {
+		t.Fatalf("expected 5 reviewed_files, got %#v", decoded["reviewed_files"])
+	}
+	for _, fc := range []string{"failing_checks", "required_fixes"} {
+		if arr, ok := decoded[fc].([]interface{}); !ok || len(arr) != 0 {
+			t.Fatalf("expected %s=[], got %#v", fc, decoded[fc])
+		}
+	}
+	// The fallback must not have leaked THINKING-section content.
+	if _, ok := decoded["implemented_behavior"]; ok {
+		t.Fatalf("QA document must not contain implemented_behavior")
+	}
+}
+
+// TestWritePhaseHandoffOllamaQAParsesCollapsedKeys is the end-to-end regression
+// for the QA agent: a real-style ollama QA log with collapsed mapping keys and
+// multi-line quoted values must produce a non-fallback handoff retaining the
+// verdict and structured criteria_results.
+func TestWritePhaseHandoffOllamaQAParsesCollapsedKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "qa.log")
+	handoffPath := filepath.Join(tmpDir, "qa-handoff.yaml")
+	text := "► ANSWER\n\n" + strings.Join([]string{
+		`verdict: approved criteria_results:`,
+		``,
+		` • criterion: "No code changes required" result: pass notes: "Nothing to do."`,
+		`reviewed_files: [] failing_checks: [] required_fixes: []`,
+		``,
+		`Tokens: 8k sent, 1k received.`,
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-Q", 1, "qa", "qa", logPath, 1000, "", "ollama"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.Fallback {
+		t.Fatalf("expected non-fallback handoff from collapsed YAML, got fallback=true")
+	}
+	if v, _ := handoff.Summary["verdict"].(string); v != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", handoff.Summary["verdict"])
+	}
+	cr, _ := handoff.Summary["criteria_results"].([]interface{})
+	if len(cr) != 1 {
+		t.Fatalf("expected 1 criteria_results item, got %#v", handoff.Summary["criteria_results"])
+	}
+}
+
+// TestExtractFinalYAMLDocumentParsesCollapsedRecommenderHandoff reproduces the
+// real ollama/glm-5.2:cloud recommender output of cycle 0001: the three
+// top-level keys ("score: 2 verdict: approved reason: |") collapsed onto one
+// line, the block-scalar content flattened to column 0, and the final
+// top-level key ("next_cycle_focus: []") appended to the last content line.
+// Before the fix the structured handoff fell back, leaving verdict empty and
+// score lost.
+func TestExtractFinalYAMLDocumentParsesCollapsedRecommenderHandoff(t *testing.T) {
+	text := "► ANSWER                                                                        \n\n" + strings.Join([]string{
+		`score: 2 verdict: approved reason: | The latest cycle report shows the QA agent`,
+		`approved the implementation with no required fixes. The goal to introduce the`,
+		`"Ollama via Codex" runner has been met. Tests were added following existing`,
+		`patterns. The report is marked as a fallback handoff, but the visible QA`,
+		`verdict is "approved" with empty required_fixes, indicating the implementation`,
+		`is complete and passing. next_cycle_focus: []`,
+		``,
+		`Tokens: 36k sent, 1.5k received.`,
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v\nraw:\n%s", err, string(raw))
+	}
+	if sc, _ := numericValueAsIntInRange(decoded["score"], 0, 10); sc != 2 {
+		t.Fatalf("expected score=2, got %#v", decoded["score"])
+	}
+	if v, _ := decoded["verdict"].(string); v != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	reason, _ := decoded["reason"].(string)
+	if !strings.Contains(reason, "The latest cycle report") || !strings.Contains(reason, "complete and passing.") {
+		t.Fatalf("expected reason to retain flattened content, got %q", reason)
+	}
+	if focus, ok := decoded["next_cycle_focus"].([]interface{}); !ok || len(focus) != 0 {
+		t.Fatalf("expected next_cycle_focus=[], got %#v", decoded["next_cycle_focus"])
+	}
+}
+
+// TestNormalizeMergedKeysPreservesValidSingleKeyLines ensures the merged-key
+// splitter does not alter already-valid YAML lines (single key per line,
+// multi-word scalar values, empty collections) or block-scalar content.
+func TestNormalizeMergedKeysPreservesValidSingleKeyLines(t *testing.T) {
+	raw := strings.Join([]string{
+		"verdict: approved",
+		"criteria_results:",
+		"  - criterion: test",
+		"    result: fail",
+		"reviewed_files:",
+		"  - internal/executor/executor.go",
+		"  - a multi word scalar value",
+		"reason: |",
+		"  The reason text mentions verdict: approved and next_cycle_focus: none",
+		"  but must stay intact as block-scalar content.",
+		"next_cycle_focus: []",
+	}, "\n")
+	normalized := normalizeMergedKeys([]byte(raw))
+	if string(normalized) != raw {
+		t.Fatalf("expected valid YAML unchanged, got:\n%s", string(normalized))
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalizeHandoffYAML([]byte(raw)), &decoded); err != nil {
+		t.Fatalf("normalized YAML failed to parse: %v", err)
+	}
+}
