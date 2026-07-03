@@ -761,6 +761,84 @@ func TestSanitizeRunnerLogForReportStripsCodexPromptEcho(t *testing.T) {
 	}
 }
 
+func TestWritePhaseHandoffPrefersTempYAMLFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "developer.log")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	tempYAMLPath := filepath.Join(tmpDir, "developer-temp-handoff.yaml")
+
+	// The console log contains NO structured YAML — only prose. Without the
+	// temp file this would produce a fallback handoff.
+	if err := os.WriteFile(logPath, []byte("I made the changes.\nNo YAML in console output.\n"), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+
+	// The agent wrote its structured handoff directly to the temp file.
+	tempYAML := strings.Join([]string{
+		"changed_files:",
+		"  - internal/executor/handoff.go",
+		"implemented_behavior:",
+		"  - wrote handoff to temp file",
+		"checks_run:",
+		"  - go test ./internal/executor -> PASS",
+		"decisions:",
+		"  - prefer temp file over console parsing",
+		"risks: []",
+	}, "\n")
+	if err := os.WriteFile(tempYAMLPath, []byte(tempYAML), 0644); err != nil {
+		t.Fatalf("failed to write temp yaml: %v", err)
+	}
+
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-T", 1, "developer", "developer", logPath, 1000, "", "codex", tempYAMLPath); err != nil {
+		t.Fatalf("writePhaseHandoff temp failed: %v", err)
+	}
+
+	var handoff phaseHandoff
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to read handoff: %v", err)
+	}
+	if err := yaml.Unmarshal(data, &handoff); err != nil {
+		t.Fatalf("failed to unmarshal handoff: %v", err)
+	}
+	if handoff.OutputContract != "developer" || handoff.ValidationStatus != "valid" {
+		t.Fatalf("expected valid developer contract from temp file, got contract=%q status=%q", handoff.OutputContract, handoff.ValidationStatus)
+	}
+	files, ok := handoff.Summary["changed_files"].([]interface{})
+	if !ok || len(files) != 1 || files[0] != "internal/executor/handoff.go" {
+		t.Fatalf("expected changed_files from temp yaml, got %#v", handoff.Summary["changed_files"])
+	}
+	if strings.Contains(string(data), "fallback: true") {
+		t.Fatalf("expected no fallback when temp yaml is valid, got:\n%s", string(data))
+	}
+}
+
+func TestWritePhaseHandoffFallsBackWhenTempFileMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "pm.log")
+	handoffPath := filepath.Join(tmpDir, "pm-handoff.yaml")
+	tempYAMLPath := filepath.Join(tmpDir, "does-not-exist.yaml")
+
+	// Console log contains fenced YAML; temp file does not exist. Should fall
+	// back to the log-based extraction.
+	if err := os.WriteFile(logPath, []byte("report\n```yaml\nscope:\n  - one\nrisks:\n  - low\n```\n"), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-F", 1, "pm", "", logPath, 1000, "", "codex", tempYAMLPath); err != nil {
+		t.Fatalf("writePhaseHandoff fallback failed: %v", err)
+	}
+	data, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to read handoff: %v", err)
+	}
+	if !strings.Contains(string(data), "scope:") {
+		t.Fatalf("expected parsed yaml from log when temp file missing, got:\n%s", string(data))
+	}
+	if strings.Contains(string(data), "fallback: true") {
+		t.Fatalf("should not be a fallback when log has valid yaml, got:\n%s", string(data))
+	}
+}
+
 func TestWritePhaseHandoffParsesYAMLOrFallsBack(t *testing.T) {
 	tmpDir := t.TempDir()
 	yamlLog := filepath.Join(tmpDir, "pm.log")

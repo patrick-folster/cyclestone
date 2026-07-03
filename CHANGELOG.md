@@ -8,6 +8,7 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 
 ### Added
 
+- Agents now write their structured YAML handoff directly to a dedicated temp file under `.cyclestone/temp/` (path injected into the prompt via the `{{HANDOFF_YAML_PATH}}` placeholder) instead of emitting it inline in the console output. Cyclestone reads clean YAML from the file, avoiding the brittle console-log extraction and normalization pipeline. The log-based extraction remains as a fallback for manual mode, custom agents without the placeholder, and older runners.
 - Security policy.
 - Release checklist.
 - Architecture documentation.

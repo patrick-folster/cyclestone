@@ -185,6 +185,14 @@ type CycleMetadata struct {
 	GitContext     string                   `json:"git_context"`
 }
 
+// handoffTempYAMLPath returns the path to the dedicated temp YAML handoff file
+// that an agent is instructed to write (via the {{HANDOFF_YAML_PATH}}
+// placeholder). The file lives under .cyclestone/temp so it is kept separate
+// from the reports directory and the runner's console output log.
+func handoffTempYAMLPath(milestoneID, cyclePadded, agentFileID string) string {
+	return filepath.Join(".cyclestone", "temp", fmt.Sprintf("%s-cycle-%s-%s-handoff.yaml", milestoneID, cyclePadded, agentFileID))
+}
+
 // ExecuteCycle runs the milestone cycle as a background task.
 func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []config.Agent, opts RunOptions, state *config.State, ch chan tea.Msg) {
 	reportsDir := filepath.Join(".cyclestone", "reports")
@@ -1262,8 +1270,10 @@ var aiderQuietFlags = []string{
 // Aider displays any proposed edits in the output log without writing them to
 // disk. This prevents non-developer phases from accidentally touching source
 // files when the model suggests changes. The structured output contract is
-// still captured because the handoff parser extracts inline YAML from the
-// model's response text, not only from sidecar files.
+// captured from the dedicated temp handoff file ({{HANDOFF_YAML_PATH}}) the
+// agent is instructed to write; when that file is absent the handoff parser
+// falls back to extracting inline YAML from the model's response text or a
+// sibling sidecar .yaml file.
 func buildAiderArgs(agentID, promptFile, model string) []string {
 	args := []string{
 		"--message-file", promptFile,
@@ -1671,6 +1681,16 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		inputPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-input.md", milestone.ID, cyclePadded, agentFileID))
 		outputPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-output.log", milestone.ID, cyclePadded, agentFileID))
 
+		// Dedicated temp file for the agent's structured YAML handoff. The
+		// prompt instructs the agent to write its handoff YAML here (via the
+		// {{HANDOFF_YAML_PATH}} placeholder) so cyclestone can read clean YAML
+		// from the file instead of parsing it out of the console output log.
+		tempDir := filepath.Join(".cyclestone", "temp")
+		_ = os.MkdirAll(tempDir, 0755)
+		handoffYAMLPath := handoffTempYAMLPath(milestone.ID, cyclePadded, agentFileID)
+		_ = os.Remove(handoffYAMLPath) // clear any stale file from a previous run
+		inputContent = strings.ReplaceAll(inputContent, "{{HANDOFF_YAML_PATH}}", handoffYAMLPath)
+
 		_ = os.WriteFile(inputPath, []byte(inputContent), 0644)
 		if ch != nil {
 			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
@@ -1700,7 +1720,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		handoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, agentFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, agent.OutputContract)
 		if writeHandoff {
-			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote, runner)
+			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote, runner, handoffYAMLPath)
 		}
 
 		if agent.ID == "recommender" {
@@ -1904,6 +1924,12 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		recommenderFileID := getAgentFileID("recommender", pipeline)
 		recommenderLogPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-output.log", milestone.ID, cyclePadded, recommenderFileID))
 
+		recommenderTempDir := filepath.Join(".cyclestone", "temp")
+		_ = os.MkdirAll(recommenderTempDir, 0755)
+		recommenderHandoffYAMLPath := handoffTempYAMLPath(milestone.ID, cyclePadded, recommenderFileID)
+		_ = os.Remove(recommenderHandoffYAMLPath)
+		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_YAML_PATH}}", recommenderHandoffYAMLPath)
+
 		if ch != nil {
 			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
 				MilestoneID:     milestone.ID,
@@ -1933,7 +1959,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		recommenderHandoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, recommenderFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, "recommender")
 		if writeHandoff {
-			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote, activeRunner)
+			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote, activeRunner, recommenderHandoffYAMLPath)
 		}
 
 		recommenderScore := parseRecommendationScore(recommenderHandoffPath)

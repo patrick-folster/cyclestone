@@ -70,9 +70,85 @@ type contractValidationResult struct {
 	Contract string
 }
 
+// readHandoffTempYAML reads the dedicated temp YAML handoff file that the agent
+// was instructed to write (via the {{HANDOFF_YAML_PATH}} placeholder in the
+// prompt). It returns the trimmed file content and true when the file exists
+// and is non-empty.
+func readHandoffTempYAML(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// parseAndValidateContractContent parses a raw YAML document (typically read
+// from the agent's dedicated temp handoff file) and validates it against the
+// given output contract. Unlike parseAndValidateContract it does not scan for
+// embedded YAML blocks — the content is assumed to be the document itself.
+func parseAndValidateContractContent(text, contract string) contractValidationResult {
+	result := contractValidationResult{
+		Contract: contract,
+		Status:   "invalid",
+	}
+	raw := normalizeHandoffYAML([]byte(strings.TrimSpace(text)))
+	var summary map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &summary); err != nil {
+		result.Errors = []string{fmt.Sprintf("malformed yaml for %s contract: %v", contract, err)}
+		return result
+	}
+	result.Summary = summary
+	result.RawYAML = raw
+	result.Errors = validateContractSummary(summary, contract)
+	if len(result.Errors) == 0 {
+		result.Status = "valid"
+	}
+	return result
+}
+
 // writePhaseHandoff writes the phase execution results to a YAML handoff file.
 // It includes the optional human comment/note inside the human_input property.
-func writePhaseHandoff(ctx context.Context, settings config.Settings, path, milestoneID string, cycleNum int, agentID string, outputContract string, outputPath string, maxChars int, cycleNote string, runner string) error {
+func writePhaseHandoff(ctx context.Context, settings config.Settings, path, milestoneID string, cycleNum int, agentID string, outputContract string, outputPath string, maxChars int, cycleNote string, runner string, handoffYAMLPath ...string) error {
+	// Prefer a dedicated temp YAML file written by the agent (specified in the
+	// prompt via the {{HANDOFF_YAML_PATH}} placeholder). When the agent writes
+	// its structured handoff directly to that file we avoid the brittle
+	// console-log extraction/normalization pipeline entirely.
+	var tempYAMLPath string
+	if len(handoffYAMLPath) > 0 {
+		tempYAMLPath = handoffYAMLPath[0]
+	}
+	if tempContent, ok := readHandoffTempYAML(tempYAMLPath); ok {
+		contract := effectiveOutputContract(agentID, outputContract)
+		if contract != "" {
+			validation := parseAndValidateContractContent(tempContent, contract)
+			if validation.Status == "valid" {
+				return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
+			}
+			if contractValidationBypassed(runner) {
+				if validation.Summary != nil {
+					return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, contractValidationResult{
+						Summary:  validation.Summary,
+						Contract: validation.Contract,
+					})
+				}
+			} else {
+				return writeContractPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, cycleNote, validation)
+			}
+		}
+		if parsed, _, ok := parseHandoffYAMLDocument(tempContent); ok {
+			return writeParsedPhaseHandoff(path, milestoneID, cycleNum, agentID, outputPath, parsed, cycleNote)
+		}
+		// The temp file exists but could not be parsed; fall through to the
+		// log-based extraction below as a safety net.
+	}
+
 	outBytes, err := os.ReadFile(outputPath)
 	if err != nil {
 		return err
@@ -80,11 +156,13 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 	text := string(outBytes)
 	contract := effectiveOutputContract(agentID, outputContract)
 	if contract != "" {
-		// Agents run through the Aider CLI (aider/ollama) often write their
-		// structured output contract to a sidecar .yaml file next to the output
-		// log instead of emitting it inline. The CLI log display mangles YAML
-		// with line wrapping and intermixed UI chrome, so prefer the sidecar
-		// document when present so the contract is extracted reliably.
+		// Fallback path: the dedicated temp handoff file was absent or
+		// unparseable. Agents run through the Aider CLI (aider/ollama) often
+		// write their structured output contract to a sidecar .yaml file next
+		// to the output log instead of emitting it inline. The CLI log display
+		// mangles YAML with line wrapping and intermixed UI chrome, so prefer
+		// the sidecar document when present so the contract is extracted
+		// reliably.
 		contractText := text
 		if sidecar, ok := readSidecarOutputYAML(outputPath); ok {
 			contractText = sidecar
