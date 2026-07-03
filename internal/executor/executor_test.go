@@ -840,6 +840,55 @@ func TestContractHandoffValidatesFinalFencedYAML(t *testing.T) {
 	}
 }
 
+func TestContractHandoffPrefersTrailingRawYAMLOverPromptSampleFence(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "developer.log")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	text := strings.Join([]string{
+		"Agent instructions:",
+		"Return a final YAML document like this sample:",
+		"```yaml",
+		"changed_files:",
+		"  - sample.md",
+		"implemented_behavior:",
+		"  - sample behavior",
+		"checks_run: []",
+		"decisions:",
+		"  - sample decision",
+		"risks: []",
+		"```",
+		"",
+		"Actual attached output:",
+		"",
+		"changed_files:",
+		"  - internal/executor/handoff.go",
+		"implemented_behavior:",
+		"  - selected trailing raw YAML instead of the prompt sample",
+		"checks_run:",
+		"  - go test ./internal/executor",
+		"decisions:",
+		"  - prefer the latest parseable handoff document",
+		"risks: []",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-C", 1, "developer", "developer", logPath, 1000, "", "codex"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.OutputContract != "developer" || handoff.ValidationStatus != "valid" {
+		t.Fatalf("expected valid developer contract, got %#v", handoff)
+	}
+	files := handoff.Summary["changed_files"].([]interface{})
+	if files[0] != "internal/executor/handoff.go" {
+		t.Fatalf("expected trailing raw YAML to win over prompt sample fence, got %#v", files)
+	}
+}
+
 func TestAgentIDAloneDoesNotForceOutputContract(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "developer.log")

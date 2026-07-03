@@ -296,40 +296,42 @@ func parseAndValidateContract(text, contract string) contractValidationResult {
 }
 
 func extractFinalYAMLDocument(text string) ([]byte, error) {
-	blocks := fencedYAMLBlocks(text)
-	if len(blocks) > 0 {
-		sort.SliceStable(blocks, func(i, j int) bool {
-			return blocks[i].position < blocks[j].position
-		})
-		return normalizeHandoffYAML([]byte(strings.TrimSpace(blocks[len(blocks)-1].text))), nil
-	}
-	// No fenced blocks: scan for inline YAML blocks that agents emit
-	// without markdown fences (common with Aider/Ollama CLI output).
-	// Prefer the answer region (after the last "► ANSWER" marker) to avoid
-	// picking up YAML-like content from the model's thinking/reasoning
-	// section, which can contain handoff keys quoted out of context.
-	scanText := normalizeForScan(answerRegion(text))
-	inlineBlocks := scanInlineYAMLBlocks(scanText)
+	candidates := fencedYAMLBlocks(text)
+	// Scan for inline YAML blocks that agents emit without markdown fences
+	// (common with Aider/Ollama CLI output). Prefer the answer region (after
+	// the last "► ANSWER" marker) to avoid picking up YAML-like content from
+	// the model's thinking/reasoning section, which can contain handoff keys
+	// quoted out of context. Fenced, inline, and raw candidates are evaluated
+	// together by source position so a trailing raw handoff attached after an
+	// agent prompt's sample fenced YAML wins.
+	answerText, answerOffset := answerRegionWithOffset(text)
+	inlineBlocks := scanInlineYAMLBlocks(normalizeForScan(answerText))
 	if len(inlineBlocks) == 0 {
 		// Fall back to the full text when no answer marker is present
 		// (e.g. sidecar files, non-Aider runners).
 		inlineBlocks = scanInlineYAMLBlocks(normalizeForScan(text))
-	}
-	sort.SliceStable(inlineBlocks, func(i, j int) bool {
-		return inlineBlocks[i].position < inlineBlocks[j].position
-	})
-	for i := len(inlineBlocks) - 1; i >= 0; i-- {
-		candidate := normalizeHandoffYAML([]byte(strings.TrimSpace(inlineBlocks[i].text)))
-		var decoded map[string]interface{}
-		if err := unmarshalYAMLMap(candidate, &decoded); err == nil && hasKnownHandoffKey(decoded) {
-			return candidate, nil
+	} else {
+		for i := range inlineBlocks {
+			inlineBlocks[i].position += answerOffset
 		}
 	}
-	// Last resort: try the entire text as a single YAML document.
-	raw := normalizeHandoffYAML([]byte(strings.TrimSpace(text)))
-	var decoded map[string]interface{}
-	if err := unmarshalYAMLMap(raw, &decoded); err == nil && hasKnownHandoffKey(decoded) {
-		return raw, nil
+	candidates = append(candidates, inlineBlocks...)
+	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].position < candidates[j].position
+	})
+	for i := len(candidates) - 1; i >= 0; i-- {
+		candidate := normalizeHandoffYAML([]byte(strings.TrimSpace(candidates[i].text)))
+		var decoded map[string]interface{}
+		if err := unmarshalYAMLMap(candidate, &decoded); err == nil {
+			if hasKnownHandoffKey(decoded) {
+				return candidate, nil
+			}
+			continue
+		}
+		if looksLikeHandoffYAML(candidate) {
+			return candidate, nil
+		}
 	}
 	return nil, fmt.Errorf("missing yaml document for output contract")
 }
@@ -546,10 +548,14 @@ func extractHandoffYAML(text string) ([]byte, bool) {
 	candidates := fencedYAMLBlocks(text)
 	// Prefer the answer region for inline blocks to avoid picking up
 	// YAML-like content from the model's thinking/reasoning section.
-	scanText := normalizeForScan(answerRegion(text))
-	inlineBlocks := scanInlineYAMLBlocks(scanText)
+	answerText, answerOffset := answerRegionWithOffset(text)
+	inlineBlocks := scanInlineYAMLBlocks(normalizeForScan(answerText))
 	if len(inlineBlocks) == 0 {
 		inlineBlocks = scanInlineYAMLBlocks(normalizeForScan(text))
+	} else {
+		for i := range inlineBlocks {
+			inlineBlocks[i].position += answerOffset
+		}
 	}
 	candidates = append(candidates, inlineBlocks...)
 	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
@@ -569,6 +575,15 @@ func extractHandoffYAML(text string) ([]byte, bool) {
 func hasKnownHandoffKey(decoded map[string]interface{}) bool {
 	for _, key := range handoffKeyPrefixes {
 		if _, ok := decoded[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeHandoffYAML(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if isHandoffKeyLine(line) {
 			return true
 		}
 	}
@@ -1453,17 +1468,26 @@ func numericValueAsIntInRange(value interface{}, min, max int) (int, bool) {
 // present (for example non-Aider runners or plain logs), the full text is
 // returned so behaviour degrades gracefully.
 func answerRegion(text string) string {
+	answer, _ := answerRegionWithOffset(text)
+	return answer
+}
+
+func answerRegionWithOffset(text string) (string, int) {
 	lines := strings.Split(text, "\n")
 	lastAnswer := -1
+	offset := 0
+	answerOffset := 0
 	for i, line := range lines {
 		if strings.Contains(strings.TrimSpace(line), "► ANSWER") {
 			lastAnswer = i
+			answerOffset = offset + len(line) + 1
 		}
+		offset += len(line) + 1
 	}
 	if lastAnswer < 0 {
-		return text
+		return text, 0
 	}
-	return strings.Join(lines[lastAnswer+1:], "\n")
+	return strings.Join(lines[lastAnswer+1:], "\n"), answerOffset
 }
 
 func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars int, pipeline []config.Agent) string {
