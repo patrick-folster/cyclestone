@@ -212,8 +212,11 @@ func TestSetupTemporaryAiderSettingsWritesNegativeOneDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	// With -1 (unlimited) values, the settings file must still be written
-	// so that Ollama receives num_ctx: -1 and num_predict: -1.
+	// ollama_chat/ models use Ollama's OpenAI-compatible endpoint where
+	// num_predict maps to max_tokens, which must be positive. The -1 unlimited
+	// sentinel is therefore omitted so Ollama falls back to its default
+	// unlimited generation. num_ctx: -1 is still written because the
+	// OpenAI-compatible endpoint passes it through to Ollama's native options.
 	cleanup := setupTemporaryAiderSettings("ollama_chat/glm-5.2:cloud", config.Settings{
 		OllamaNumCtx:     -1,
 		OllamaNumPredict: -1,
@@ -228,8 +231,63 @@ func TestSetupTemporaryAiderSettingsWritesNegativeOneDefaults(t *testing.T) {
 	if !strings.Contains(text, "num_ctx: -1") {
 		t.Fatalf("expected num_ctx: -1 in temporary aider model settings, got:\n%s", text)
 	}
+	if strings.Contains(text, "num_predict") {
+		t.Fatalf("expected num_predict to be omitted for ollama_chat/ models with -1, got:\n%s", text)
+	}
+}
+
+func TestSetupTemporaryAiderSettingsKeepsNegativeOneForNativeOllama(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Native ollama/ models use /api/chat where num_predict: -1 (unlimited) is
+	// valid, so it must still be written.
+	cleanup := setupTemporaryAiderSettings("ollama/qwen3-coder:480b-cloud", config.Settings{
+		OllamaNumCtx:     -1,
+		OllamaNumPredict: -1,
+	})
+	defer cleanup()
+
+	data, err := os.ReadFile(".aider.model.settings.yml")
+	if err != nil {
+		t.Fatalf("expected .aider.model.settings.yml to be written for -1 values, got error: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "num_ctx: -1") {
+		t.Fatalf("expected num_ctx: -1 in temporary aider model settings, got:\n%s", text)
+	}
 	if !strings.Contains(text, "num_predict: -1") {
-		t.Fatalf("expected num_predict: -1 in temporary aider model settings, got:\n%s", text)
+		t.Fatalf("expected num_predict: -1 for native ollama/ models, got:\n%s", text)
+	}
+}
+
+func TestSetupTemporaryAiderSettingsStripsStaleNumPredict(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Seed a pre-existing settings file carrying a stale num_predict: -1 entry
+	// (e.g. left behind by a previous broken run) for the ollama_chat/ model.
+	seed := "- name: ollama_chat/glm-5.2:cloud\n  extra_params:\n    num_ctx: -1\n    num_predict: -1\n"
+	if err := os.WriteFile(".aider.model.settings.yml", []byte(seed), 0644); err != nil {
+		t.Fatalf("failed to seed settings file: %v", err)
+	}
+
+	cleanup := setupTemporaryAiderSettings("ollama_chat/glm-5.2:cloud", config.Settings{
+		OllamaNumCtx:     -1,
+		OllamaNumPredict: -1,
+	})
+	defer cleanup()
+
+	data, err := os.ReadFile(".aider.model.settings.yml")
+	if err != nil {
+		t.Fatalf("expected .aider.model.settings.yml to be written, got error: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "num_ctx: -1") {
+		t.Fatalf("expected num_ctx: -1 to be preserved, got:\n%s", text)
+	}
+	if strings.Contains(text, "num_predict") {
+		t.Fatalf("expected stale num_predict to be stripped for ollama_chat/ models, got:\n%s", text)
 	}
 }
 
@@ -2521,8 +2579,8 @@ func TestBuildAiderArgsIncludesQuietFlags(t *testing.T) {
 		}
 	}
 	// Edit mode is always diff to avoid whole-file replacement truncation.
-	if !sliceHas(args, "--edit-mode", "diff") {
-		t.Fatalf("expected --edit-mode diff, got %v", args)
+	if !sliceHas(args, "--edit-format", "diff") {
+		t.Fatalf("expected --edit-format diff, got %v", args)
 	}
 	// Model is forwarded when provided.
 	if !sliceHas(args, "--model", "ollama_chat/glm-5.2:cloud") {

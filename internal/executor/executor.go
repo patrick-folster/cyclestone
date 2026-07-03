@@ -101,7 +101,7 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 		}
 		return "agy --print - --print-timeout 30m --sandbox --dangerously-skip-permissions"
 	case "aider", "ollama":
-		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore --edit-mode diff"
+		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore --edit-format diff"
 	default:
 		return "unsupported runner"
 	}
@@ -952,7 +952,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			"--no-auto-commits",
 			"--no-dirty-commits",
 			"--no-gitignore",
-			"--edit-mode", "diff",
+			"--edit-format", "diff",
 		}
 		var model string
 		if runner == "aider" {
@@ -1080,7 +1080,14 @@ func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, 
 }
 
 func setupTemporaryAiderSettings(model string, settings config.Settings) func() {
-	if settings.OllamaNumCtx == 0 && settings.OllamaNumPredict == 0 {
+	// ollama_chat/ models route through Ollama's OpenAI-compatible endpoint
+	// (/v1/chat/completions) where num_predict maps to max_tokens, which must be
+	// a positive integer. The -1 sentinel means "unlimited" for Ollama's native
+	// /api/chat endpoint but is rejected by the OpenAI-compatible endpoint. Skip
+	// it so Ollama falls back to its default unlimited generation.
+	skipNumPredict := strings.HasPrefix(model, "ollama_chat/") && settings.OllamaNumPredict == -1
+
+	if settings.OllamaNumCtx == 0 && (settings.OllamaNumPredict == 0 || skipNumPredict) {
 		return func() {}
 	}
 
@@ -1111,8 +1118,12 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 			if settings.OllamaNumCtx != 0 {
 				list[i].ExtraParams["num_ctx"] = settings.OllamaNumCtx
 			}
-			if settings.OllamaNumPredict != 0 {
+			if settings.OllamaNumPredict != 0 && !skipNumPredict {
 				list[i].ExtraParams["num_predict"] = settings.OllamaNumPredict
+			} else if skipNumPredict {
+				// Remove any stale num_predict (e.g. -1) carried over from the
+				// backed-up file so the OpenAI-compatible endpoint does not reject it.
+				delete(list[i].ExtraParams, "num_predict")
 			}
 			found = true
 			break
@@ -1123,7 +1134,7 @@ func setupTemporaryAiderSettings(model string, settings config.Settings) func() 
 		if settings.OllamaNumCtx != 0 {
 			extraParams["num_ctx"] = settings.OllamaNumCtx
 		}
-		if settings.OllamaNumPredict != 0 {
+		if settings.OllamaNumPredict != 0 && !skipNumPredict {
 			extraParams["num_predict"] = settings.OllamaNumPredict
 		}
 		list = append(list, AiderModelSetting{
@@ -1244,7 +1255,7 @@ func buildAiderArgs(agentID, promptFile, model string) []string {
 		"--no-auto-commits",
 		"--no-dirty-commits",
 		"--no-gitignore",
-		"--edit-mode", "diff",
+		"--edit-format", "diff",
 	}
 	if agentID != "developer" {
 		args = append(args, "--dry-run")
