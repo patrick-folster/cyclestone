@@ -300,7 +300,7 @@ func extractFinalYAMLDocument(text string) ([]byte, error) {
 		sort.SliceStable(blocks, func(i, j int) bool {
 			return blocks[i].position < blocks[j].position
 		})
-		return normalizeBulletedYAML([]byte(strings.TrimSpace(blocks[len(blocks)-1].text))), nil
+		return normalizeHandoffYAML([]byte(strings.TrimSpace(blocks[len(blocks)-1].text))), nil
 	}
 	// No fenced blocks: scan for inline YAML blocks that agents emit
 	// without markdown fences (common with Aider/Ollama CLI output).
@@ -309,14 +309,14 @@ func extractFinalYAMLDocument(text string) ([]byte, error) {
 		return inlineBlocks[i].position < inlineBlocks[j].position
 	})
 	for i := len(inlineBlocks) - 1; i >= 0; i-- {
-		candidate := normalizeBulletedYAML([]byte(strings.TrimSpace(inlineBlocks[i].text)))
+		candidate := normalizeHandoffYAML([]byte(strings.TrimSpace(inlineBlocks[i].text)))
 		var decoded map[string]interface{}
 		if err := unmarshalYAMLMap(candidate, &decoded); err == nil && hasKnownHandoffKey(decoded) {
 			return candidate, nil
 		}
 	}
 	// Last resort: try the entire text as a single YAML document.
-	raw := normalizeBulletedYAML([]byte(strings.TrimSpace(text)))
+	raw := normalizeHandoffYAML([]byte(strings.TrimSpace(text)))
 	var decoded map[string]interface{}
 	if err := unmarshalYAMLMap(raw, &decoded); err == nil && hasKnownHandoffKey(decoded) {
 		return raw, nil
@@ -624,6 +624,135 @@ func normalizeBulletedYAML(data []byte) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
+// blockScalarIndent is the indentation applied to flattened block-scalar
+// content lines that Aider's CLI display has collapsed to column 0.
+const blockScalarIndent = "  "
+
+// declaresBlockScalar reports whether a YAML line introduces a block scalar
+// value using the literal (|) or folded (>) indicator, optionally followed by
+// chomping/indentation modifiers (e.g. |-, >+, |2, |-2). Both mapping values
+// (key: |) and sequence items (- |) are recognised. When true, subsequent
+// non-structural lines are block-scalar content that Aider may flatten to
+// column 0, which the inline scanner and normalizer must account for.
+func declaresBlockScalar(line string) bool {
+	content := strings.TrimSpace(line)
+	if content == "" {
+		return false
+	}
+	// Strip a leading sequence marker "- ".
+	if strings.HasPrefix(content, "- ") {
+		content = strings.TrimSpace(content[2:])
+	} else if content == "-" {
+		return false
+	}
+	// For mapping keys, strip the "key:" prefix.
+	if idx := strings.Index(content, ":"); idx >= 0 {
+		content = strings.TrimSpace(content[idx+1:])
+	}
+	if content == "" {
+		return false
+	}
+	if content[0] != '|' && content[0] != '>' {
+		return false
+	}
+	// After the indicator only chomping (-, +) and indentation digits are valid.
+	rest := content[1:]
+	for _, r := range rest {
+		if r != '-' && r != '+' && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// isInlineYAMLStructuralLine reports whether a line is a YAML structural line
+// (a mapping key or a sequence item) as opposed to plain scalar content. It is
+// used by the inline scanner to decide whether an indented line should update
+// the block-scalar tracking flag.
+func isInlineYAMLStructuralLine(line string) bool {
+	content := strings.TrimLeft(line, " \t")
+	if content == "" {
+		return false
+	}
+	// Sequence item: "- " or "-".
+	if strings.HasPrefix(content, "- ") || content == "-" {
+		return true
+	}
+	// Mapping key: "key:" or "key: value" where the key part contains no
+	// whitespace (valid for unquoted YAML plain keys).
+	if idx := strings.Index(content, ":"); idx > 0 {
+		keyPart := content[:idx]
+		if !strings.ContainsAny(keyPart, " \t") {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeFlattenedBlockScalars re-indents block scalar content (| and >
+// indicators) that Aider's CLI display has flattened to column 0. A YAML block
+// scalar requires its content lines to be indented more than the key; when
+// Aider strips that indentation the YAML parser cannot parse the document. This
+// function detects key/list lines whose value is a block scalar indicator and
+// indents subsequent non-structural content lines until the next top-level key
+// or list item.
+func normalizeFlattenedBlockScalars(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	inBlockScalar := false
+	for _, line := range lines {
+		trimmedRight := strings.TrimRight(line, " \t")
+		content := strings.TrimLeft(trimmedRight, " \t")
+		hasIndent := len(content) < len(trimmedRight)
+
+		if content == "" {
+			out = append(out, line)
+			continue
+		}
+
+		if !hasIndent {
+			// Line at column 0 (no leading whitespace).
+			if isHandoffKeyLine(trimmedRight) {
+				inBlockScalar = declaresBlockScalar(trimmedRight)
+				out = append(out, trimmedRight)
+				continue
+			}
+			if strings.HasPrefix(content, "- ") || content == "-" {
+				inBlockScalar = declaresBlockScalar(content)
+				out = append(out, trimmedRight)
+				continue
+			}
+			// Non-key, non-list line at column 0.
+			if inBlockScalar {
+				// Flattened block-scalar content: re-indent so the YAML parser
+				// treats it as block-scalar content rather than a new
+				// top-level node.
+				out = append(out, blockScalarIndent+trimmedRight)
+				continue
+			}
+			out = append(out, line)
+			continue
+		}
+
+		// Indented line: update the block-scalar flag when the line is a
+		// structural line (key or list item). Plain content lines leave the
+		// flag unchanged so block-scalar content does not prematurely reset it.
+		if isInlineYAMLStructuralLine(trimmedRight) {
+			inBlockScalar = declaresBlockScalar(trimmedRight)
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// normalizeHandoffYAML applies the full normalization pipeline for handoff YAML
+// documents extracted from agent output logs: first converting Unicode bullet
+// characters to YAML list markers, then re-indenting block-scalar content that
+// Aider's CLI display has flattened to column 0.
+func normalizeHandoffYAML(data []byte) []byte {
+	return normalizeFlattenedBlockScalars(normalizeBulletedYAML(data))
+}
+
 // handoffKeyPrefixes lists all YAML keys that are part of the known handoff
 // schemas. It is used to detect the start of an inline YAML block within a
 // log file.
@@ -673,6 +802,7 @@ func scanInlineYAMLBlocks(text string) []handoffDocumentCandidate {
 		// Found a key line — extend the block forward.
 		blockStart := i
 		j := i + 1
+		inBlockScalar := declaresBlockScalar(trimmedLines[i])
 		for j < len(trimmedLines) {
 			line := trimmedLines[j]
 			if line == "" {
@@ -685,13 +815,42 @@ func scanInlineYAMLBlocks(text string) []handoffDocumentCandidate {
 					break
 				}
 				next := trimmedLines[k]
-				if isHandoffKeyLine(next) || (len(next) > 0 && (next[0] == ' ' || next[0] == '\t')) {
+				if isHandoffKeyLine(next) {
+					j = k
+					continue
+				}
+				if inBlockScalar {
+					// In block-scalar mode, a blank line followed by non-key
+					// content is part of the block scalar: Aider flattens
+					// block-scalar content to column 0, so the content is not
+					// indented and would otherwise be mistaken for prose.
+					j = k
+					continue
+				}
+				if len(next) > 0 && (next[0] == ' ' || next[0] == '\t') {
 					j = k
 					continue
 				}
 				break
 			}
-			if isHandoffKeyLine(line) || (line[0] == ' ' || line[0] == '\t') {
+			if isHandoffKeyLine(line) {
+				inBlockScalar = declaresBlockScalar(line)
+				j++
+				continue
+			}
+			if line[0] == ' ' || line[0] == '\t' {
+				// Indented line: update the block-scalar flag when the line is
+				// a structural line (key or list item) so nested block scalars
+				// are tracked. Plain content lines leave the flag unchanged.
+				if isInlineYAMLStructuralLine(line) {
+					inBlockScalar = declaresBlockScalar(line)
+				}
+				j++
+				continue
+			}
+			// Non-indented, non-key line at column 0.
+			if inBlockScalar {
+				// Block-scalar content flattened to column 0 by Aider.
 				j++
 				continue
 			}
@@ -710,7 +869,7 @@ func scanInlineYAMLBlocks(text string) []handoffDocumentCandidate {
 
 func parseHandoffYAMLDocument(candidate string) ([]byte, map[string]interface{}, bool) {
 	var decoded map[string]interface{}
-	normalized := normalizeBulletedYAML([]byte(strings.TrimSpace(candidate)))
+	normalized := normalizeHandoffYAML([]byte(strings.TrimSpace(candidate)))
 	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
 		return nil, nil, false
 	}

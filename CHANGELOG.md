@@ -13,6 +13,10 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 - Architecture documentation.
 - GitHub issue and pull request templates.
 
+### Fixed
+
+- Inline YAML extraction from Aider/Ollama runner logs no longer splits block-scalar documents (e.g. `reason: |`) when Aider's CLI display flattens block-scalar content to column 0. The scanner and normalizer now track block-scalar indicators and re-indent flattened content, so fields like the recommender's `score`, `verdict`, and `reason` are captured instead of being silently discarded.
+
 ## v0.1.0 - TBD
 
 Initial open-source release.

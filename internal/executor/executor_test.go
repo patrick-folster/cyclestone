@@ -2298,6 +2298,40 @@ func TestExtractHandoffYAMLFindsInlineBlockWithBullets(t *testing.T) {
 	}
 }
 
+// TestExtractHandoffYAMLFindsInlineBlockWithFlattenedBlockScalar verifies the
+// no-contract extraction path (extractHandoffYAML) also correctly handles
+// flattened block-scalar content, not just the contract path
+// (extractFinalYAMLDocument). This path is used by custom agents without an
+// output_contract.
+func TestExtractHandoffYAMLFindsInlineBlockWithFlattenedBlockScalar(t *testing.T) {
+	text := strings.Join([]string{
+		"Recommender reasoning.",
+		"",
+		"reason: |",
+		"",
+		"The cycle was approved with no issues.",
+		"next_cycle_focus: []",
+		"",
+		"Tokens: 10k sent.",
+	}, "\n")
+
+	parsed, ok := extractHandoffYAML(text)
+	if !ok {
+		t.Fatalf("expected inline YAML handoff with block scalar to parse")
+	}
+	var summary map[string]interface{}
+	if err := yaml.Unmarshal(parsed, &summary); err != nil {
+		t.Fatalf("expected valid YAML: %v\nparsed:\n%s", err, string(parsed))
+	}
+	reason, _ := summary["reason"].(string)
+	if !strings.Contains(reason, "The cycle was approved") {
+		t.Fatalf("expected reason to contain flattened content, got %q", reason)
+	}
+	if focus, ok := summary["next_cycle_focus"].([]interface{}); !ok || len(focus) != 0 {
+		t.Fatalf("expected next_cycle_focus=[], got %#v", summary["next_cycle_focus"])
+	}
+}
+
 func TestParseAndValidateContractParsesInlineBulletedYAML(t *testing.T) {
 	text := strings.Join([]string{
 		"$ aider --model ollama_chat/glm-5.2:cloud",
@@ -2604,5 +2638,220 @@ func TestRecommenderFallbackOmitsScore(t *testing.T) {
 	}
 	if _, hasScore := handoff.Summary["score"]; hasScore {
 		t.Fatalf("expected score to be absent from recommender fallback, got %#v", handoff.Summary["score"])
+	}
+}
+
+// --- Tests for block-scalar-aware inline YAML extraction ---
+
+// TestScanInlineYAMLBlocksCapturesFlattenedBlockScalarContent verifies that the
+// inline scanner does not split a YAML document when a block scalar indicator
+// (|) is followed by content at column 0 — the pattern Aider's CLI display
+// produces when it strips block-scalar indentation. Before the fix, the scanner
+// broke the document at the non-indented content lines, and only the last
+// fragment (e.g. "next_cycle_focus: []") survived, silently discarding score,
+// verdict, and reason. This uses the exact recommender output pattern from
+// milestone cycle 0001 run with ollama/glm-5.2:cloud.
+func TestScanInlineYAMLBlocksCapturesFlattenedBlockScalarContent(t *testing.T) {
+	// Simulates the Aider CLI answer region: keys at column 0, blank lines
+	// between keys, and a block-scalar (reason: |) whose content Aider has
+	// flattened to column 0 with trailing whitespace padding.
+	text := strings.Join([]string{
+		"► ANSWER                                                                      ",
+		"",
+		"score: 0                                                                      ",
+		"",
+		"verdict: approved                                                             ",
+		"",
+		"reason: |                                                                     ",
+		"",
+		"The QA agent approved the cycle with no failing checks or required fixes. There ",
+		"were no acceptance criteria defined for this milestone, and the goal was simply ",
+		"to create a test milestone without anything to do.                           ",
+		"",
+		"next_cycle_focus: []                                                          ",
+		"",
+		"Tokens: 10k sent, 881 received.",
+	}, "\n")
+
+	blocks := scanInlineYAMLBlocks(text)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 inline block (complete document), got %d blocks", len(blocks))
+	}
+	// The block must contain all four keys, not just the last fragment.
+	blockText := blocks[0].text
+	for _, key := range []string{"score:", "verdict:", "reason: |", "next_cycle_focus:"} {
+		if !strings.Contains(blockText, key) {
+			t.Fatalf("expected block to contain %q, got block:\n%s", key, blockText)
+		}
+	}
+	// The flattened block-scalar content must be included in the block.
+	if !strings.Contains(blockText, "The QA agent approved the cycle") {
+		t.Fatalf("expected block to contain flattened reason content, got block:\n%s", blockText)
+	}
+}
+
+// TestNormalizeFlattenedBlockScalarsReindentsColumnZeroContent verifies that
+// the normalizer re-indents block-scalar content that Aider has flattened to
+// column 0, producing valid YAML that the parser can decode with all fields
+// intact.
+func TestNormalizeFlattenedBlockScalarsReindentsColumnZeroContent(t *testing.T) {
+	// The raw document as captured by the inline scanner: block-scalar content
+	// is at column 0 (Aider flattened it).
+	raw := strings.Join([]string{
+		"score: 0",
+		"",
+		"verdict: approved",
+		"",
+		"reason: |",
+		"",
+		"The QA agent approved the cycle with no failing checks.",
+		"There were no acceptance criteria defined for this milestone.",
+		"",
+		"next_cycle_focus: []",
+	}, "\n")
+	normalized := normalizeFlattenedBlockScalars([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("normalized YAML failed to parse: %v\nnormalized:\n%s", err, string(normalized))
+	}
+	if score, ok := decoded["score"].(int); !ok || score != 0 {
+		t.Fatalf("expected score=0, got %#v", decoded["score"])
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	reason, _ := decoded["reason"].(string)
+	if !strings.Contains(reason, "The QA agent approved the cycle") {
+		t.Fatalf("expected reason to contain the flattened content, got %q", reason)
+	}
+	if focus, ok := decoded["next_cycle_focus"].([]interface{}); !ok || len(focus) != 0 {
+		t.Fatalf("expected next_cycle_focus=[], got %#v", decoded["next_cycle_focus"])
+	}
+}
+
+// TestNormalizeFlattenedBlockScalarsLeavesIndentedContentUntouched verifies
+// that already-indented block-scalar content is not modified — only column-0
+// content is re-indented.
+func TestNormalizeFlattenedBlockScalarsLeavesIndentedContentUntouched(t *testing.T) {
+	raw := strings.Join([]string{
+		"reason: |",
+		"  Already indented content.",
+		"  More content.",
+		"next_cycle_focus: []",
+	}, "\n")
+	normalized := normalizeFlattenedBlockScalars([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("already-indented YAML failed to parse: %v", err)
+	}
+	reason, _ := decoded["reason"].(string)
+	if !strings.Contains(reason, "Already indented content") {
+		t.Fatalf("expected reason to contain indented content, got %q", reason)
+	}
+}
+
+// TestExtractFinalYAMLDocumentCapturesRecommenderBlockScalar verifies the
+// end-to-end extraction: extractFinalYAMLDocument on a recommender log with
+// a flattened block scalar returns a document that parses with all fields
+// (score, verdict, reason, next_cycle_focus).
+func TestExtractFinalYAMLDocumentCapturesRecommenderBlockScalar(t *testing.T) {
+	text := strings.Join([]string{
+		"► ANSWER                                                                      ",
+		"",
+		"score: 0                                                                      ",
+		"",
+		"verdict: approved                                                             ",
+		"",
+		"reason: |                                                                     ",
+		"",
+		"The QA agent approved the cycle with no failing checks or required fixes. There ",
+		"were no acceptance criteria defined for this milestone, and the goal was simply ",
+		"to create a test milestone without anything to do.                           ",
+		"",
+		"next_cycle_focus: []                                                          ",
+		"",
+		"Tokens: 10k sent, 881 received.",
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v", err)
+	}
+	if score, ok := decoded["score"].(int); !ok || score != 0 {
+		t.Fatalf("expected score=0, got %#v", decoded["score"])
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	reason, _ := decoded["reason"].(string)
+	if !strings.Contains(reason, "The QA agent approved") {
+		t.Fatalf("expected reason to contain content, got %q", reason)
+	}
+	if focus, ok := decoded["next_cycle_focus"].([]interface{}); !ok || len(focus) != 0 {
+		t.Fatalf("expected next_cycle_focus=[], got %#v", decoded["next_cycle_focus"])
+	}
+}
+
+// TestWritePhaseHandoffOllamaRecommenderCapturesFlattenedBlockScalar is the
+// end-to-end regression test: an ollama recommender log with a flattened block
+// scalar must produce a handoff that retains score, verdict, reason, and
+// next_cycle_focus. Before the fix, only next_cycle_focus survived and the
+// recommendation score was silently lost (state.json showed -1 instead of 0).
+func TestWritePhaseHandoffOllamaRecommenderCapturesFlattenedBlockScalar(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "recommender.log")
+	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
+	// Exact pattern from the real ollama/glm-5.2:cloud recommender output in
+	// cycle 0001: keys at column 0 with trailing Aider padding, block-scalar
+	// content flattened to column 0.
+	text := strings.Join([]string{
+		"$ aider --model ollama_chat/glm-5.2:cloud",
+		"Applied edit",
+		"",
+		"► ANSWER                                                                      ",
+		"",
+		"score: 0                                                                      ",
+		"",
+		"verdict: approved                                                             ",
+		"",
+		"reason: |                                                                     ",
+		"",
+		"The QA agent approved the cycle with no failing checks or required fixes. There ",
+		"were no acceptance criteria defined for this milestone, and the goal was simply ",
+		"to create a test milestone without anything to do.                           ",
+		"",
+		"next_cycle_focus: []                                                          ",
+		"",
+		"Tokens: 10k sent, 881 received.",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-REC", 1, "recommender", "recommender", logPath, 1000, "", "ollama"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	// The score must be captured so parseRecommendationScore returns 0,
+	// not -1 (no recommendation).
+	if got := parseRecommendationScore(handoffPath); got != 0 {
+		t.Fatalf("expected recommendation score=0, got %d", got)
+	}
+	// verdict and reason must also be present.
+	if verdict, ok := handoff.Summary["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved in summary, got %#v", handoff.Summary["verdict"])
+	}
+	reason, _ := handoff.Summary["reason"].(string)
+	if !strings.Contains(reason, "The QA agent approved") {
+		t.Fatalf("expected reason to contain content, got %q", reason)
+	}
+	if handoff.Fallback {
+		t.Fatalf("expected non-fallback handoff from structured YAML, got fallback=true")
 	}
 }
