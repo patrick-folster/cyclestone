@@ -382,3 +382,64 @@ func appendChangedFilesToBuilder(sb *strings.Builder) {
 	}
 	sb.WriteString("```\n\n")
 }
+
+// handoffInstruction returns the runner-aware "Required YAML Handoff" intro text
+// that explains how the agent should write its structured YAML handoff to the
+// dedicated temp file. Aider-based runners (aider, ollama) are instructed to use
+// a SEARCH/REPLACE edit block because Aider applies the edit and strips the fence
+// markers. All other runners (codex, ollama-codex, etc.) are instructed to write
+// clean YAML directly to the file, since they do not understand the SEARCH/REPLACE
+// protocol and would write the fence markers literally into the file. The
+// instruction text contains the {{HANDOFF_YAML_PATH}} placeholder so it is
+// substituted alongside the other prompt placeholders at call time.
+func handoffInstruction(runner, agentID string) string {
+	aiderRunner := runner == "aider" || runner == "ollama"
+
+	// Per-agent role sentence, deliverable sentence, purpose noun, and
+	// consequence text. The developer's role sentence differs between Aider
+	// and non-Aider runners because Aider requires SEARCH/REPLACE blocks for
+	// code edits.
+	var role, deliverable, purpose, consequence string
+	switch agentID {
+	case "pm":
+		role = "**You are the Project Manager: do not make code changes and do not edit any source or repository file.**"
+		deliverable = "Your only deliverable is the YAML handoff document below."
+		purpose = "your plan"
+		consequence = "If you do not write this YAML document, your plan cannot be recorded and the Developer receives nothing."
+	case "developer":
+		if aiderRunner {
+			role = "**Make your code changes with SEARCH/REPLACE blocks as usual — that is your implementation work.**"
+		} else {
+			role = "**Make your code changes as usual — that is your implementation work.**"
+		}
+		deliverable = "After all code edits are done, you MUST write the YAML handoff document below."
+		purpose = "what you did"
+		consequence = "If you do not write this YAML document to that file, your work cannot be recorded and QA has nothing to review."
+	case "qa":
+		role = "**You are the Quality Manager: do not make code changes and do not edit any source or repository file.**"
+		deliverable = "Your only deliverable is the YAML handoff document below."
+		purpose = "your verdict"
+		consequence = "If you do not write this YAML document, your verdict is lost and the cycle cannot be decided."
+	default: // recommender
+		role = "**Do not make code changes and do not edit any source or repository file.**"
+		deliverable = "Your only deliverable is the YAML handoff document below."
+		purpose = "your recommendation"
+		consequence = "If you do not write this YAML document, your score and verdict are lost."
+	}
+
+	if aiderRunner {
+		applyNote := ""
+		readNote := "Cyclestone reads the result after you finish. "
+		if agentID == "developer" {
+			applyNote = "Aider applies this edit and writes the file; cyclestone reads it after you finish. "
+			readNote = "" // already stated in applyNote
+		}
+		para1 := fmt.Sprintf("You are running inside the Aider coding assistant, whose system prompt demands code changes in SEARCH/REPLACE blocks. %s %s", role, deliverable)
+		para2 := fmt.Sprintf("The YAML handoff is structured data describing %s — it is **not code**. The file `{{HANDOFF_YAML_PATH}}` has been added to your chat as an editable file. **Write your handoff by replacing that file's entire content with a SEARCH/REPLACE block**: use an empty `<<<<<<< SEARCH` section (the file starts empty) and put the full YAML after the `=======` divider, ending with `>>>>>>> REPLACE`. %sDo **not** also emit the YAML as prose, and do **not** wrap it in Markdown fences. %s%s", purpose, applyNote, readNote, consequence)
+		return para1 + "\n\n" + para2
+	}
+
+	para1 := fmt.Sprintf("%s %s", role, deliverable)
+	para2 := fmt.Sprintf("The YAML handoff is structured data describing %s — it is **not code**. Write your handoff by overwriting the file `{{HANDOFF_YAML_PATH}}` with the full YAML content directly. Do **not** wrap it in SEARCH/REPLACE block markers or Markdown fences, and do **not** also emit the YAML as prose. Cyclestone reads the result after you finish. %s", purpose, consequence)
+	return para1 + "\n\n" + para2
+}

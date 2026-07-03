@@ -3315,6 +3315,195 @@ func TestIsAiderChatterLine(t *testing.T) {
 	}
 }
 
+// TestStripSearchReplaceWrapper covers the SEARCH/REPLACE block extractor
+// directly: the cycle-003 QA regression where the Codex CLI wrote the fence
+// markers literally into the dedicated temp handoff file.
+func TestStripSearchReplaceWrapper(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{
+			name: "empty search section",
+			input: strings.Join([]string{
+				"<<<<<<< SEARCH",
+				"=======",
+				"verdict: approved",
+				"reviewed_files: []",
+				">>>>>>> REPLACE",
+			}, "\n"),
+			expect: "verdict: approved\nreviewed_files: []",
+		},
+		{
+			name: "non-empty search section ignored",
+			input: strings.Join([]string{
+				"<<<<<<< SEARCH",
+				"old content",
+				"=======",
+				"verdict: approved",
+				">>>>>>> REPLACE",
+			}, "\n"),
+			expect: "verdict: approved",
+		},
+		{
+			name:   "no wrapper returns unchanged",
+			input:  "verdict: approved\nreviewed_files: []",
+			expect: "verdict: approved\nreviewed_files: []",
+		},
+		{
+			name: "leading/trailing whitespace trimmed",
+			input: "\n\n<<<<<<< SEARCH\n=======\nverdict: approved\n>>>>>>> REPLACE\n\n",
+			expect: "verdict: approved",
+		},
+		{
+			name: "missing divider returns unchanged",
+			input: strings.Join([]string{
+				"<<<<<<< SEARCH",
+				"verdict: approved",
+				">>>>>>> REPLACE",
+			}, "\n"),
+			expect: strings.Join([]string{
+				"<<<<<<< SEARCH",
+				"verdict: approved",
+				">>>>>>> REPLACE",
+			}, "\n"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripSearchReplaceWrapper(tc.input)
+			if got != tc.expect {
+				t.Fatalf("expected %q, got %q", tc.expect, got)
+			}
+		})
+	}
+}
+
+// TestParseAndValidateContractContentStripsSearchReplaceWrapper is the
+// cycle-003 QA end-to-end regression: the Codex CLI runner wrote a valid QA
+// contract YAML inside a SEARCH/REPLACE block to the dedicated temp handoff
+// file. Before the fix, parseAndValidateContractContent failed with "malformed
+// yaml" because the fence markers confused the YAML parser. After the fix the
+// wrapper is stripped and the contract validates successfully.
+func TestParseAndValidateContractContentStripsSearchReplaceWrapper(t *testing.T) {
+	qaYAML := strings.Join([]string{
+		"verdict: approved",
+		"criteria_results:",
+		"  - criterion: \"New runner is valid\"",
+		"    result: pass",
+		"    notes: |",
+		"      The runner is registered in all required locations.",
+		"  - criterion: \"Standard checks pass\"",
+		"    result: pass",
+		"    notes: |",
+		"      go test ./... PASS.",
+		"reviewed_files:",
+		"  - internal/executor/executor.go",
+		"  - internal/executor/executor_test.go",
+		"failing_checks: []",
+		"required_fixes: []",
+	}, "\n")
+	// Wrap the YAML in a SEARCH/REPLACE block exactly as the Codex CLI agent
+	// wrote it to the temp handoff file.
+	tempContent := strings.Join([]string{
+		"<<<<<<< SEARCH",
+		"=======",
+		qaYAML,
+		">>>>>>> REPLACE",
+	}, "\n")
+
+	result := parseAndValidateContractContent(tempContent, "qa")
+	if result.Status != "valid" {
+		t.Fatalf("expected valid status, got %q with errors %v", result.Status, result.Errors)
+	}
+	verdict, ok := result.Summary["verdict"].(string)
+	if !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", result.Summary["verdict"])
+	}
+	cr, ok := result.Summary["criteria_results"].([]interface{})
+	if !ok || len(cr) != 2 {
+		t.Fatalf("expected 2 criteria_results, got %#v", result.Summary["criteria_results"])
+	}
+}
+
+// TestHandoffInstructionAider verifies that Aider-based runners (aider, ollama)
+// receive the SEARCH/REPLACE block instruction in the handoff prompt, preserving
+// the original behavior that Aider applies the edit and strips the fence markers.
+func TestHandoffInstructionAider(t *testing.T) {
+	for _, runner := range []string{"aider", "ollama"} {
+		for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
+			t.Run(runner+"_"+agentID, func(t *testing.T) {
+				text := handoffInstruction(runner, agentID)
+				if !strings.Contains(text, "You are running inside the Aider coding assistant") {
+					t.Fatalf("expected Aider context for runner=%s, got:\n%s", runner, text)
+				}
+				if !strings.Contains(text, "<<<<<<< SEARCH") {
+					t.Fatalf("expected SEARCH/REPLACE instruction for runner=%s, got:\n%s", runner, text)
+				}
+				if !strings.Contains(text, "{{HANDOFF_YAML_PATH}}") {
+					t.Fatalf("expected {{HANDOFF_YAML_PATH}} placeholder for runner=%s", runner)
+				}
+			})
+		}
+	}
+}
+
+// TestHandoffInstructionNonAider verifies that non-Aider runners (codex,
+// ollama-codex) receive the direct-write instruction: no Aider context, no
+// SEARCH/REPLACE fences, and an explicit instruction to write clean YAML
+// directly to the file.
+func TestHandoffInstructionNonAider(t *testing.T) {
+	for _, runner := range []string{"codex", "ollama-codex"} {
+		for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
+			t.Run(runner+"_"+agentID, func(t *testing.T) {
+				text := handoffInstruction(runner, agentID)
+				if strings.Contains(text, "You are running inside the Aider") {
+					t.Fatalf("non-Aider runner=%s must not mention Aider, got:\n%s", runner, text)
+				}
+				if strings.Contains(text, "<<<<<<< SEARCH") {
+					t.Fatalf("non-Aider runner=%s must not contain SEARCH fence, got:\n%s", runner, text)
+				}
+				if !strings.Contains(text, "overwriting the file") {
+					t.Fatalf("non-Aider runner=%s must instruct direct write, got:\n%s", runner, text)
+				}
+				if !strings.Contains(text, "{{HANDOFF_YAML_PATH}}") {
+					t.Fatalf("expected {{HANDOFF_YAML_PATH}} placeholder for runner=%s", runner)
+				}
+				if !strings.Contains(text, "Do **not** wrap it in SEARCH/REPLACE block markers") {
+					t.Fatalf("non-Aider runner=%s must warn against SEARCH/REPLACE markers, got:\n%s", runner, text)
+				}
+			})
+		}
+	}
+}
+
+// TestHandoffInstructionAgentSpecificText verifies that each agent gets its
+// correct role sentence and consequence text.
+func TestHandoffInstructionAgentSpecificText(t *testing.T) {
+	tests := []struct {
+		agentID          string
+		roleFragment     string
+		consequenceFrag  string
+	}{
+		{"pm", "Project Manager", "your plan cannot be recorded"},
+		{"developer", "implementation work", "QA has nothing to review"},
+		{"qa", "Quality Manager", "your verdict is lost"},
+		{"recommender", "score and verdict are lost", "score and verdict are lost"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.agentID, func(t *testing.T) {
+			text := handoffInstruction("ollama-codex", tc.agentID)
+			if !strings.Contains(text, tc.roleFragment) {
+				t.Fatalf("agent=%s expected role fragment %q, got:\n%s", tc.agentID, tc.roleFragment, text)
+			}
+			if !strings.Contains(text, tc.consequenceFrag) {
+				t.Fatalf("agent=%s expected consequence fragment %q, got:\n%s", tc.agentID, tc.consequenceFrag, text)
+			}
+		})
+	}
+}
+
 // TestWritePhaseHandoffOllamaRecommenderCapturesFlattenedBlockScalar is the
 // end-to-end regression test: an ollama recommender log with a flattened block
 // scalar must produce a handoff that retains score, verdict, reason, and

@@ -38,7 +38,7 @@ Prepare a milestone so the Developer can implement it safely and narrowly.
 - Use only the active milestone's scoped state, index entry, spec, and reports; do not load unrelated milestone specs, reports, state entries, or index entries unless a human explicitly asks.
 - Analyze current tracked repository structure enough to identify likely integration points.
 - Do not inspect archived, deprecated, generated, vendor, or legacy-only paths unless the milestone explicitly asks.
-- Do not change, create, modify, or delete any source or repository file. You are planning only, not implementing — the Developer makes all file changes. The only file edit you may emit is the YAML handoff file at `{{HANDOFF_YAML_PATH}}`, written as a single SEARCH/REPLACE block.
+- Do not change, create, modify, or delete any source or repository file. You are planning only, not implementing — the Developer makes all file changes. The only file edit you may emit is the YAML handoff file at `{{HANDOFF_YAML_PATH}}`.
 - Do not introduce dependencies.
 - Keep the milestone small enough for one safe iterative loop.
 - Prefer explicit non-goals over vague scope.
@@ -64,7 +64,7 @@ Write a PM report with:
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- Write your YAML handoff to the file path given below using a SEARCH/REPLACE block; do not also emit the YAML as prose.
+- Write your YAML handoff to the file path given below; do not also emit the YAML as prose.
 - YAML schema fields exactly: scope, non_goals, target_paths, acceptance_map, risks.
 - `scope`, `non_goals`, `target_paths`, and `risks` must be arrays of strings.
 - `acceptance_map` must be an object whose keys are acceptance criteria and whose values are string implementation notes.
@@ -73,10 +73,7 @@ Write a PM report with:
 
 ## Required YAML Handoff
 
-You are running inside the Aider coding assistant, whose system prompt demands code changes in SEARCH/REPLACE blocks. **You are the Project Manager: do not make code changes and do not edit any source or repository file.** Your only deliverable is the YAML handoff document below.
-
-The YAML handoff is structured data describing your plan — it is **not code**. The file `{{HANDOFF_YAML_PATH}}` has been added to your chat as an editable file. **Write your handoff by replacing that file's entire content with a SEARCH/REPLACE block**: use an empty `<<<<<<< SEARCH` section (the file starts empty) and put the full YAML after the `=======` divider, ending with `>>>>>>> REPLACE`. Do **not** also emit the YAML as prose, and do **not** wrap it in Markdown fences. Cyclestone reads the result after you finish. If you do not write this YAML document, your plan cannot be recorded and the Developer receives nothing.
-
+{{HANDOFF_INSTRUCTION}}
 Write one key per line, using `-` for list items and `[]` for empty arrays. The block below shows the exact shape (fenced here only for readability — write your own **unfenced** version with real values to the file):
 
 ```yaml

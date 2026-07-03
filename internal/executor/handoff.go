@@ -89,6 +89,41 @@ func readHandoffTempYAML(path string) (string, bool) {
 	return trimmed, true
 }
 
+// stripSearchReplaceWrapper extracts the content from a SEARCH/REPLACE edit
+// block when an agent's dedicated temp handoff file literally contains the
+// fence markers. The prompt instructs agents to write their handoff YAML using
+// a SEARCH/REPLACE block (an empty <<<<<<< SEARCH section, the full YAML after
+// the ======= divider, ending with >>>>>>> REPLACE). Aider applies the edit and
+// strips the markers, but other runners (e.g. Codex) may write the markers
+// literally into the file. This function returns just the REPLACE section so
+// the YAML parser sees a clean document. When the text is not a SEARCH/REPLACE
+// block it is returned unchanged.
+func stripSearchReplaceWrapper(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "<<<<<<< SEARCH") {
+		return text
+	}
+	lines := strings.Split(trimmed, "\n")
+	dividerIdx := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "=======" {
+			dividerIdx = i
+			break
+		}
+	}
+	if dividerIdx == -1 {
+		return text
+	}
+	var out []string
+	for i := dividerIdx + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), ">>>>>>> REPLACE") {
+			break
+		}
+		out = append(out, lines[i])
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 // parseAndValidateContractContent parses a raw YAML document (typically read
 // from the agent's dedicated temp handoff file) and validates it against the
 // given output contract. Unlike parseAndValidateContract it does not scan for
@@ -98,6 +133,7 @@ func parseAndValidateContractContent(text, contract string) contractValidationRe
 		Contract: contract,
 		Status:   "invalid",
 	}
+	text = stripSearchReplaceWrapper(text)
 	raw := normalizeHandoffYAML([]byte(strings.TrimSpace(text)))
 	var summary map[string]interface{}
 	if err := unmarshalYAMLMap(raw, &summary); err != nil {
@@ -125,6 +161,7 @@ func writePhaseHandoff(ctx context.Context, settings config.Settings, path, mile
 		tempYAMLPath = handoffYAMLPath[0]
 	}
 	if tempContent, ok := readHandoffTempYAML(tempYAMLPath); ok {
+		tempContent = stripSearchReplaceWrapper(tempContent)
 		contract := effectiveOutputContract(agentID, outputContract)
 		if contract != "" {
 			validation := parseAndValidateContractContent(tempContent, contract)

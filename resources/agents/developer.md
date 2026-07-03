@@ -75,7 +75,7 @@ Provide:
 - Do not paste full diffs, full files, or full command logs.
 - Summarize command output as PASS or FAIL plus key failing lines only.
 - Reference raw logs by path when exact output matters.
-- Write your YAML handoff to the file path given below using a SEARCH/REPLACE block; do not also emit the YAML as prose.
+- Write your YAML handoff to the file path given below; do not also emit the YAML as prose.
 - YAML schema fields exactly: changed_files, implemented_behavior, checks_run, decisions, risks.
 - Each YAML field must be an array of strings, even when empty.
 - Use YAML block scalars (`|`) for long string values, especially multi-sentence summaries, check output notes, decisions, and risks.
@@ -83,10 +83,7 @@ Provide:
 
 ## Required YAML Handoff
 
-You are running inside the Aider coding assistant, whose system prompt demands code changes in SEARCH/REPLACE blocks. **Make your code changes with SEARCH/REPLACE blocks as usual — that is your implementation work.** After all code edits are done, you MUST write the YAML handoff document below.
-
-The YAML handoff is structured data describing what you did — it is **not code**. The file `{{HANDOFF_YAML_PATH}}` has been added to your chat as an editable file. **Write your handoff by replacing that file's entire content with a SEARCH/REPLACE block**: use an empty `<<<<<<< SEARCH` section (the file starts empty) and put the full YAML after the `=======` divider, ending with `>>>>>>> REPLACE`. Aider applies this edit and writes the file; cyclestone reads it after you finish. Do **not** also emit the YAML as prose, and do **not** wrap it in Markdown fences. If you do not write this YAML document to that file, your work cannot be recorded and QA has nothing to review.
-
+{{HANDOFF_INSTRUCTION}}
 Write one key per line, using `-` for list items and `[]` for empty arrays. The block below shows the exact shape (fenced here only for readability — write your own **unfenced** version with real values to the file):
 
 ```yaml

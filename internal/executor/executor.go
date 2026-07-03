@@ -1709,6 +1709,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		// here let cyclestone read clean YAML instead of scraping the log.
 		_ = os.WriteFile(handoffYAMLPath, []byte{}, 0644)
 		opts.HandoffYAMLPath = handoffYAMLPath
+		inputContent = strings.ReplaceAll(inputContent, "{{HANDOFF_INSTRUCTION}}", handoffInstruction(runner, agent.ID))
 		inputContent = strings.ReplaceAll(inputContent, "{{HANDOFF_YAML_PATH}}", handoffYAMLPath)
 
 		_ = os.WriteFile(inputPath, []byte(inputContent), 0644)
@@ -1950,6 +1951,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		_ = os.Remove(recommenderHandoffYAMLPath)
 		_ = os.WriteFile(recommenderHandoffYAMLPath, []byte{}, 0644)
 		opts.HandoffYAMLPath = recommenderHandoffYAMLPath
+		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_INSTRUCTION}}", handoffInstruction(activeRunner, "recommender"))
 		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_YAML_PATH}}", recommenderHandoffYAMLPath)
 
 		if ch != nil {
