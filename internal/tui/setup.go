@@ -13,9 +13,7 @@ import (
 )
 
 const (
-	setupFieldConfigPath = iota
-	setupFieldStatePath
-	setupFieldRunner
+	setupFieldRunner = iota
 	setupFieldSafetyMode
 	setupFieldUnrestrictedAck
 	setupFieldBranchBehavior
@@ -36,8 +34,9 @@ type SetupCompletedMsg struct {
 }
 
 type SetupWizardModel struct {
-	ConfigPathInput     textinput.Model
-	StatePathInput      textinput.Model
+	// ConfigPath and StatePath are startup-owned paths displayed as read-only setup details.
+	ConfigPath          string
+	StatePath           string
 	MilestoneIDInput    textinput.Model
 	MilestoneTitleInput textinput.Model
 	MilestoneGoalInput  textarea.Model
@@ -84,8 +83,8 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 
 	runners := detectSetupRunnerAvailability()
 	m := SetupWizardModel{
-		ConfigPathInput:     newInput(configPath, 56, 300),
-		StatePathInput:      newInput(statePath, 56, 300),
+		ConfigPath:          configPath,
+		StatePath:           statePath,
 		MilestoneIDInput:    newInput("0001-first-milestone", 36, 100),
 		MilestoneTitleInput: newInput("First milestone", 56, 160),
 		MilestoneGoalInput:  goal,
@@ -95,7 +94,7 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 		AutoBranches:        true,
 		CreateFirst:         false,
 		IsGitWorktree:       git.IsGitRepository(),
-		FocusIndex:          setupFieldConfigPath,
+		FocusIndex:          setupFieldRunner,
 		Styles:              styles,
 	}
 	m.updateFocus()
@@ -148,10 +147,6 @@ func (m SetupWizardModel) Update(msg tea.Msg) (SetupWizardModel, tea.Cmd) {
 	}
 
 	switch m.FocusIndex {
-	case setupFieldConfigPath:
-		m.ConfigPathInput, cmd = m.ConfigPathInput.Update(msg)
-	case setupFieldStatePath:
-		m.StatePathInput, cmd = m.StatePathInput.Update(msg)
 	case setupFieldMilestoneID:
 		m.MilestoneIDInput, cmd = m.MilestoneIDInput.Update(msg)
 	case setupFieldMilestoneTitle:
@@ -172,8 +167,6 @@ func (m *SetupWizardModel) resizeInputs() {
 	if width > 70 {
 		width = 70
 	}
-	m.ConfigPathInput.Width = width
-	m.StatePathInput.Width = width
 	m.MilestoneTitleInput.Width = width
 	m.MilestoneGoalInput.SetWidth(width)
 	m.MilestoneCriteria.SetWidth(width)
@@ -246,7 +239,10 @@ func (m *SetupWizardModel) adjustChoice(delta int) {
 
 func (m *SetupWizardModel) updateFocus() tea.Cmd {
 	var cmds []tea.Cmd
-	for _, input := range []*textinput.Model{&m.ConfigPathInput, &m.StatePathInput, &m.MilestoneIDInput, &m.MilestoneTitleInput} {
+	if !m.fieldVisible(m.FocusIndex) {
+		m.FocusIndex = m.nextFocusable(1)
+	}
+	for _, input := range []*textinput.Model{&m.MilestoneIDInput, &m.MilestoneTitleInput} {
 		input.Blur()
 		input.TextStyle = m.Styles.BlurredInput
 	}
@@ -254,12 +250,6 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 	m.MilestoneCriteria.Blur()
 
 	switch m.FocusIndex {
-	case setupFieldConfigPath:
-		cmds = append(cmds, m.ConfigPathInput.Focus())
-		m.ConfigPathInput.TextStyle = m.Styles.FocusedInput
-	case setupFieldStatePath:
-		cmds = append(cmds, m.StatePathInput.Focus())
-		m.StatePathInput.TextStyle = m.Styles.FocusedInput
 	case setupFieldMilestoneID:
 		cmds = append(cmds, m.MilestoneIDInput.Focus())
 		m.MilestoneIDInput.TextStyle = m.Styles.FocusedInput
@@ -275,12 +265,8 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 }
 
 func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
-	configPath := strings.TrimSpace(m.ConfigPathInput.Value())
-	statePath := strings.TrimSpace(m.StatePathInput.Value())
-	if configPath == "" || statePath == "" {
-		m.ErrorMsg = "Config path and state path are required."
-		return m, nil
-	}
+	configPath := m.ConfigPath
+	statePath := m.StatePath
 	if m.Runner == "" || !isSetupRunnerSelectable(m.Runners, m.Runner) {
 		m.ErrorMsg = "Select an available runner before confirming setup."
 		return m, nil
@@ -383,8 +369,8 @@ func (m SetupWizardModel) View() string {
 		sb.WriteString(m.Styles.RenderInfo("This directory is not a Git worktree; setup can continue, but branch automation will be skipped.") + "\n")
 	}
 	sb.WriteString(spacing)
-	sb.WriteString(m.renderInput(setupFieldConfigPath, "Milestone config", m.ConfigPathInput.View()) + "\n")
-	sb.WriteString(m.renderInput(setupFieldStatePath, "State file", m.StatePathInput.View()) + "\n")
+	sb.WriteString(m.renderStaticValue("Milestone config", m.ConfigPath) + "\n")
+	sb.WriteString(m.renderStaticValue("State file", m.StatePath) + "\n")
 	sb.WriteString(m.renderChoice(setupFieldRunner, "Runner", m.runnerSummary()) + "\n")
 	sb.WriteString(m.renderChoice(setupFieldSafetyMode, "Safety", boolLabel(!m.Unrestricted, "Sandbox", "Unrestricted")) + "\n")
 	if m.Unrestricted {
@@ -419,6 +405,10 @@ func (m SetupWizardModel) renderInput(idx int, label, value string) string {
 		style = m.Styles.DetailLabel.Underline(true)
 	}
 	return style.Render(label) + "\n" + value
+}
+
+func (m SetupWizardModel) renderStaticValue(label, value string) string {
+	return m.Styles.DetailValue.Render(label) + ": " + m.Styles.SubtleText.Render(value)
 }
 
 func (m SetupWizardModel) renderChoice(idx int, label, value string) string {

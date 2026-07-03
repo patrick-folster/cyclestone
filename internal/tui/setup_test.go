@@ -90,6 +90,91 @@ func TestSetupWizardBlocksUnrestrictedWithoutAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSetupWizardDisplaysPathsReadOnlyAndStartsAtRunner(t *testing.T) {
+	model := NewSetupWizardModel(".cyclestone/milestone.yml", ".cyclestone/state.json", DefaultStyles(true, true))
+	model.Width = 80
+	model.Height = 24
+	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.Runner = "codex"
+
+	if model.FocusIndex != setupFieldRunner {
+		t.Fatalf("expected initial focus on runner, got %d", model.FocusIndex)
+	}
+
+	view := model.View()
+	for _, want := range []string{"Milestone config: .cyclestone/milestone.yml", "State file: .cyclestone/state.json"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected setup view to contain read-only path row %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestSetupWizardNavigationSkipsStaticPathRows(t *testing.T) {
+	model := NewSetupWizardModel(".cyclestone/milestone.yml", ".cyclestone/state.json", DefaultStyles(true, true))
+	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.Runner = "codex"
+
+	seen := map[int]bool{}
+	for i := 0; i < setupFieldCount*2; i++ {
+		seen[model.FocusIndex] = true
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated
+	}
+	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
+		if !seen[want] {
+			t.Fatalf("expected tab navigation to reach field %d, seen %#v", want, seen)
+		}
+	}
+
+	model.FocusIndex = setupFieldRunner
+	seen = map[int]bool{}
+	for i := 0; i < setupFieldCount*2; i++ {
+		seen[model.FocusIndex] = true
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		model = updated
+	}
+	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
+		if !seen[want] {
+			t.Fatalf("expected shift-tab navigation to reach field %d, seen %#v", want, seen)
+		}
+	}
+}
+
+func TestSetupWizardConfirmUsesConstructorPaths(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	model := NewSetupWizardModel(configPath, statePath, DefaultStyles(true, true))
+	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.Runner = "codex"
+	model.FocusIndex = setupFieldConfirm
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected setup completion command, error=%q", updated.ErrorMsg)
+	}
+	msg, ok := cmd().(SetupCompletedMsg)
+	if !ok {
+		t.Fatalf("expected SetupCompletedMsg")
+	}
+	if msg.ConfigPath != configPath || msg.StatePath != statePath {
+		t.Fatalf("expected static paths in completion, got config=%q state=%q", msg.ConfigPath, msg.StatePath)
+	}
+	for _, path := range []string{
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "settings.yml"),
+		filepath.Join(root, ".cyclestone", "milestones"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected setup artifact %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "wrong", "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected state file outside constructor path: %v", err)
+	}
+}
+
 func TestSetupWizardNarrowRendering(t *testing.T) {
 	model := NewSetupWizardModel(".cyclestone/milestone.yml", ".cyclestone/state.json", DefaultStyles(true, true))
 	model.Width = 42

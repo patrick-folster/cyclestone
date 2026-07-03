@@ -270,6 +270,9 @@ func TestMissingConfigRoutesToSetupWizardAndConfirmCreatesProject(t *testing.T) 
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("state.json was not created: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "wrong", "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected state file outside constructor path: %v", err)
+	}
 	if len(got.Config.Milestones) != 1 || got.Config.Milestones[0].ID != "0001-first-run" {
 		t.Fatalf("expected first milestone in config, got %#v", got.Config.Milestones)
 	}
