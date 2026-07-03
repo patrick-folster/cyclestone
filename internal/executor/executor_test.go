@@ -2855,3 +2855,374 @@ func TestWritePhaseHandoffOllamaRecommenderCapturesFlattenedBlockScalar(t *testi
 		t.Fatalf("expected non-fallback handoff from structured YAML, got fallback=true")
 	}
 }
+
+// --- Tests for nested block-scalar normalization (QA criteria_results pattern) ---
+
+// TestNormalizeFlattenedBlockScalarsReindentsNestedSameIndentContent
+// verifies that the normalizer re-indents block-scalar content that Aider's
+// CLI display has flattened to the SAME indentation as the key — the pattern
+// seen with nested block scalars inside list items (e.g. notes: | inside
+// criteria_results). Before the fix, only column-0 content was re-indented;
+// content at the same indent as the key was left untouched, causing a YAML
+// parse error and silent loss of the entire QA handoff.
+func TestNormalizeFlattenedBlockScalarsReindentsNestedSameIndentContent(t *testing.T) {
+	// Simulates the Aider CLI output for a QA contract: the notes: | key is
+	// at indent 3 (inside a criteria_results list item), and the block-scalar
+	// content has been flattened to the same indent 3 by Aider's display.
+	raw := strings.Join([]string{
+		"verdict: approved",
+		"",
+		"criteria_results:",
+		"",
+		" - criterion: \"No code changes required\"",
+		"   result: \"pass\"",
+		"   notes: |",
+		"   The milestone goal was to create a test milestone without any changes.",
+		"   The developer made no changes.",
+		"",
+		"reviewed_files: []",
+		"",
+		"failing_checks: []",
+		"",
+		"required_fixes: []",
+	}, "\n")
+	normalized := normalizeFlattenedBlockScalars([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("normalized YAML failed to parse: %v\nnormalized:\n%s", err, string(normalized))
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	cr, ok := decoded["criteria_results"].([]interface{})
+	if !ok || len(cr) != 1 {
+		t.Fatalf("expected criteria_results with 1 item, got %#v", decoded["criteria_results"])
+	}
+	item, ok := cr[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected criteria_results[0] to be a map, got %#v", cr[0])
+	}
+	if criterion, ok := item["criterion"].(string); !ok || criterion != "No code changes required" {
+		t.Fatalf("expected criterion, got %#v", item["criterion"])
+	}
+	if result, ok := item["result"].(string); !ok || result != "pass" {
+		t.Fatalf("expected result=pass, got %#v", item["result"])
+	}
+	notes, _ := item["notes"].(string)
+	if !strings.Contains(notes, "The milestone goal was to create a test milestone") {
+		t.Fatalf("expected notes to contain block-scalar content, got %q", notes)
+	}
+	if !strings.Contains(notes, "The developer made no changes.") {
+		t.Fatalf("expected notes to contain second line, got %q", notes)
+	}
+	if rf, ok := decoded["reviewed_files"].([]interface{}); !ok || len(rf) != 0 {
+		t.Fatalf("expected reviewed_files=[], got %#v", decoded["reviewed_files"])
+	}
+	if fc, ok := decoded["failing_checks"].([]interface{}); !ok || len(fc) != 0 {
+		t.Fatalf("expected failing_checks=[], got %#v", decoded["failing_checks"])
+	}
+	if rf, ok := decoded["required_fixes"].([]interface{}); !ok || len(rf) != 0 {
+		t.Fatalf("expected required_fixes=[], got %#v", decoded["required_fixes"])
+	}
+}
+
+// TestNormalizeFlattenedBlockScalarsLeavesNestedProperlyIndentedContent
+// verifies that nested block-scalar content that is already indented more than
+// the key is not modified by the normalizer.
+func TestNormalizeFlattenedBlockScalarsLeavesNestedProperlyIndentedContent(t *testing.T) {
+	raw := strings.Join([]string{
+		"criteria_results:",
+		"  - criterion: \"test\"",
+		"    result: \"pass\"",
+		"    notes: |",
+		"      Already properly indented content.",
+		"      Second line.",
+		"reviewed_files: []",
+	}, "\n")
+	normalized := normalizeFlattenedBlockScalars([]byte(raw))
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(normalized, &decoded); err != nil {
+		t.Fatalf("YAML failed to parse: %v\nnormalized:\n%s", err, string(normalized))
+	}
+	cr, ok := decoded["criteria_results"].([]interface{})
+	if !ok || len(cr) != 1 {
+		t.Fatalf("expected criteria_results with 1 item, got %#v", decoded["criteria_results"])
+	}
+	item, _ := cr[0].(map[string]interface{})
+	notes, _ := item["notes"].(string)
+	if !strings.Contains(notes, "Already properly indented content.") {
+		t.Fatalf("expected notes to contain content, got %q", notes)
+	}
+}
+
+// TestExtractFinalYAMLDocumentCapturesQANestedBlockScalar verifies the
+// end-to-end extraction: extractFinalYAMLDocument on a QA Aider/Ollama log
+// with a nested block scalar (notes: | inside criteria_results, content
+// flattened to the same indent as the key) returns a document that parses
+// with all fields intact. This uses the exact pattern from the real
+// ollama/glm-5.2:cloud QA output in milestone cycle 0001.
+func TestExtractFinalYAMLDocumentCapturesQANestedBlockScalar(t *testing.T) {
+	text := strings.Join([]string{
+		"Analytics have been permanently disabled.",
+		"--------------------------------------------------------------------------------",
+		"Aider v0.86.2",
+		"",
+		"► THINKING                                                                      ",
+		"",
+		"The developer handoff says:",
+		"",
+		"implemented_behavior:",
+		"",
+		"  - No changes were made as per the milestone goal.",
+		"",
+		"So the milestone goal is literally to make no changes.",
+		"",
+		"verdict: \"approved\"",
+		"",
+		"criteria_results:",
+		"",
+		" • criterion: \"No code changes required\"",
+		"   result: \"pass\"",
+		"   notes: \"Developer made no changes as per milestone goal.\"",
+		"",
+		"reviewed_files: []",
+		"",
+		"failing_checks: []",
+		"",
+		"required_fixes: []",
+		"",
+		"--------------------------------------------------------------------------------",
+		"",
+		"► ANSWER                                                                        ",
+		"",
+		" 1 Milestone ID and title: 0001-create-test-milestone-changes - Create Test    ",
+		"   Milestone Changes                                                           ",
+		" 2 Verdict: approved                                                           ",
+		"",
+		"verdict: approved                                                               ",
+		"",
+		"criteria_results:                                                               ",
+		"",
+		" • criterion: \"No code changes required\"                                        ",
+		"   result: \"pass\"                                                               ",
+		"   notes: |                                                                     ",
+		"   The milestone goal was to create a test milestone without any changes.       ",
+		"   The developer made no changes.                                               ",
+		"",
+		"reviewed_files: []                                                              ",
+		"",
+		"failing_checks: []                                                              ",
+		"",
+		"required_fixes: []                                                              ",
+		"",
+		"Tokens: 8.5k sent, 1.2k received.",
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v\nraw:\n%s", err, string(raw))
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	cr, ok := decoded["criteria_results"].([]interface{})
+	if !ok || len(cr) != 1 {
+		t.Fatalf("expected criteria_results with 1 item, got %#v", decoded["criteria_results"])
+	}
+	item, ok := cr[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected criteria_results[0] to be a map, got %#v", cr[0])
+	}
+	notes, _ := item["notes"].(string)
+	if !strings.Contains(notes, "The milestone goal was to create a test milestone") {
+		t.Fatalf("expected notes to contain block-scalar content, got %q", notes)
+	}
+	if rf, ok := decoded["reviewed_files"].([]interface{}); !ok || len(rf) != 0 {
+		t.Fatalf("expected reviewed_files=[], got %#v", decoded["reviewed_files"])
+	}
+	if fc, ok := decoded["failing_checks"].([]interface{}); !ok || len(fc) != 0 {
+		t.Fatalf("expected failing_checks=[], got %#v", decoded["failing_checks"])
+	}
+	if rf, ok := decoded["required_fixes"].([]interface{}); !ok || len(rf) != 0 {
+		t.Fatalf("expected required_fixes=[], got %#v", decoded["required_fixes"])
+	}
+	// The extracted document must NOT contain implemented_behavior, which
+	// only appeared in the THINKING section as a quoted developer handoff
+	// field. Before the fix, the normalizer failed on the nested block
+	// scalar, extractFinalYAMLDocument fell back to the THINKING block, and
+	// the QA handoff was silently populated with developer-contract fields.
+	if _, ok := decoded["implemented_behavior"]; ok {
+		t.Fatalf("extracted QA document must not contain implemented_behavior (THINKING-section leakage)")
+	}
+}
+
+// TestExtractFinalYAMLDocumentPrefersAnswerRegionOverThinking verifies that
+// when the model's THINKING section contains YAML-like content with known
+// handoff keys, extractFinalYAMLDocument does not pick it up and instead
+// returns the YAML from the ANSWER region. Before the fix, when the ANSWER
+// YAML failed to parse (e.g. due to nested block-scalar flattening), the
+// function fell back to THINKING-section blocks, producing a handoff with
+// wrong-contract fields.
+func TestExtractFinalYAMLDocumentPrefersAnswerRegionOverThinking(t *testing.T) {
+	text := strings.Join([]string{
+		"► THINKING                                                                      ",
+		"",
+		"The developer handoff has:",
+		"",
+		"changed_files: []                                                              ",
+		"",
+		"implemented_behavior:                                                          ",
+		"  - did stuff                                                                  ",
+		"",
+		"--------------------------------------------------------------------------------",
+		"",
+		"► ANSWER                                                                        ",
+		"",
+		"score: 0                                                                       ",
+		"",
+		"verdict: approved                                                              ",
+		"",
+		"reason: |                                                                      ",
+		"",
+		"All criteria met.                                                              ",
+		"",
+		"next_cycle_focus: []                                                           ",
+		"",
+		"Tokens: 10k sent, 881 received.",
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v", err)
+	}
+	// Must contain the recommender fields from the ANSWER region.
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved from ANSWER region, got %#v", decoded["verdict"])
+	}
+	// Must NOT contain THINKING-section fields.
+	if _, ok := decoded["changed_files"]; ok {
+		t.Fatalf("extracted document must not contain changed_files (THINKING-section leakage)")
+	}
+	if _, ok := decoded["implemented_behavior"]; ok {
+		t.Fatalf("extracted document must not contain implemented_behavior (THINKING-section leakage)")
+	}
+}
+
+// TestWritePhaseHandoffOllamaQACapturesNestedBlockScalar is the end-to-end
+// regression test for the QA agent: an ollama QA log with a nested block
+// scalar (notes: | inside criteria_results, content flattened to the same
+// indent as the key by Aider's CLI display) must produce a handoff that
+// retains verdict, criteria_results (with notes), reviewed_files,
+// failing_checks, and required_fixes. Before the fix, the nested block
+// scalar caused a parse failure, the extractor fell back to THINKING-section
+// content, and the QA handoff was silently populated with
+// implemented_behavior: null (a developer-contract field) instead of the QA
+// fields.
+func TestWritePhaseHandoffOllamaQACapturesNestedBlockScalar(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "qa.log")
+	handoffPath := filepath.Join(tmpDir, "qa-handoff.yaml")
+	// Exact pattern from the real ollama/glm-5.2:cloud QA output in cycle
+	// 0001: the THINKING section quotes developer handoff fields, the ANSWER
+	// section has the QA YAML with a nested block scalar whose content is
+	// flattened to the same indent as the key (indent 3).
+	text := strings.Join([]string{
+		"Aider v0.86.2",
+		"",
+		"► THINKING                                                                      ",
+		"",
+		"The developer handoff says:",
+		"",
+		"implemented_behavior:",
+		"  - No changes were made.",
+		"",
+		"verdict: \"approved\"",
+		"",
+		"criteria_results:",
+		" • criterion: \"No code changes required\"",
+		"   result: \"pass\"",
+		"   notes: \"Developer made no changes.\"",
+		"",
+		"reviewed_files: []",
+		"failing_checks: []",
+		"required_fixes: []",
+		"",
+		"--------------------------------------------------------------------------------",
+		"",
+		"► ANSWER                                                                        ",
+		"",
+		" 1 Milestone ID and title: test-ms - Test                                      ",
+		" 2 Verdict: approved                                                           ",
+		"",
+		"verdict: approved                                                               ",
+		"",
+		"criteria_results:                                                               ",
+		"",
+		" • criterion: \"No code changes required\"                                        ",
+		"   result: \"pass\"                                                               ",
+		"   notes: |                                                                     ",
+		"   The milestone goal was to create a test milestone without any changes.       ",
+		"   The developer made no changes.                                               ",
+		"",
+		"reviewed_files: []                                                              ",
+		"",
+		"failing_checks: []                                                              ",
+		"",
+		"required_fixes: []                                                              ",
+		"",
+		"Tokens: 8.5k sent, 1.2k received.",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(text), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "test-ms", 1, "qa", "qa", logPath, 1000, "", "ollama"); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.OutputContract != "qa" {
+		t.Fatalf("expected output_contract=qa, got %q", handoff.OutputContract)
+	}
+	if handoff.Fallback {
+		t.Fatalf("expected non-fallback handoff from structured YAML, got fallback=true")
+	}
+	// verdict must be captured from the ANSWER region.
+	verdict, ok := handoff.Summary["verdict"].(string)
+	if !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved in summary, got %#v", handoff.Summary["verdict"])
+	}
+	// criteria_results with notes block-scalar content.
+	cr, ok := handoff.Summary["criteria_results"].([]interface{})
+	if !ok || len(cr) != 1 {
+		t.Fatalf("expected criteria_results with 1 item, got %#v", handoff.Summary["criteria_results"])
+	}
+	item, ok := cr[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected criteria_results[0] to be a map, got %#v", cr[0])
+	}
+	notes, _ := item["notes"].(string)
+	if !strings.Contains(notes, "The milestone goal was to create a test milestone") {
+		t.Fatalf("expected notes to contain block-scalar content, got %q", notes)
+	}
+	// Array fields must be present.
+	for _, key := range []string{"reviewed_files", "failing_checks", "required_fixes"} {
+		if _, ok := handoff.Summary[key].([]interface{}); !ok {
+			t.Fatalf("expected %s to be an array, got %#v", key, handoff.Summary[key])
+		}
+	}
+	// The QA handoff must NOT contain implemented_behavior, which only
+	// appeared in the THINKING section as a quoted developer handoff field.
+	if _, ok := handoff.Summary["implemented_behavior"]; ok {
+		t.Fatalf("QA handoff must not contain implemented_behavior (THINKING-section leakage)")
+	}
+}

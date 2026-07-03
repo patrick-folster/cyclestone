@@ -304,7 +304,16 @@ func extractFinalYAMLDocument(text string) ([]byte, error) {
 	}
 	// No fenced blocks: scan for inline YAML blocks that agents emit
 	// without markdown fences (common with Aider/Ollama CLI output).
-	inlineBlocks := scanInlineYAMLBlocks(text)
+	// Prefer the answer region (after the last "► ANSWER" marker) to avoid
+	// picking up YAML-like content from the model's thinking/reasoning
+	// section, which can contain handoff keys quoted out of context.
+	scanText := answerRegion(text)
+	inlineBlocks := scanInlineYAMLBlocks(scanText)
+	if len(inlineBlocks) == 0 {
+		// Fall back to the full text when no answer marker is present
+		// (e.g. sidecar files, non-Aider runners).
+		inlineBlocks = scanInlineYAMLBlocks(text)
+	}
 	sort.SliceStable(inlineBlocks, func(i, j int) bool {
 		return inlineBlocks[i].position < inlineBlocks[j].position
 	})
@@ -534,7 +543,14 @@ func parseRecommendationScore(handoffPath string) int {
 
 func extractHandoffYAML(text string) ([]byte, bool) {
 	candidates := fencedYAMLBlocks(text)
-	candidates = append(candidates, scanInlineYAMLBlocks(text)...)
+	// Prefer the answer region for inline blocks to avoid picking up
+	// YAML-like content from the model's thinking/reasoning section.
+	scanText := answerRegion(text)
+	inlineBlocks := scanInlineYAMLBlocks(scanText)
+	if len(inlineBlocks) == 0 {
+		inlineBlocks = scanInlineYAMLBlocks(text)
+	}
+	candidates = append(candidates, inlineBlocks...)
 	candidates = append(candidates, handoffRawYAMLCandidate(text)...)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].position < candidates[j].position
@@ -624,9 +640,9 @@ func normalizeBulletedYAML(data []byte) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
-// blockScalarIndent is the indentation applied to flattened block-scalar
-// content lines that Aider's CLI display has collapsed to column 0.
-const blockScalarIndent = "  "
+// blockScalarContentIndent is the number of indentation spaces added beyond
+// the block-scalar key's own indentation when re-indenting flattened content.
+const blockScalarContentIndent = 2
 
 // declaresBlockScalar reports whether a YAML line introduces a block scalar
 // value using the literal (|) or folded (>) indicator, optionally followed by
@@ -690,20 +706,27 @@ func isInlineYAMLStructuralLine(line string) bool {
 }
 
 // normalizeFlattenedBlockScalars re-indents block scalar content (| and >
-// indicators) that Aider's CLI display has flattened to column 0. A YAML block
-// scalar requires its content lines to be indented more than the key; when
-// Aider strips that indentation the YAML parser cannot parse the document. This
+// indicators) that Aider's CLI display has flattened. A YAML block scalar
+// requires its content lines to be indented more than the key; when Aider
+// strips that indentation the YAML parser cannot parse the document. This
 // function detects key/list lines whose value is a block scalar indicator and
-// indents subsequent non-structural content lines until the next top-level key
-// or list item.
+// re-indents subsequent non-structural content lines until the next structural
+// line (key or list item). It handles two flattening patterns produced by
+// Aider's CLI display:
+//   - Content collapsed to column 0 (top-level block scalars).
+//   - Content collapsed to the same indentation as the key (nested block
+//     scalars inside list items or mappings, e.g. notes: | inside
+//     criteria_results).
 func normalizeFlattenedBlockScalars(data []byte) []byte {
 	lines := strings.Split(string(data), "\n")
 	out := make([]string, 0, len(lines))
 	inBlockScalar := false
+	blockScalarKeyIndent := 0
 	for _, line := range lines {
 		trimmedRight := strings.TrimRight(line, " \t")
 		content := strings.TrimLeft(trimmedRight, " \t")
-		hasIndent := len(content) < len(trimmedRight)
+		currentIndent := len(trimmedRight) - len(content)
+		hasIndent := currentIndent > 0
 
 		if content == "" {
 			out = append(out, line)
@@ -714,11 +737,17 @@ func normalizeFlattenedBlockScalars(data []byte) []byte {
 			// Line at column 0 (no leading whitespace).
 			if isHandoffKeyLine(trimmedRight) {
 				inBlockScalar = declaresBlockScalar(trimmedRight)
+				if inBlockScalar {
+					blockScalarKeyIndent = 0
+				}
 				out = append(out, trimmedRight)
 				continue
 			}
 			if strings.HasPrefix(content, "- ") || content == "-" {
 				inBlockScalar = declaresBlockScalar(content)
+				if inBlockScalar {
+					blockScalarKeyIndent = 0
+				}
 				out = append(out, trimmedRight)
 				continue
 			}
@@ -727,7 +756,8 @@ func normalizeFlattenedBlockScalars(data []byte) []byte {
 				// Flattened block-scalar content: re-indent so the YAML parser
 				// treats it as block-scalar content rather than a new
 				// top-level node.
-				out = append(out, blockScalarIndent+trimmedRight)
+				needed := blockScalarKeyIndent + blockScalarContentIndent
+				out = append(out, strings.Repeat(" ", needed)+content)
 				continue
 			}
 			out = append(out, line)
@@ -739,6 +769,19 @@ func normalizeFlattenedBlockScalars(data []byte) []byte {
 		// flag unchanged so block-scalar content does not prematurely reset it.
 		if isInlineYAMLStructuralLine(trimmedRight) {
 			inBlockScalar = declaresBlockScalar(trimmedRight)
+			if inBlockScalar {
+				blockScalarKeyIndent = currentIndent
+			}
+			out = append(out, line)
+			continue
+		}
+		// Non-structural indented line. When in a block scalar and the
+		// content's indentation is at or below the key's, Aider has flattened
+		// it. Re-indent so the YAML parser treats it as block-scalar content.
+		if inBlockScalar && currentIndent <= blockScalarKeyIndent {
+			needed := blockScalarKeyIndent + blockScalarContentIndent
+			out = append(out, strings.Repeat(" ", needed)+content)
+			continue
 		}
 		out = append(out, line)
 	}
@@ -748,7 +791,7 @@ func normalizeFlattenedBlockScalars(data []byte) []byte {
 // normalizeHandoffYAML applies the full normalization pipeline for handoff YAML
 // documents extracted from agent output logs: first converting Unicode bullet
 // characters to YAML list markers, then re-indenting block-scalar content that
-// Aider's CLI display has flattened to column 0.
+// Aider's CLI display has flattened (to column 0 or to the key's own indentation).
 func normalizeHandoffYAML(data []byte) []byte {
 	return normalizeFlattenedBlockScalars(normalizeBulletedYAML(data))
 }
