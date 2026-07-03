@@ -1,0 +1,1 @@
+2026-07-03: The Codex CLI argument list is centralized in `buildCodexArgs` and reused by both `codex` and `ollama-codex` runners so sandbox, approval, stdin, and session-resume argument ordering cannot drift.

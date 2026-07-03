@@ -222,6 +222,10 @@ func TestValidateRunnerAvailabilityWarningsAndBlockers(t *testing.T) {
 	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "codex") {
 		t.Fatalf("expected missing codex binary blocker with PATH %q, old PATH %q: %#v ok=%v", tmp, oldPath, issue, ok)
 	}
+	issue, ok = validateRunnerAvailability("ollama-codex")
+	if !ok || issue.Severity != preflightBlocker || !strings.Contains(issue.Message, "ollama-codex") {
+		t.Fatalf("expected missing ollama-codex binary blocker with PATH %q, old PATH %q: %#v ok=%v", tmp, oldPath, issue, ok)
+	}
 }
 
 func TestPreflightBlocksUnsupportedAgentRunnerBinary(t *testing.T) {

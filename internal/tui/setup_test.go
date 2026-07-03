@@ -19,6 +19,10 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	if err := os.WriteFile(aiderPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	ollamaPath := filepath.Join(tmp, "ollama")
+	if err := os.WriteFile(ollamaPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", tmp)
 
 	runners := detectSetupRunnerAvailability()
@@ -34,6 +38,9 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	if !available["aider"] || !available["ollama"] {
 		t.Fatalf("expected aider and ollama to be available through aider on PATH: %#v", runners)
 	}
+	if !available["ollama-codex"] {
+		t.Fatalf("expected ollama-codex to be available through ollama and codex on PATH: %#v", runners)
+	}
 	if available["agy"] {
 		t.Fatalf("unexpected unavailable runner marked available: %#v", runners)
 	}
@@ -44,6 +51,28 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	}
 	if got := defaultSetupRunner(runners); got != "codex" {
 		t.Fatalf("expected first available default runner codex, got %q", got)
+	}
+}
+
+func TestOllamaCodexSetupRunnerRequiresBothBinaries(t *testing.T) {
+	tmp := t.TempDir()
+	ollamaPath := filepath.Join(tmp, "ollama")
+	if err := os.WriteFile(ollamaPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp)
+
+	available, reason := isRunnerAvailable("ollama-codex")
+	if available || !strings.Contains(reason, "codex not found on PATH") {
+		t.Fatalf("expected missing codex reason, available=%v reason=%q", available, reason)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmp, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	available, reason = isRunnerAvailable("ollama-codex")
+	if !available || !strings.Contains(reason, "ollama and codex") {
+		t.Fatalf("expected ollama-codex availability, available=%v reason=%q", available, reason)
 	}
 }
 

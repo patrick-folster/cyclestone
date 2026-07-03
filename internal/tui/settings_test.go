@@ -23,7 +23,7 @@ func TestSettingsModelRendersScrollableGroupList(t *testing.T) {
 	for _, want := range []string{
 		"[ Global ]", "[ Project ]",
 		"Runner Selection", "Execution Behavior", "UI Behavior", "Context/Cache Limits",
-		"Aider Settings", "Ollama via Aider Settings",
+		"Aider Settings", "Ollama via Aider Settings", "Ollama via Codex Settings",
 		"Agent Groups", "Save & Exit", "Discard & Exit",
 	} {
 		if !strings.Contains(view, want) {
@@ -81,6 +81,7 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 		model.LLMInputInput.SetValue("750000")
 		model.AiderModelInput.SetValue("aider-test-model")
 		model.OllamaModelInput.SetValue("llama3.1")
+		model.OllamaCodexModelInput.SetValue("glm-codex-test")
 		model.OllamaHostInput.SetValue("http://ollama:11434")
 		model.OllamaNumCtxInput.SetValue("8192")
 		model.OllamaPredictInput.SetValue("2048")
@@ -101,6 +102,7 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 		if saved.DefaultLLM != "ollama" || saved.CacheTTLMinutes != 45 || saved.MaxHandoffChars != 6000 || saved.MaxModelCallsPerPhase != 25 ||
 			saved.MaxTokenBudgetPerPhase != 123456 || saved.MaxLLMInputChars != 750000 ||
 			saved.AiderModel != "aider-test-model" || saved.OllamaModel != "llama3.1" ||
+			saved.OllamaCodexModel != "glm-codex-test" ||
 			saved.OllamaHost != "http://ollama:11434" || saved.OllamaNumCtx != 8192 ||
 			saved.OllamaNumPredict != 2048 || saved.DefaultGitBranchPrefix != "test-prefix/" {
 			t.Fatalf("saved settings missing expected fields: %+v", saved)
@@ -109,10 +111,10 @@ func TestSettingsModelSaveSyncsAllEditableTextInputsToProjectSettings(t *testing
 }
 
 func TestSettingsRunnerOptionsAreRestricted(t *testing.T) {
-	if got, want := getLLMOptions(settingsScopeGlobal), []string{"codex", "agy", "aider", "ollama"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := getLLMOptions(settingsScopeGlobal), []string{"codex", "agy", "aider", "ollama", "ollama-codex"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("global runner options = %v; want %v", got, want)
 	}
-	if got, want := getLLMOptions(settingsScopeProject), []string{"codex", "agy", "aider", "ollama", "inherit"}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := getLLMOptions(settingsScopeProject), []string{"codex", "agy", "aider", "ollama", "ollama-codex", "inherit"}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project runner options = %v; want %v", got, want)
 	}
 }
@@ -228,11 +230,28 @@ func TestSettingsModelEnterOpensGroupDetailAndBackReturnsToList(t *testing.T) {
 		}
 	}
 
+	model.ActiveGroup = -1
+	codexGroup := settingsGroupIndex(t, "Ollama via Codex Settings")
+	model.SelectedGroup = codexGroup
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.ActiveGroup != codexGroup {
+		t.Fatalf("expected active group %d, got %d", codexGroup, model.ActiveGroup)
+	}
+	if model.FocusIndex != settingOllamaCodexModel {
+		t.Fatalf("expected Ollama via Codex model row focus, got %d", model.FocusIndex)
+	}
+	view = model.View()
+	for _, want := range []string{"Group: Ollama via Codex Settings", "Ollama Model (via Codex)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected detail view to contain %q, got:\n%s", want, view)
+		}
+	}
+
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if model.ActiveGroup != -1 {
 		t.Fatalf("expected return to group list, got active group %d", model.ActiveGroup)
 	}
-	if model.SelectedGroup != ollamaGroup {
+	if model.SelectedGroup != codexGroup {
 		t.Fatalf("expected selected group preserved, got %d", model.SelectedGroup)
 	}
 }
@@ -466,11 +485,13 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 
 	// Set some global settings values
 	model.GlobalDraft.AiderModel = "global-aider"
+	model.GlobalDraft.OllamaCodexModel = "global-codex"
 	model.GlobalDraft.CacheTTLMinutes = 45
 	model.GlobalDraft.OllamaNumCtx = 16384
 
 	// Keep project settings unset/empty
 	model.ProjectDraft.AiderModel = ""
+	model.ProjectDraft.OllamaCodexModel = ""
 	model.ProjectDraft.CacheTTLMinutes = 0
 	model.ProjectDraft.OllamaNumCtx = 0
 
@@ -483,6 +504,9 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	if model.AiderModelInput.Value() != "" {
 		t.Errorf("expected project scope AiderModel input to be empty, got %q", model.AiderModelInput.Value())
 	}
+	if model.OllamaCodexModelInput.Value() != "" {
+		t.Errorf("expected project scope OllamaCodexModel input to be empty, got %q", model.OllamaCodexModelInput.Value())
+	}
 	if model.CacheTTLInput.Value() != "" {
 		t.Errorf("expected project scope CacheTTL input to be empty, got %q", model.CacheTTLInput.Value())
 	}
@@ -494,6 +518,9 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	if model.AiderModelInput.Placeholder != "global-aider" {
 		t.Errorf("expected AiderModel placeholder to be 'global-aider', got %q", model.AiderModelInput.Placeholder)
 	}
+	if model.OllamaCodexModelInput.Placeholder != "global-codex" {
+		t.Errorf("expected OllamaCodexModel placeholder to be 'global-codex', got %q", model.OllamaCodexModelInput.Placeholder)
+	}
 	if model.CacheTTLInput.Placeholder != "45" {
 		t.Errorf("expected CacheTTL placeholder to be '45', got %q", model.CacheTTLInput.Placeholder)
 	}
@@ -503,6 +530,7 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 
 	// Verify placeholder fallback to system default if global is also unset
 	model.GlobalDraft.AiderModel = ""
+	model.GlobalDraft.OllamaCodexModel = ""
 	model.GlobalDraft.CacheTTLMinutes = 0
 	model.GlobalDraft.OllamaNumCtx = 0
 	model.updatePlaceholders()
@@ -510,6 +538,9 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	// "aider model" is the fallback default placeholder
 	if model.AiderModelInput.Placeholder != "aider model" {
 		t.Errorf("expected AiderModel placeholder to default to 'aider model', got %q", model.AiderModelInput.Placeholder)
+	}
+	if model.OllamaCodexModelInput.Placeholder != config.DefaultOllamaModel {
+		t.Errorf("expected OllamaCodexModel placeholder to default to %q, got %q", config.DefaultOllamaModel, model.OllamaCodexModelInput.Placeholder)
 	}
 	// "30" is the CacheTTLMinutes system default
 	if model.CacheTTLInput.Placeholder != "30" {
@@ -528,6 +559,9 @@ func TestSettingsModelPlaceholderAndValueInheritance(t *testing.T) {
 	// At global scope, if a setting is unset, placeholder is system default
 	if model.AiderModelInput.Placeholder != "aider model" {
 		t.Errorf("expected global scope AiderModel placeholder to default to 'aider model', got %q", model.AiderModelInput.Placeholder)
+	}
+	if model.OllamaCodexModelInput.Placeholder != config.DefaultOllamaModel {
+		t.Errorf("expected global scope OllamaCodexModel placeholder to default to %q, got %q", config.DefaultOllamaModel, model.OllamaCodexModelInput.Placeholder)
 	}
 	if model.CacheTTLInput.Placeholder != "30" {
 		t.Errorf("expected global scope CacheTTL placeholder to default to '30', got %q", model.CacheTTLInput.Placeholder)

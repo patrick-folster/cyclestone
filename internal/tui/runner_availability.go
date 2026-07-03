@@ -17,6 +17,7 @@ var supportedSetupRunners = []runnerAvailability{
 	{ID: "agy", Label: "Agy CLI"},
 	{ID: "aider", Label: "Aider CLI"},
 	{ID: "ollama", Label: "Ollama via Aider"},
+	{ID: "ollama-codex", Label: "Ollama via Codex"},
 }
 
 func detectSetupRunnerAvailability() []runnerAvailability {
@@ -57,6 +58,14 @@ func isRunnerAvailable(runner string) (bool, string) {
 			return false, "aider not found on PATH"
 		}
 		return true, "available through aider on PATH"
+	case "ollama-codex":
+		if _, err := exec.LookPath("ollama"); err != nil {
+			return false, "ollama not found on PATH"
+		}
+		if _, err := exec.LookPath("codex"); err != nil {
+			return false, "codex not found on PATH"
+		}
+		return true, "available through ollama and codex on PATH"
 	}
 	return false, "unsupported runner"
 }

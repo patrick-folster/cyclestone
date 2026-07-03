@@ -41,6 +41,7 @@ const (
 	settingOllamaHost
 	settingOllamaNumCtx
 	settingOllamaNumPredict
+	settingOllamaCodexModel
 	settingAgentGroups
 	settingSave
 	settingCancel
@@ -61,6 +62,7 @@ const (
 	fieldOllamaHost
 	fieldOllamaNumCtx
 	fieldOllamaNumPredict
+	fieldOllamaCodexModel
 	fieldDefaultGitBranchPrefix
 )
 
@@ -76,6 +78,7 @@ var settingsGroups = []settingsGroup{
 	{Name: "Context/Cache Limits", Rows: []int{settingEnableContextCaching, settingEnableCompactPhaseHandoffs, settingEnableCodexSessionResume, settingCacheTTLMinutes, settingMaxHandoffChars, settingMaxModelCallsPerPhase, settingMaxTokenBudgetPerPhase, settingMaxLLMInputChars, settingMaxRetainedConversationMessages}},
 	{Name: "Aider Settings", Rows: []int{settingAiderModel}},
 	{Name: "Ollama via Aider Settings", Rows: []int{settingOllamaModel, settingOllamaHost, settingOllamaNumCtx, settingOllamaNumPredict}},
+	{Name: "Ollama via Codex Settings", Rows: []int{settingOllamaCodexModel}},
 	{Name: "Agent Groups", Rows: []int{settingAgentGroups}},
 	{Name: "Save & Exit", Rows: []int{}},
 	{Name: "Discard & Exit", Rows: []int{}},
@@ -110,6 +113,7 @@ type SettingsModel struct {
 
 	AiderModelInput             textinput.Model
 	OllamaModelInput            textinput.Model
+	OllamaCodexModelInput       textinput.Model
 	OllamaHostInput             textinput.Model
 	OllamaNumCtxInput           textinput.Model
 	OllamaPredictInput          textinput.Model
@@ -142,6 +146,7 @@ func NewSettingsModel(styles Styles) SettingsModel {
 		MaxRetainedConversationMsgInput: newInput("8", 10, 5),
 		AiderModelInput:                 newInput("aider model", 32, 120),
 		OllamaModelInput:                newInput(config.DefaultOllamaModel, 32, 120),
+		OllamaCodexModelInput:           newInput(config.DefaultOllamaModel, 32, 120),
 		OllamaHostInput:                 newInput("http://localhost:11434", 40, 200),
 		OllamaNumCtxInput:               newInput("4096", 10, 8),
 		OllamaPredictInput:              newInput("1024", 10, 8),
@@ -535,6 +540,8 @@ func (m SettingsModel) textFieldForFocus() settingsTextField {
 		return fieldOllamaNumCtx
 	case settingOllamaNumPredict:
 		return fieldOllamaNumPredict
+	case settingOllamaCodexModel:
+		return fieldOllamaCodexModel
 	case settingDefaultGitBranchPrefix:
 		return fieldDefaultGitBranchPrefix
 	default:
@@ -566,6 +573,8 @@ func (m *SettingsModel) inputForField(field settingsTextField) *textinput.Model 
 		return &m.OllamaNumCtxInput
 	case fieldOllamaNumPredict:
 		return &m.OllamaPredictInput
+	case fieldOllamaCodexModel:
+		return &m.OllamaCodexModelInput
 	case fieldDefaultGitBranchPrefix:
 		return &m.DefaultGitBranchPrefixInput
 	default:
@@ -580,7 +589,7 @@ func (m *SettingsModel) updateTextInputFocus() {
 	}
 	for _, field := range []settingsTextField{
 		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars, fieldMaxRetainedConversationMessages,
-		fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
+		fieldAiderModel, fieldOllamaModel, fieldOllamaHost, fieldOllamaCodexModel,
 		fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
 	} {
 		input := m.inputForField(field)
@@ -634,6 +643,8 @@ func (m *SettingsModel) applyTextFieldValue(field settingsTextField) {
 		draft.OllamaNumCtx = parseIntOrZero(m.OllamaNumCtxInput.Value())
 	case fieldOllamaNumPredict:
 		draft.OllamaNumPredict = parseIntOrZero(m.OllamaPredictInput.Value())
+	case fieldOllamaCodexModel:
+		draft.OllamaCodexModel = m.OllamaCodexModelInput.Value()
 	case fieldDefaultGitBranchPrefix:
 		draft.DefaultGitBranchPrefix = m.DefaultGitBranchPrefixInput.Value()
 	}
@@ -664,6 +675,7 @@ func (m *SettingsModel) syncCustomInput() {
 	setIntInput(&m.MaxRetainedConversationMsgInput, draft.MaxRetainedConversationMessages)
 	m.AiderModelInput.SetValue(draft.AiderModel)
 	m.OllamaModelInput.SetValue(draft.OllamaModel)
+	m.OllamaCodexModelInput.SetValue(draft.OllamaCodexModel)
 	m.OllamaHostInput.SetValue(draft.OllamaHost)
 	setIntInput(&m.OllamaNumCtxInput, draft.OllamaNumCtx)
 	setIntInput(&m.OllamaPredictInput, draft.OllamaNumPredict)
@@ -697,6 +709,7 @@ func (m *SettingsModel) updatePlaceholders() {
 	m.DefaultGitBranchPrefixInput.Placeholder = getStringPlaceholder(m.GlobalDraft.DefaultGitBranchPrefix, defaults.DefaultGitBranchPrefix)
 	m.AiderModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AiderModel, "aider model")
 	m.OllamaModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaModel, config.DefaultOllamaModel)
+	m.OllamaCodexModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaCodexModel, config.DefaultOllamaModel)
 	m.OllamaHostInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaHost, "http://localhost:11434")
 
 	m.CacheTTLInput.Placeholder = getIntPlaceholder(m.GlobalDraft.CacheTTLMinutes, defaults.CacheTTLMinutes)
@@ -720,7 +733,7 @@ func setIntInput(input *textinput.Model, val int) {
 func (m *SettingsModel) syncInputValuesToDraft() {
 	for _, field := range []settingsTextField{
 		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars,
-		fieldAiderModel, fieldOllamaModel, fieldOllamaHost,
+		fieldAiderModel, fieldOllamaModel, fieldOllamaHost, fieldOllamaCodexModel,
 		fieldOllamaNumCtx, fieldOllamaNumPredict, fieldDefaultGitBranchPrefix,
 	} {
 		m.applyTextFieldValue(field)
@@ -1241,6 +1254,8 @@ func (m SettingsModel) rowLabel(row int) string {
 		return "Ollama Num Ctx (via Aider)"
 	case settingOllamaNumPredict:
 		return "Ollama Num Predict (via Aider)"
+	case settingOllamaCodexModel:
+		return "Ollama Model (via Codex)"
 	case settingAgentGroups:
 		return "Agent Groups"
 	case settingSave:
@@ -1260,6 +1275,9 @@ func (m SettingsModel) rowValue(row int) string {
 			}
 			if opt == "ollama" {
 				return "ollama via aider"
+			}
+			if opt == "ollama-codex" {
+				return "ollama via codex"
 			}
 			return opt
 		}, func(opt string) bool {
@@ -1314,6 +1332,8 @@ func (m SettingsModel) rowValue(row int) string {
 		return m.renderInputWithInherit(m.OllamaNumCtxInput.View(), m.GlobalDraft.OllamaNumCtx, "-1")
 	case settingOllamaNumPredict:
 		return m.renderInputWithInherit(m.OllamaPredictInput.View(), m.GlobalDraft.OllamaNumPredict, "-1")
+	case settingOllamaCodexModel:
+		return m.renderStringInputWithInherit(m.OllamaCodexModelInput.View(), defaultString(m.GlobalDraft.OllamaCodexModel, config.DefaultOllamaModel))
 	case settingAgentGroups:
 		return "Enter to edit pipeline groups"
 	default:
@@ -1465,6 +1485,9 @@ func settingsEqual(a, b config.Settings) bool {
 		return false
 	}
 	if a.OllamaModel != b.OllamaModel {
+		return false
+	}
+	if a.OllamaCodexModel != b.OllamaCodexModel {
 		return false
 	}
 	if a.OllamaHost != b.OllamaHost {

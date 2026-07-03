@@ -532,6 +532,9 @@ func (m CreateMilestoneModel) View() string {
 				if opt == "ollama" {
 					display = "ollama via aider"
 				}
+				if opt == "ollama-codex" {
+					display = "ollama via codex"
+				}
 				if m.RunnerType == opt {
 					renderedOpts = append(renderedOpts, m.Styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))
 				} else {
@@ -654,6 +657,9 @@ func (m CreateMilestoneModel) View() string {
 				display := opt
 				if opt == "ollama" {
 					display = "ollama via aider"
+				}
+				if opt == "ollama-codex" {
+					display = "ollama via codex"
 				}
 				if m.RunnerType == opt {
 					renderedOpts = append(renderedOpts, m.Styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))

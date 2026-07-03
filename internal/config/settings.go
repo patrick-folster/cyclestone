@@ -19,7 +19,7 @@ type AgentGroup struct {
 
 // Settings represents global and project configurations.
 type Settings struct {
-	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", or "" (inherit)
+	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", "ollama-codex", or "" (inherit)
 	DefaultMode            string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`                       // "sandbox", "unrestricted", or "" (inherit)
 	AutoGitBranch          *bool  `yaml:"auto_git_branch,omitempty" json:"auto_git_branch,omitempty"`                 // pointer to bool, nil if unset/inherit
 	CreateMilestoneBranch  *bool  `yaml:"create_milestone_branch,omitempty" json:"create_milestone_branch,omitempty"` // pointer to bool, nil if unset/inherit
@@ -29,6 +29,7 @@ type Settings struct {
 
 	AiderModel                      string       `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
 	OllamaModel                     string       `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
+	OllamaCodexModel                string       `yaml:"ollama_codex_model,omitempty" json:"ollama_codex_model,omitempty"`
 	OllamaHost                      string       `yaml:"ollama_host,omitempty" json:"ollama_host,omitempty"`
 	EnableContextCaching            *bool        `yaml:"enable_context_caching,omitempty" json:"enable_context_caching,omitempty"`
 	EnableCompactPhaseHandoffs      *bool        `yaml:"enable_compact_phase_handoffs,omitempty" json:"enable_compact_phase_handoffs,omitempty"`
@@ -47,7 +48,7 @@ type Settings struct {
 // IsValidLLM checks if a given LLM runner name is supported.
 func IsValidLLM(val string) bool {
 	switch val {
-	case "codex", "agy", "aider", "ollama":
+	case "codex", "agy", "aider", "ollama", "ollama-codex":
 		return true
 	}
 	return false
@@ -245,6 +246,9 @@ func LoadMergedSettings() Settings {
 				if projectSettings.OllamaModel != "" {
 					s.OllamaModel = projectSettings.OllamaModel
 				}
+				if projectSettings.OllamaCodexModel != "" {
+					s.OllamaCodexModel = projectSettings.OllamaCodexModel
+				}
 				if projectSettings.OllamaHost != "" {
 					s.OllamaHost = projectSettings.OllamaHost
 				}
@@ -360,6 +364,9 @@ func LoadMergedSettings() Settings {
 
 	if s.OllamaModel == "" {
 		s.OllamaModel = DefaultOllamaModel
+	}
+	if s.OllamaCodexModel == "" {
+		s.OllamaCodexModel = DefaultOllamaModel
 	}
 
 	// Ensure "Default" is present and listed first

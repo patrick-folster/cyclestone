@@ -108,7 +108,7 @@ Setup writes files only after final confirmation:
 - `.cyclestone/milestones/`
 - `.cyclestone/milestones/<id>.md` when you create the first milestone
 
-Runner detection checks `codex`, `agy`, and `aider` on `PATH`. The `ollama` runner is offered when Aider is available, because Ollama execution runs through Aider. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
+Runner detection checks `codex`, `agy`, and `aider` on `PATH`. The `ollama` runner is offered when Aider is available, because Ollama execution runs through Aider. The `ollama-codex` runner is offered when both Ollama and Codex are available on `PATH`. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
 
 The wizard defaults to sandbox mode and automatic milestone branches. Selecting unrestricted mode requires an explicit confirmation before settings are saved. If `cyclestone` is run non-interactively and no config exists, it exits before launching the TUI; run it in an interactive terminal or provide an existing config path.
 
@@ -200,6 +200,7 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 | `agy` | `agy` CLI on `PATH` and authenticated | External CLI runner. |
 | `aider` | Aider CLI on `PATH` | Python-based coding assistant. Defaults to `--no-auto-commits`, `--no-dirty-commits`, and `--no-gitignore`. |
 | `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to `glm-5.2:cloud` unless `ollama_model` is configured. |
+| `ollama-codex` | Ollama and Codex CLI on `PATH` | Executes Codex CLI through `ollama launch codex --model <model> -- <codex args>`. Defaults to `glm-5.2:cloud` unless `ollama_codex_model` is configured. |
 
 ### Known Limitations
 

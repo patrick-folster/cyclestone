@@ -79,6 +79,9 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if defaults.OllamaModel != DefaultOllamaModel {
 		t.Errorf("expected default OllamaModel %q, got %q", DefaultOllamaModel, defaults.OllamaModel)
 	}
+	if defaults.OllamaCodexModel != DefaultOllamaModel {
+		t.Errorf("expected default OllamaCodexModel %q, got %q", DefaultOllamaModel, defaults.OllamaCodexModel)
+	}
 	if defaults.OllamaNumPredict != -1 {
 		t.Errorf("expected default OllamaNumPredict -1, got %d", defaults.OllamaNumPredict)
 	}
@@ -399,15 +402,94 @@ func TestOllamaGenerationSettingsSerializeAndMerge(t *testing.T) {
 	if merged.OllamaModel != DefaultOllamaModel {
 		t.Fatalf("expected default ollama model for sparse settings, got %q", merged.OllamaModel)
 	}
+	if merged.OllamaCodexModel != DefaultOllamaModel {
+		t.Fatalf("expected default ollama codex model for sparse settings, got %q", merged.OllamaCodexModel)
+	}
 	if merged.OllamaNumCtx != -1 || merged.OllamaNumPredict != -1 {
 		t.Fatalf("expected default ollama options for sparse settings, got ctx=%d predict=%d", merged.OllamaNumCtx, merged.OllamaNumPredict)
+	}
+}
+
+func TestOllamaCodexModelSerializeAndMerge(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "settings_ollama_codex_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+	os.Setenv("HOME", tmpDir)
+	os.Setenv("USERPROFILE", tmpDir)
+	projectRoot := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(projectRoot, 0755); err != nil {
+		t.Fatalf("failed to create project root: %v", err)
+	}
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	defer func() {
+		os.Setenv("HOME", oldHome)
+		os.Setenv("USERPROFILE", oldUserProfile)
+		_ = os.Chdir(oldWd)
+	}()
+
+	settings := Settings{OllamaCodexModel: "global-codex-model"}
+	yamlBytes, err := yaml.Marshal(settings)
+	if err != nil {
+		t.Fatalf("failed to marshal yaml: %v", err)
+	}
+	if !strings.Contains(string(yamlBytes), "ollama_codex_model: global-codex-model") {
+		t.Fatalf("expected yaml ollama_codex_model key, got:\n%s", string(yamlBytes))
+	}
+
+	jsonBytes, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("failed to marshal json: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"ollama_codex_model":"global-codex-model"`) {
+		t.Fatalf("expected json ollama_codex_model key, got:\n%s", string(jsonBytes))
+	}
+
+	if err := SaveGlobalSettings(settings); err != nil {
+		t.Fatalf("failed to save global settings: %v", err)
+	}
+	if err := SaveProjectSettings(Settings{}); err != nil {
+		t.Fatalf("failed to save empty project settings: %v", err)
+	}
+	merged := LoadMergedSettings()
+	if merged.OllamaCodexModel != "global-codex-model" {
+		t.Fatalf("expected global ollama codex model, got %q", merged.OllamaCodexModel)
+	}
+
+	if err := SaveProjectSettings(Settings{OllamaCodexModel: "project-codex-model"}); err != nil {
+		t.Fatalf("failed to save project settings: %v", err)
+	}
+	merged = LoadMergedSettings()
+	if merged.OllamaCodexModel != "project-codex-model" {
+		t.Fatalf("expected project ollama codex model override, got %q", merged.OllamaCodexModel)
+	}
+
+	if err := SaveGlobalSettings(Settings{}); err != nil {
+		t.Fatalf("failed to save empty global settings: %v", err)
+	}
+	if err := SaveProjectSettings(Settings{}); err != nil {
+		t.Fatalf("failed to save empty project settings: %v", err)
+	}
+	merged = LoadMergedSettings()
+	if merged.OllamaCodexModel != DefaultOllamaModel {
+		t.Fatalf("expected default ollama codex model, got %q", merged.OllamaCodexModel)
 	}
 }
 
 func TestLLMValidationAndConfig(t *testing.T) {
 	// 1. Verify IsValidLLM validation logic
 	validCases := []string{
-		"codex", "agy", "aider", "ollama",
+		"codex", "agy", "aider", "ollama", "ollama-codex",
 	}
 	for _, c := range validCases {
 		if !IsValidLLM(c) {
@@ -455,6 +537,7 @@ func TestLLMValidationAndConfig(t *testing.T) {
 		DefaultLLM:                      "gemini",
 		AiderModel:                      "aider-claude-3-5",
 		OllamaModel:                     "mistral",
+		OllamaCodexModel:                "glm-codex",
 		OllamaHost:                      "http://127.0.0.1:11434",
 		EnableContextCaching:            &trueVal,
 		EnableCompactPhaseHandoffs:      &falseVal,
@@ -479,6 +562,9 @@ func TestLLMValidationAndConfig(t *testing.T) {
 	}
 	if merged.OllamaModel != "mistral" {
 		t.Errorf("expected OllamaModel 'mistral', got '%s'", merged.OllamaModel)
+	}
+	if merged.OllamaCodexModel != "glm-codex" {
+		t.Errorf("expected OllamaCodexModel 'glm-codex', got '%s'", merged.OllamaCodexModel)
 	}
 	if merged.OllamaHost != "http://127.0.0.1:11434" {
 		t.Errorf("expected OllamaHost 'http://127.0.0.1:11434', got '%s'", merged.OllamaHost)

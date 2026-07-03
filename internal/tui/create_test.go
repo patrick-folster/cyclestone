@@ -18,17 +18,17 @@ func TestGetCreateRunnerOptions(t *testing.T) {
 		{
 			name:       "empty defaultLLM",
 			defaultLLM: "",
-			expected:   []string{"codex", "agy", "aider", "ollama"},
+			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
 		},
 		{
 			name:       "previous api defaultLLM",
 			defaultLLM: "gemini",
-			expected:   []string{"codex", "agy", "aider", "ollama"},
+			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
 		},
 		{
 			name:       "unsupported defaultLLM",
 			defaultLLM: "unsupported-runner",
-			expected:   []string{"codex", "agy", "aider", "ollama"},
+			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
 		},
 	}
 

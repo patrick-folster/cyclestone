@@ -80,6 +80,8 @@ func configuredModelForRunner(runner string, settings config.Settings) string {
 		return settings.AiderModel
 	case "ollama":
 		return settings.OllamaModel
+	case "ollama-codex":
+		return settings.OllamaCodexModel
 	default:
 		return ""
 	}
@@ -90,11 +92,9 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 	case "manual":
 		return "manual phase"
 	case "codex":
-		modeArgs := "--sandbox workspace-write --ask-for-approval never"
-		if opts.Unrestricted {
-			modeArgs = "--sandbox danger-full-access --dangerously-bypass-approvals-and-sandbox"
-		}
-		return "codex " + modeArgs + " exec --cd . --skip-git-repo-check -- -"
+		return "codex " + strings.Join(buildCodexArgs(opts, false, ""), " ")
+	case "ollama-codex":
+		return "ollama launch codex --model <model> -- " + strings.Join(buildCodexArgs(opts, false, ""), " ")
 	case "agy":
 		if opts.Unrestricted {
 			return "agy --print - --print-timeout 30m --dangerously-skip-permissions"
@@ -902,7 +902,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 		return
 	}
 
-	// Setup command for agy/codex/aider/ollama.
+	// Setup command for agy/codex/aider/ollama/ollama-codex.
 	var cmd *exec.Cmd
 	if runner == "agy" {
 		args := []string{"--print", "-", "--print-timeout", "30m"}
@@ -978,19 +978,15 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			cmd.Env = append(cmd.Env, "OLLAMA_API_BASE="+host)
 		}
 	} else {
-		if runner != "codex" {
+		if runner != "codex" && runner != "ollama-codex" {
 			ch <- CreateMilestoneFinishedMsg{Error: fmt.Errorf("unsupported runner: %s", runner)}
 			return
 		}
-		var args []string
-		if opts.Unrestricted {
-			args = append(args, "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox")
+		if runner == "ollama-codex" {
+			cmd = buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, false, "")
 		} else {
-			args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "never")
+			cmd = buildCodexCommand(ctx, opts, false, "")
 		}
-		args = append(args, "exec", "--cd", ".", "--skip-git-repo-check", "--", "-")
-
-		cmd = exec.CommandContext(ctx, "codex", args...)
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 
@@ -1031,7 +1027,7 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 
 func inputSizeLimitForRunner(runner string, settings config.Settings) (int, bool) {
 	switch runner {
-	case "codex", "agy", "aider", "ollama":
+	case "codex", "agy", "aider", "ollama", "ollama-codex":
 		limit := settings.MaxLLMInputChars
 		if limit <= 0 {
 			limit = 900000
@@ -1061,7 +1057,7 @@ func readFileString(path string) string {
 	return string(data)
 }
 
-func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, threadID string) *exec.Cmd {
+func buildCodexArgs(opts RunOptions, enableResume bool, threadID string) []string {
 	var args []string
 	if opts.Unrestricted {
 		args = append(args, "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox")
@@ -1076,7 +1072,27 @@ func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, 
 		args = append(args, "resume", threadID)
 	}
 	args = append(args, "--cd", ".", "--skip-git-repo-check", "--", "-")
-	return exec.CommandContext(ctx, "codex", args...)
+	return args
+}
+
+func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, threadID string) *exec.Cmd {
+	return exec.CommandContext(ctx, "codex", buildCodexArgs(opts, enableResume, threadID)...)
+}
+
+func buildOllamaCodexCommand(ctx context.Context, opts RunOptions, model string, enableResume bool, threadID string) *exec.Cmd {
+	if model == "" {
+		model = config.DefaultOllamaModel
+	}
+	args := []string{"launch", "codex", "--model", model, "--"}
+	args = append(args, buildCodexArgs(opts, enableResume, threadID)...)
+	return exec.CommandContext(ctx, "ollama", args...)
+}
+
+func buildCodexRunnerCommand(ctx context.Context, runner string, opts RunOptions, settings config.Settings, enableResume bool, threadID string) *exec.Cmd {
+	if runner == "ollama-codex" {
+		return buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, enableResume, threadID)
+	}
+	return buildCodexCommand(ctx, opts, enableResume, threadID)
 }
 
 func setupTemporaryAiderSettings(model string, settings config.Settings) func() {
@@ -1210,8 +1226,8 @@ func runRunnerWithSession(ctx context.Context, runner string, agentID string, ag
 	case "agy":
 		return runAgy(ctx, agentID, inputContent, opts, ch, logOutFile)
 
-	case "codex":
-		return runCodex(ctx, agentID, inputContent, outputPath, settings, opts, ch, logOutFile, codexThreadID)
+	case "codex", "ollama-codex":
+		return runCodex(ctx, runner, agentID, inputContent, outputPath, settings, opts, ch, logOutFile, codexThreadID)
 
 	default:
 		unsupportedErr := fmt.Errorf("unsupported runner: %s", runner)
@@ -1402,9 +1418,9 @@ func runAgy(ctx context.Context, agentID string, inputContent string, opts RunOp
 	return 0, nil
 }
 
-func runCodex(ctx context.Context, agentID string, inputContent string, outputPath string, settings config.Settings, opts RunOptions, ch chan tea.Msg, logOutFile *os.File, codexThreadID *string) (int, error) {
+func runCodex(ctx context.Context, runner string, agentID string, inputContent string, outputPath string, settings config.Settings, opts RunOptions, ch chan tea.Msg, logOutFile *os.File, codexThreadID *string) (int, error) {
 	enableResume := settings.EnableCodexSessionResume != nil && *settings.EnableCodexSessionResume && codexThreadID != nil
-	cmd := buildCodexCommand(ctx, opts, enableResume, stringPtrValue(codexThreadID))
+	cmd := buildCodexRunnerCommand(ctx, runner, opts, settings, enableResume, stringPtrValue(codexThreadID))
 	cmd.Stdin = strings.NewReader(inputContent)
 
 	r, w := io.Pipe()
@@ -1441,7 +1457,7 @@ func runCodex(ctx context.Context, agentID string, inputContent string, outputPa
 		}
 		if enableResume && stringPtrValue(codexThreadID) != "" {
 			logOutFile.WriteString("\n[Codex Resume] resume failed; retrying isolated codex exec.\n")
-			fallbackCmd := buildCodexCommand(ctx, opts, false, "")
+			fallbackCmd := buildCodexRunnerCommand(ctx, runner, opts, settings, false, "")
 			fallbackCmd.Stdin = strings.NewReader(inputContent)
 			r, w := io.Pipe()
 			fallbackCmd.Stdout = w

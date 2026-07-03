@@ -1444,6 +1444,44 @@ func TestCodexThreadIDParseAndResumeCommandConstruction(t *testing.T) {
 	}
 }
 
+func TestOllamaCodexCommandConstructionUsesSharedCodexArgs(t *testing.T) {
+	restricted := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", false, "")
+	wantRestricted := []string{"ollama", "launch", "codex", "--model", "glm-test:cloud", "--", "--sandbox", "workspace-write", "--ask-for-approval", "never", "exec", "--cd", ".", "--skip-git-repo-check", "--", "-"}
+	if !slicesEqual(restricted.Args, wantRestricted) {
+		t.Fatalf("restricted ollama-codex args mismatch:\n got: %v\nwant: %v", restricted.Args, wantRestricted)
+	}
+
+	unrestricted := buildOllamaCodexCommand(context.Background(), RunOptions{Unrestricted: true}, "glm-test:cloud", false, "")
+	wantUnrestricted := []string{"ollama", "launch", "codex", "--model", "glm-test:cloud", "--", "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox", "exec", "--cd", ".", "--skip-git-repo-check", "--", "-"}
+	if !slicesEqual(unrestricted.Args, wantUnrestricted) {
+		t.Fatalf("unrestricted ollama-codex args mismatch:\n got: %v\nwant: %v", unrestricted.Args, wantUnrestricted)
+	}
+
+	startCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", true, "")
+	startArgs := strings.Join(startCmd.Args, " ")
+	if !strings.Contains(startArgs, "exec --json") || strings.Contains(startArgs, "resume") {
+		t.Fatalf("unexpected ollama-codex start command args: %v", startCmd.Args)
+	}
+
+	resumeCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", true, "thread-123")
+	resumeArgs := strings.Join(resumeCmd.Args, " ")
+	if !strings.Contains(resumeArgs, "exec resume thread-123") || strings.Contains(resumeArgs, "--json") {
+		t.Fatalf("unexpected ollama-codex resume command args: %v", resumeCmd.Args)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestCodexSessionResumeWithFakeBinary(t *testing.T) {
 	withFakeCodexTestDir(t, `#!/bin/sh
 printf '%s\n' "$*" >> codex-args.log
@@ -1483,6 +1521,52 @@ echo 'done'
 	args := string(argsBytes)
 	if !strings.Contains(args, "exec --json") || !strings.Contains(args, "exec resume thread-fake") {
 		t.Fatalf("expected start and resume codex calls, got:\n%s", args)
+	}
+}
+
+func TestOllamaCodexSessionResumeWithFakeBinary(t *testing.T) {
+	withFakeOllamaTestDir(t, `#!/bin/sh
+printf '%s\n' "$*" >> ollama-args.log
+if printf '%s\n' "$*" | grep -q -- '--json'; then
+  echo '{"msg":"thread.started","thread_id":"thread-fake"}'
+fi
+echo 'assistant'
+echo 'done'
+`)
+
+	trueVal := true
+	if err := config.SaveProjectSettings(config.Settings{
+		DefaultLLM:               "ollama-codex",
+		OllamaCodexModel:         "glm-test:cloud",
+		EnableCodexSessionResume: &trueVal,
+		MaxLLMInputChars:         900000,
+	}); err != nil {
+		t.Fatalf("failed to save settings: %v", err)
+	}
+
+	threadID := ""
+	pmExit, pmErr := runRunnerWithSession(context.Background(), "ollama-codex", "pm", "Project Manager", "pm prompt", "pm.log", RunOptions{}, nil, &threadID)
+	if pmExit != 0 || pmErr != nil {
+		t.Fatalf("expected fake PM ollama-codex success, exit=%d err=%v", pmExit, pmErr)
+	}
+	if threadID != "thread-fake" {
+		t.Fatalf("expected parsed thread id, got %q", threadID)
+	}
+
+	devExit, devErr := runRunnerWithSession(context.Background(), "ollama-codex", "developer", "Developer", "dev prompt", "dev.log", RunOptions{}, nil, &threadID)
+	if devExit != 0 || devErr != nil {
+		t.Fatalf("expected fake developer ollama-codex success, exit=%d err=%v", devExit, devErr)
+	}
+
+	argsBytes, err := os.ReadFile("ollama-args.log")
+	if err != nil {
+		t.Fatalf("failed to read fake ollama args: %v", err)
+	}
+	args := string(argsBytes)
+	if !strings.Contains(args, "launch codex --model glm-test:cloud --") ||
+		!strings.Contains(args, "exec --json") ||
+		!strings.Contains(args, "exec resume thread-fake") {
+		t.Fatalf("expected start and resume ollama-codex calls, got:\n%s", args)
 	}
 }
 
@@ -1546,6 +1630,31 @@ func withFakeCodexTestDir(t *testing.T, script string) {
 	codexPath := filepath.Join(binDir, "codex")
 	if err := os.WriteFile(codexPath, []byte(script), 0755); err != nil {
 		t.Fatalf("failed to write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
+}
+
+func withFakeOllamaTestDir(t *testing.T, script string) {
+	t.Helper()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	ollamaPath := filepath.Join(binDir, "ollama")
+	if err := os.WriteFile(ollamaPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake ollama: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("HOME", tmpDir)
@@ -2948,6 +3057,43 @@ func TestExtractFinalYAMLDocumentCapturesRecommenderBlockScalar(t *testing.T) {
 	}
 	if focus, ok := decoded["next_cycle_focus"].([]interface{}); !ok || len(focus) != 0 {
 		t.Fatalf("expected next_cycle_focus=[], got %#v", decoded["next_cycle_focus"])
+	}
+}
+
+func TestExtractFinalYAMLDocumentPrefersRepeatedRecommenderYAMLAfterTokenFooter(t *testing.T) {
+	recommendation := strings.Join([]string{
+		"score: 2",
+		"verdict: approved",
+		"reason: |",
+		"  The latest QA report marks every milestone criterion as passing, with no",
+		"  failing checks or required fixes.",
+		"next_cycle_focus: []",
+	}, "\n")
+	text := strings.Join([]string{
+		"► ANSWER",
+		"",
+		recommendation,
+		"tokens used",
+		"5.469",
+		recommendation,
+	}, "\n")
+
+	raw, err := extractFinalYAMLDocument(text)
+	if err != nil {
+		t.Fatalf("expected extraction to succeed, got error: %v", err)
+	}
+	var decoded map[string]interface{}
+	if err := unmarshalYAMLMap(raw, &decoded); err != nil {
+		t.Fatalf("extracted YAML failed to parse: %v\nraw:\n%s", err, string(raw))
+	}
+	if score, ok := decoded["score"].(int); !ok || score != 2 {
+		t.Fatalf("expected score=2, got %#v", decoded["score"])
+	}
+	if verdict, ok := decoded["verdict"].(string); !ok || verdict != "approved" {
+		t.Fatalf("expected verdict=approved, got %#v", decoded["verdict"])
+	}
+	if strings.Contains(string(raw), "tokens used") {
+		t.Fatalf("extracted YAML must not include token footer, got:\n%s", string(raw))
 	}
 }
 
