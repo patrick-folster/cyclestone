@@ -48,6 +48,7 @@ Many AI coding agents operate as a "black box"—you run them, and they edit you
 - At least one supported runner:
   - `codex`: OpenAI Codex CLI installed and authenticated. This is the default runner.
   - `agy`: `agy` CLI installed and authenticated.
+  - `ollama-codex`: Ollama can be run through Codex when both `ollama` and `codex` are installed and available on `PATH`.
 
 ### 1. Installation
 
@@ -189,7 +190,7 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 | --- | --- | --- |
 | `codex` | Codex CLI on `PATH` and authenticated | Default. Uses Codex CLI sandbox/approval behavior. |
 | `agy` | `agy` CLI on `PATH` and authenticated | External CLI runner. |
-| `ollama-codex` | Ollama and Codex CLI on `PATH` | Executes Codex CLI through `ollama launch codex --model <model> -- <codex args>`. Defaults to `glm-5.2:cloud` unless `ollama_codex_model` is configured. |
+| `ollama-codex` | Ollama and Codex CLI on `PATH` | Runs Ollama through Codex by executing `ollama launch codex --model <model> -- <codex args>`. Defaults to `glm-5.2:cloud` unless `ollama_codex_model` is configured. |
 
 ### Known Limitations
 
