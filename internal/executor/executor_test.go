@@ -3352,8 +3352,8 @@ func TestStripSearchReplaceWrapper(t *testing.T) {
 			expect: "verdict: approved\nreviewed_files: []",
 		},
 		{
-			name: "leading/trailing whitespace trimmed",
-			input: "\n\n<<<<<<< SEARCH\n=======\nverdict: approved\n>>>>>>> REPLACE\n\n",
+			name:   "leading/trailing whitespace trimmed",
+			input:  "\n\n<<<<<<< SEARCH\n=======\nverdict: approved\n>>>>>>> REPLACE\n\n",
 			expect: "verdict: approved",
 		},
 		{
@@ -3482,9 +3482,9 @@ func TestHandoffInstructionNonAider(t *testing.T) {
 // correct role sentence and consequence text.
 func TestHandoffInstructionAgentSpecificText(t *testing.T) {
 	tests := []struct {
-		agentID          string
-		roleFragment     string
-		consequenceFrag  string
+		agentID         string
+		roleFragment    string
+		consequenceFrag string
 	}{
 		{"pm", "Project Manager", "your plan cannot be recorded"},
 		{"developer", "implementation work", "QA has nothing to review"},

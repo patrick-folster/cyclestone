@@ -1,4 +1,4 @@
-default_llm: ollama
+default_llm: ollama_codex
 default_mode: unrestricted
 auto_git_branch: false
 create_milestone_branch: false

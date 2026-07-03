@@ -18,17 +18,17 @@ func TestGetCreateRunnerOptions(t *testing.T) {
 		{
 			name:       "empty defaultLLM",
 			defaultLLM: "",
-			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
+			expected:   []string{"codex", "agy", "ollama-codex"},
 		},
 		{
 			name:       "previous api defaultLLM",
 			defaultLLM: "gemini",
-			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
+			expected:   []string{"codex", "agy", "ollama-codex"},
 		},
 		{
 			name:       "unsupported defaultLLM",
 			defaultLLM: "unsupported-runner",
-			expected:   []string{"codex", "agy", "aider", "ollama", "ollama-codex"},
+			expected:   []string{"codex", "agy", "ollama-codex"},
 		},
 	}
 
@@ -200,7 +200,7 @@ func TestCreateMilestoneModel_CycleNoteMode(t *testing.T) {
 	m.Width = 80
 	m.Height = 24
 	m.RunMilestone = config.Milestone{ID: "0010", Title: "My Milestone"}
-	m.RunRunnerLLM = "ollama"
+	m.RunRunnerLLM = "ollama-codex"
 	m.RunRunnerMode = "sandbox"
 	m.RunNoBranch = true
 	m.RunSingleID = "qa"

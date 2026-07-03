@@ -37,7 +37,7 @@ Built-in Developer, QA, and Recommender agents opt in to structured output contr
 
 For contracted agents, the executor reads the output-contract YAML document from a dedicated temp file under `.cyclestone/temp/` (for example `001-cycle-001-01-pm-handoff.yaml`). The prompt injects the concrete file path via a `{{HANDOFF_YAML_PATH}}` placeholder and instructs the agent to write its structured handoff directly to that file using a file-write tool or shell command, avoiding the brittle console-log extraction pipeline. When the temp file is absent or unparseable (for example manual mode, older runners, or custom agents without the placeholder), the executor falls back to extracting the YAML from the phase output log (final fenced `yaml`/`yml` block, inline handoff keys, or a raw YAML document at the end), and also checks for a sibling sidecar `.yaml` file next to the output log (for example `001-01-pm-output.log` -> `001-01-pm-output.yaml`). Explicit contracts are still validated and persisted when `EnableCompactPhaseHandoffs` is false; that setting disables compact phase-input summaries and uncontracted fallback handoff persistence. Custom or uncontracted outputs continue through fallback YAML handoff summarization.
 
-Aider and Ollama runners execute through the Aider CLI, which cannot reliably emit a final structured YAML document that survives the CLI's line wrapping and display chrome. These runners bypass strict contract validation: when the agent produced a YAML document (in the temp file, log, or sidecar), it is captured as the phase handoff summary without recording validation errors, and when no document was produced at all the handoff falls back to heuristic summarization. Missing or non-conforming structured output therefore does not fail or block the cycle for Aider/Ollama. Strict runners (`codex`, `agy`, `ollama-codex`) still record invalid contracts and map them to failed/blocked cycle status.
+The legacy Aider-based runners (`aider` and `ollama`/Ollama via Aider) execute through the Aider CLI, which cannot reliably emit a final structured YAML document that survives the CLI's line wrapping and display chrome. They are no longer offered in the TUI but remain supported by the executor if configured manually. They bypass strict contract validation: when the agent produced a YAML document (in the temp file, log, or sidecar), it is captured as the phase handoff summary without recording validation errors, and when no document was produced at all the handoff falls back to heuristic summarization. Missing or non-conforming structured output therefore does not fail or block the cycle for these runners. Strict runners (`codex`, `agy`, `ollama-codex`) still record invalid contracts and map them to failed/blocked cycle status.
 
 ## Runners
 
@@ -45,13 +45,11 @@ Supported runners:
 
 - `codex`
 - `agy`
-- `aider`
-- `ollama`
 - `ollama-codex`
 
-CLI runners execute external programs, including Codex, Agy, Aider, Ollama via Aider, and Ollama via Codex.
+CLI runners execute external programs, including Codex, Agy, and Ollama via Codex.
 
-First-run setup detects `codex`, `agy`, and `aider` with `PATH` lookups. The `ollama` runner is selectable when Aider is available, because Ollama execution runs through Aider. The `ollama-codex` runner is selectable when both Ollama and Codex are available, because it launches the Codex CLI through Ollama. The default setup runner is chosen only from available supported options.
+First-run setup detects `codex` and `agy` with `PATH` lookups. The `ollama-codex` runner is selectable when both Ollama and Codex are available, because it launches the Codex CLI through Ollama. The default setup runner is chosen only from available supported options.
 
 ## Files
 

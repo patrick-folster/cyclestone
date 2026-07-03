@@ -546,12 +546,7 @@ func (m DetailsModel) getDetailsTextForHeight(leftHeight int, leftWidth int) str
 	items := []metaItem{
 		{m.Styles.DetailLabel.Render("Status:"), statusBadge},
 		{m.Styles.DetailLabel.Render("Cycles:"), fmt.Sprintf("%d", m.Milestone.Cycles)},
-		{m.Styles.DetailLabel.Render("LLM:"), m.Styles.SuccessText.Render(strings.ToUpper(func() string {
-			if m.LLM == "ollama" {
-				return "ollama via aider"
-			}
-			return m.LLM
-		}()))},
+		{m.Styles.DetailLabel.Render("LLM:"), m.Styles.SuccessText.Render(strings.ToUpper(m.LLM))},
 		{m.Styles.DetailLabel.Render("Mode:"), m.Styles.SuccessText.Render(strings.ToUpper(m.Mode))},
 		{m.Styles.DetailLabel.Render("Git:"), m.Styles.SuccessText.Render(gitText)},
 		{m.Styles.DetailLabel.Render("Group:"), m.Styles.AccentText.Render(groupName)},

@@ -48,8 +48,6 @@ Many AI coding agents operate as a "black box"—you run them, and they edit you
 - At least one supported runner:
   - `codex`: OpenAI Codex CLI installed and authenticated. This is the default runner.
   - `agy`: `agy` CLI installed and authenticated.
-  - `aider`: Aider CLI installed.
-  - `ollama`: Ollama running locally or reachable through `ollama_host` (runs via Aider CLI).
 
 ### 1. Installation
 
@@ -108,7 +106,7 @@ Setup writes files only after final confirmation:
 - `.cyclestone/milestones/`
 - `.cyclestone/milestones/<id>.md` when you create the first milestone
 
-Runner detection checks `codex`, `agy`, and `aider` on `PATH`. The `ollama` runner is offered when Aider is available, because Ollama execution runs through Aider. The `ollama-codex` runner is offered when both Ollama and Codex are available on `PATH`. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
+Runner detection checks `codex` and `agy` on `PATH`. The `ollama-codex` runner is offered when both Ollama and Codex are available on `PATH`. The default runner is the first available supported option. Setup warns when the current directory is not a Git worktree, but does not block initialization.
 
 The wizard defaults to sandbox mode and automatic milestone branches. Selecting unrestricted mode requires an explicit confirmation before settings are saved. If `cyclestone` is run non-interactively and no config exists, it exits before launching the TUI; run it in an interactive terminal or provide an existing config path.
 
@@ -146,13 +144,6 @@ default_llm: codex
 default_mode: sandbox
 auto_git_branch: true
 max_llm_input_chars: 900000
-```
-
-Ollama-via-Aider generation/context settings are also supported. Set either to `-1` for unlimited (Ollama defaults). `ollama_num_ctx` and `ollama_num_predict` are written to Aider's temporary model settings when configured; otherwise Aider and Ollama defaults apply:
-
-```yaml
-ollama_num_ctx: -1
-ollama_num_predict: -1
 ```
 
 ### Sandbox and Consent
@@ -198,8 +189,6 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 | --- | --- | --- |
 | `codex` | Codex CLI on `PATH` and authenticated | Default. Uses Codex CLI sandbox/approval behavior. |
 | `agy` | `agy` CLI on `PATH` and authenticated | External CLI runner. |
-| `aider` | Aider CLI on `PATH` | Python-based coding assistant. Defaults to `--no-auto-commits`, `--no-dirty-commits`, and `--no-gitignore`. |
-| `ollama` | Running Ollama service and Aider CLI | Executes Aider CLI bound to Ollama. Defaults to `glm-5.2:cloud` unless `ollama_model` is configured. |
 | `ollama-codex` | Ollama and Codex CLI on `PATH` | Executes Codex CLI through `ollama launch codex --model <model> -- <codex args>`. Defaults to `glm-5.2:cloud` unless `ollama_codex_model` is configured. |
 
 ### Known Limitations
@@ -207,7 +196,7 @@ The default pipeline uses `codex`. You can select another runner in `.cyclestone
 - Agents can edit files through their runner. Review diffs before merging.
 - Token budgets are estimates and should be treated as guardrails, not exact billing numbers.
 - Remote Ollama or cloud model usage can create cost. Set model limits before large milestones.
-- Local Ollama behavior (via Aider) depends on installed models, context limits, and host performance.
+- Local Ollama behavior depends on installed models, context limits, and host performance.
 - Branch snapshots help audit work, but they are not a backup system.
 
 ### Project Files and Git Ignore

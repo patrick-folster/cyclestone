@@ -1,6 +1,6 @@
 package tui
 
-var milestoneRunnerOptions = []string{"codex", "agy", "aider", "ollama", "ollama-codex"}
+var milestoneRunnerOptions = []string{"codex", "agy", "ollama-codex"}
 
 func getMilestoneRunnerOptions() []string {
 	return append([]string(nil), milestoneRunnerOptions...)

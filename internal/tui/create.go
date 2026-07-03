@@ -529,9 +529,6 @@ func (m CreateMilestoneModel) View() string {
 			var renderedOpts []string
 			for _, opt := range opts {
 				display := opt
-				if opt == "ollama" {
-					display = "ollama via aider"
-				}
 				if opt == "ollama-codex" {
 					display = "ollama via codex"
 				}
@@ -655,9 +652,6 @@ func (m CreateMilestoneModel) View() string {
 			var renderedOpts []string
 			for _, opt := range opts {
 				display := opt
-				if opt == "ollama" {
-					display = "ollama via aider"
-				}
 				if opt == "ollama-codex" {
 					display = "ollama via codex"
 				}

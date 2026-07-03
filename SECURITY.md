@@ -13,7 +13,7 @@ Do not include exploitable details in a public issue. If private reporting is no
 Include:
 
 - Affected version or commit.
-- Runner used (`codex`, `agy`, `aider`, or `ollama`).
+- Runner used (`codex`, `agy`, or `ollama-codex`).
 - Operating system.
 - Impact summary.
 - Minimal reproduction steps.

@@ -14,6 +14,10 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 - Architecture documentation.
 - GitHub issue and pull request templates.
 
+### Changed
+
+- The Aider-based runners (`aider` and `ollama`/Ollama via Aider) are no longer offered in the TUI or documented as supported runners. They remain supported by the executor for non-interactive/manual configuration, but the first-run setup wizard, milestone creation, settings screen, and preflight checks no longer list or accept them. Existing configs using `default_llm: aider` or `default_llm: ollama` should be migrated to `codex`, `agy`, or `ollama-codex`. The `ollama-codex` runner (Codex CLI launched through Ollama) remains the recommended Ollama integration.
+
 ### Fixed
 
 - Inline YAML extraction from Aider/Ollama runner logs no longer splits block-scalar documents (e.g. `reason: |`) when Aider's CLI display flattens block-scalar content to column 0. The scanner and normalizer now track block-scalar indicators and re-indent flattened content, so fields like the recommender's `score`, `verdict`, and `reason` are captured instead of being silently discarded.

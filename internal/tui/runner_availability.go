@@ -15,8 +15,6 @@ type runnerAvailability struct {
 var supportedSetupRunners = []runnerAvailability{
 	{ID: "codex", Label: "Codex CLI"},
 	{ID: "agy", Label: "Agy CLI"},
-	{ID: "aider", Label: "Aider CLI"},
-	{ID: "ollama", Label: "Ollama via Aider"},
 	{ID: "ollama-codex", Label: "Ollama via Codex"},
 }
 
@@ -48,16 +46,11 @@ func isSetupRunnerSelectable(runners []runnerAvailability, id string) bool {
 
 func isRunnerAvailable(runner string) (bool, string) {
 	switch runner {
-	case "codex", "agy", "aider":
+	case "codex", "agy":
 		if _, err := exec.LookPath(runner); err != nil {
 			return false, fmt.Sprintf("%s not found on PATH", runner)
 		}
 		return true, "available on PATH"
-	case "ollama":
-		if _, err := exec.LookPath("aider"); err != nil {
-			return false, "aider not found on PATH"
-		}
-		return true, "available through aider on PATH"
 	case "ollama-codex":
 		if _, err := exec.LookPath("ollama"); err != nil {
 			return false, "ollama not found on PATH"

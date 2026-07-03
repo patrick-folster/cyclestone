@@ -193,20 +193,16 @@ func (m PreflightModel) runnerForAgent(agent config.Agent) string {
 
 func validateRunnerAvailability(runner string) (preflightIssue, bool) {
 	switch runner {
-	case "ollama":
-		if ok, _ := isRunnerAvailable("aider"); !ok {
-			return preflightIssue{Severity: preflightBlocker, Message: "Runner \"ollama\" requires the aider CLI on PATH."}, true
-		}
 	case "ollama-codex":
 		if ok, reason := isRunnerAvailable("ollama-codex"); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unavailable: %s.", runner, reason)}, true
 		}
-	case "codex", "agy", "aider":
+	case "codex", "agy":
 		if ok, reason := isRunnerAvailable(runner); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unavailable: %s.", runner, reason)}, true
 		}
 	default:
-		return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unsupported. Select codex, agy, aider, ollama, or ollama-codex.", runner)}, true
+		return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unsupported. Select codex, agy, or ollama-codex.", runner)}, true
 	}
 	return preflightIssue{}, false
 }
@@ -429,10 +425,6 @@ func (m PreflightModel) pipelineText() string {
 
 func (m PreflightModel) modelForRunner(runner string) string {
 	switch runner {
-	case "aider":
-		return emptyFallback(m.Settings.AiderModel, "(default)")
-	case "ollama":
-		return emptyFallback(m.Settings.OllamaModel, "(default)")
 	case "ollama-codex":
 		return emptyFallback(m.Settings.OllamaCodexModel, "(default)")
 	default:

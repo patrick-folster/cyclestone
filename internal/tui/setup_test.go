@@ -15,10 +15,6 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	aiderPath := filepath.Join(tmp, "aider")
-	if err := os.WriteFile(aiderPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
 	ollamaPath := filepath.Join(tmp, "ollama")
 	if err := os.WriteFile(ollamaPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
 		t.Fatal(err)
@@ -34,9 +30,6 @@ func TestSetupRunnerDetectionUsesRestrictedPathRunners(t *testing.T) {
 	}
 	if !available["codex"] {
 		t.Fatalf("expected codex to be detected from PATH: %#v", runners)
-	}
-	if !available["aider"] || !available["ollama"] {
-		t.Fatalf("expected aider and ollama to be available through aider on PATH: %#v", runners)
 	}
 	if !available["ollama-codex"] {
 		t.Fatalf("expected ollama-codex to be available through ollama and codex on PATH: %#v", runners)
