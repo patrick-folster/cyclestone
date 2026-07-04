@@ -35,8 +35,8 @@ type SetupCompletedMsg struct {
 
 type SetupWizardModel struct {
 	// ConfigPath and StatePath are startup-owned paths displayed as read-only setup details.
-	ConfigPath          string
-	StatePath           string
+	ConfigPath string
+	StatePath  string
 	// GlobalSettings holds the resolved global settings used to preview the
 	// effective value of any field set to "inherit" on the init screen.
 	GlobalSettings      config.Settings
@@ -49,19 +49,19 @@ type SetupWizardModel struct {
 	// RunnerInherit, SafetyInherit, and BranchesInherit mirror the settings
 	// screen "inherit" option: when true the corresponding project setting is
 	// saved empty/nil so it resolves from the global settings at merge time.
-	RunnerInherit       bool
-	Unrestricted        bool
-	SafetyInherit       bool
-	UnrestrictedAck     bool
-	AutoBranches        bool
-	BranchesInherit     bool
-	CreateFirst         bool
-	IsGitWorktree       bool
-	FocusIndex          int
-	Width               int
-	Height              int
-	Styles              Styles
-	ErrorMsg            string
+	RunnerInherit   bool
+	Unrestricted    bool
+	SafetyInherit   bool
+	UnrestrictedAck bool
+	AutoBranches    bool
+	BranchesInherit bool
+	CreateFirst     bool
+	IsGitWorktree   bool
+	FocusIndex      int
+	Width           int
+	Height          int
+	Styles          Styles
+	ErrorMsg        string
 }
 
 func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizardModel {
@@ -94,8 +94,8 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 	global, _ := config.LoadGlobalSettings()
 	m := SetupWizardModel{
 		ConfigPath:          configPath,
-		StatePath:          statePath,
-		GlobalSettings:     global,
+		StatePath:           statePath,
+		GlobalSettings:      global,
 		MilestoneIDInput:    newInput("0001-first-milestone", 36, 100),
 		MilestoneTitleInput: newInput("First milestone", 56, 160),
 		MilestoneGoalInput:  goal,

@@ -74,3 +74,9 @@ func TestMissingConfigNonInteractiveErrorMentionsSetupRequirement(t *testing.T) 
 		}
 	}
 }
+
+func TestVersionFallback(t *testing.T) {
+	if Version != "development" {
+		t.Errorf("expected default Version to be 'development', got '%s'", Version)
+	}
+}

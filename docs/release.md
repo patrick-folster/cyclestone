@@ -15,8 +15,8 @@
 Use semantic version tags:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.2
+git push origin v0.0.2
 ```
 
 The release workflow runs for tags matching `v*`.

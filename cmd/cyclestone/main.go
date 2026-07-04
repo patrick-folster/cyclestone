@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
@@ -31,7 +32,13 @@ func main() {
 	unrestricted := flag.Bool("unrestricted", defaultUnrestricted, "Run agents without sandbox/permission restrictions")
 	disableBold := flag.Bool("no-bold", defaultDisableBold, "Disable bold text styling to prevent terminal rendering glitches")
 	disableRoundedBorders := flag.Bool("no-rounded-borders", defaultDisableRoundedBorders, "Disable rounded borders to prevent terminal rendering glitches")
+	versionFlag := flag.Bool("version", false, "Print the version and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		printVersion()
+		os.Exit(0)
+	}
 
 	// Validate command line flags
 	if *configPath == "" {
@@ -95,4 +102,15 @@ func isConfigMissing(configPath string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+var Version = "development"
+
+func printVersion() {
+	info, ok := debug.ReadBuildInfo()
+	if ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		fmt.Printf("Cyclestone %s\n", info.Main.Version)
+		return
+	}
+	fmt.Printf("Cyclestone %s\n", Version)
 }

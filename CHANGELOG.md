@@ -7,6 +7,11 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 ## Unreleased
 
 ### Added
+- `-version` / `--version` CLI flag to check the current version of the tool.
+
+## v0.0.2 - 2026-07-03
+
+### Added
 
 - Agents now write their structured YAML handoff directly to a dedicated temp file under `.cyclestone/temp/` (path injected into the prompt via the `{{HANDOFF_YAML_PATH}}` placeholder) instead of emitting it inline in the console output. Cyclestone reads clean YAML from the file, avoiding the brittle console-log extraction and normalization pipeline. The log-based extraction remains as a fallback for manual mode, custom agents without the placeholder, and older runners.
 - Security policy.
@@ -24,6 +29,6 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 - Nested block-scalar content (e.g. `notes: |` inside `criteria_results` list items) is now correctly re-indented when Aider's CLI display flattens it to the same indentation as the key. Previously, only column-0 content was re-indented; content at the key's indentation was left untouched, causing a YAML parse failure that silently discarded the entire QA handoff (`verdict`, `criteria_results`, `reviewed_files`, `failing_checks`, `required_fixes`) and replaced it with unrelated fields scraped from the model's thinking section.
 - Inline YAML extraction now prefers the answer region (after the last `► ANSWER` marker) over the model's thinking/reasoning section, preventing handoff keys quoted out of context in the thinking section from being mistaken for the agent's structured output.
 
-## v0.1.0 - TBD
+## v0.0.1 - 2026-07-01
 
 Initial open-source release.
