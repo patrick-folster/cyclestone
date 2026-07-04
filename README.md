@@ -10,8 +10,7 @@
 <br />
 
 <p>
-    Cyclestone is a local-first, terminal-native engineering assistant for controlled AI coding workflows. 
-    It turns AI-driven software development into explicit milestones, guides each milestone through specialized PM, Developer, and QA agent cycles, and keeps every step auditable with Git-based branch snapshots.
+  Cyclestone brings structure, safety, and reviewability to AI coding agents. It turns AI-driven development into milestones, runs them through specialized agent cycles, and keeps every step auditable with Git-based snapshots.
 </p>
 
 <br>
