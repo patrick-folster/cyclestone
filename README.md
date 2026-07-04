@@ -1,28 +1,38 @@
-<p align="center">
+<div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/public/logo/cyclestone-logo-dark-mode.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/public/logo/cyclestone-logo-light-mode.svg">
     <img alt="Cyclestone Logo" src="assets/public/logo/cyclestone-logo-light-mode.svg" width="240">
   </picture>
+    <div align="center"><strong >Multi-Agent Software Engineering in Your Terminal</strong></div>
+</div>
+
+<br />
+
+<p>
+    Cyclestone is a local-first, terminal-native engineering assistant for controlled AI coding workflows. 
+    It turns AI-driven software development into explicit milestones, guides each milestone through specialized PM, Developer, and QA agent cycles, and keeps every step auditable with Git-based branch snapshots.
 </p>
 
-<h1 align="center">🌊 Cyclestone</h1>
-
-<p align="center">
-  <strong>Multi-Agent Software Engineering in Your Terminal.</strong><br>
-  Orchestrate local PM, Developer, and QA agent loops with safety, Git branch snapshots, and a gorgeous interactive TUI.
-</p>
+<br>
 
 > [!NOTE]
 > **Cyclestone is currently in alpha.** You may encounter bugs or unexpected behavior. At this stage, the project is tested and works well primarily with the `codex` and `agy` runners.
 
+<br />
+
 ---
+
+
+# 🌊 Cyclestone
 
 ## 💡 What is Cyclestone?
 
-Many AI coding agents operate as a "black box"—you run them, and they edit your files unchecked, sometimes breaking your workspace or introducing unintended changes.
+AI coding agents are powerful, but raw autonomy can be hard to trust. A single prompt may touch files across your project, mix planning with implementation, and leave you reviewing a pile of changes without a clear trail of intent.
 
-**Cyclestone** bridges the gap between manual coding and complete autonomy. It is a local-first, terminal-native manager built in Go using the **Charm Bubble Tea** ecosystem. It coordinates a pipeline of specialized agents (Milestone Creator, PM, Developer, QA) to move your project forward milestone-by-milestone, using **git-based snapshots** to keep your codebase safe.
+**Cyclestone** gives developers a controlled way to use agentic coding without surrendering the workflow. It is a local-first, terminal-native engineering assistant that breaks work into explicit milestones, coordinates specialized PM, Developer, and QA agents, and keeps every cycle auditable through Git-based branch snapshots.
+
+The result is practical AI automation for real codebases: faster iteration, clearer scope, safer reviews, and a workflow that keeps the developer in charge.
 
 ## How it works
 
