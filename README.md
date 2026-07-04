@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/public/cyclestone-logo-dark-mode.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/public/cyclestone-logo-light-mode.svg">
-    <img alt="Cyclestone Logo" src="assets/public/cyclestone-logo-light-mode.svg" width="240">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/public/logo/cyclestone-logo-dark-mode.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/public/logo/cyclestone-logo-light-mode.svg">
+    <img alt="Cyclestone Logo" src="assets/public/logo/cyclestone-logo-light-mode.svg" width="240">
   </picture>
 </p>
 
@@ -23,6 +23,22 @@
 Many AI coding agents operate as a "black box"—you run them, and they edit your files unchecked, sometimes breaking your workspace or introducing unintended changes.
 
 **Cyclestone** bridges the gap between manual coding and complete autonomy. It is a local-first, terminal-native manager built in Go using the **Charm Bubble Tea** ecosystem. It coordinates a pipeline of specialized agents (Milestone Creator, PM, Developer, QA) to move your project forward milestone-by-milestone, using **git-based snapshots** to keep your codebase safe.
+
+## How it works
+
+### 1. Create a milestone
+
+<p>
+  <div>Turn a rough task into a structured, executable milestone:</div>
+  <img src="assets/public/demo/create-milestone.gif" alt="Create a milestone" width="600">
+</p>
+
+### 2. Run a milestone
+
+<p>
+  <div>Execute the milestone in focused cycles until the result is done:</div>
+  <img src="assets/public/demo/run-milestone-cycle.gif" alt="Run a milestone cycle" width="600">
+</p>
 
 ---
 
