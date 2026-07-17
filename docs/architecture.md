@@ -58,6 +58,8 @@ Project config:
 - `.cyclestone/milestone.yml`: compact milestone index.
 - `.cyclestone/milestones/*.md`: milestone specs.
 - `.cyclestone/settings.yml`: local project runner/settings overrides.
+- `AGENTS.md`: concise current operating instructions loaded into agent prompts when present.
+- `.cyclestone/DECISIONS.md`: chronological durable decision log kept separate from current instructions.
 
 Runtime output:
 
@@ -69,6 +71,8 @@ Runtime output:
 - `.cyclestone/temp/*handoff.yaml`: per-phase temp YAML files agents are instructed to write their structured handoff to (cleaned before each run).
 
 Malformed YAML, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading uses validated structured handoff data.
+
+Instruction updates are captured as optional proposed `AGENTS.md` content in handoff summaries. The TUI surfaces those proposals from cycle history with diff, apply, editable draft, dismiss, and keep-in-report actions; cycles do not automatically edit `AGENTS.md` as normal agent output.
 
 ## Branch Behavior
 

@@ -87,6 +87,43 @@ func TestSetupWizardDefaultsToInherit(t *testing.T) {
 	if model.Unrestricted {
 		t.Fatal("expected Unrestricted=false when safety is inherited")
 	}
+	if !model.CreateAgentInstructions {
+		t.Fatal("expected AGENTS.md creation preview to default enabled")
+	}
+	if !strings.Contains(model.AgentInstructions.Value(), ".cyclestone/DECISIONS.md") {
+		t.Fatalf("expected default AGENTS.md preview to mention decisions split, got %q", model.AgentInstructions.Value())
+	}
+}
+
+func TestSetupWizardCanCreateOrSkipAgentsInstructions(t *testing.T) {
+	root := t.TempDir()
+	model := NewSetupWizardModel(filepath.Join(root, ".cyclestone", "milestone.yml"), filepath.Join(root, ".cyclestone", "state.json"), DefaultStyles(true, true))
+	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	model.CreateFirst = false
+	model.CreateAgentInstructions = true
+	model.AgentInstructions.SetValue("# Custom Instructions\n")
+	model.FocusIndex = setupFieldConfirm
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected setup confirmation, error=%q", updated.ErrorMsg)
+	}
+	if _, err := os.Stat(filepath.Join(root, "AGENTS.md")); err != nil {
+		t.Fatalf("expected AGENTS.md to be created: %v", err)
+	}
+
+	rootSkip := t.TempDir()
+	skip := NewSetupWizardModel(filepath.Join(rootSkip, ".cyclestone", "milestone.yml"), filepath.Join(rootSkip, ".cyclestone", "state.json"), DefaultStyles(true, true))
+	skip.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
+	skip.CreateAgentInstructions = false
+	skip.FocusIndex = setupFieldConfirm
+	updated, cmd = skip.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected setup confirmation when skipping AGENTS.md, error=%q", updated.ErrorMsg)
+	}
+	if _, err := os.Stat(filepath.Join(rootSkip, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected AGENTS.md to be skipped, stat err=%v", err)
+	}
 }
 
 func TestSetupWizardInheritRunnerCycling(t *testing.T) {

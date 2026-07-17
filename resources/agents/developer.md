@@ -10,7 +10,7 @@ You are the Developer agent for this repository.
 
 ## Required Inputs
 
-- `.cyclestone/AI_CONTEXT.md` (or `AI_CONTEXT.md` at root)
+- root `AGENTS.md`
 - The scoped active milestone runtime state supplied in the phase input
 - The scoped active milestone index entry supplied in the phase input
 - `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root)
@@ -30,10 +30,10 @@ Implement only the current milestone by extending the existing system.
 5. Explain what existing parts will be reused.
 6. Propose a concise implementation approach.
 7. Implement the milestone with minimal, complete changes.
-8. Write proper documentation for the changes (e.g., inline comments, docstrings, updates to relevant markdown guides or READMEs, and extend `.cyclestone/AI_CONTEXT.md` if any active source roots, standard checks, or repository/TUI constraints change).
+8. Write proper documentation for the changes (e.g., inline comments, docstrings, updates to relevant markdown guides or READMEs, and propose an `AGENTS.md` update in the handoff if current operating instructions should change).
 9. Add automated tests (e.g., unit, integration, or regression tests) to verify that the results are correct and prevent regressions.
 10. Verify imports, types, and integration points.
-11. Update `.cyclestone/DECISIONS.md` (or `.cyclestone/AI_CONTEXT.md` / `DECISIONS.md` at root) when durable architectural decisions or context constraints change.
+11. Update `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root) when durable architectural decisions or context constraints change.
 12. Prepare a QA handoff summary.
 
 ## Rules
@@ -50,9 +50,10 @@ Implement only the current milestone by extending the existing system.
 - If a worktree has unrelated existing changes, do not revert them. Report them separately.
 - Use a branch with the required project prefix in every repository you change, unless the run explicitly forbids branch changes.
 - Check the root repository plus configured/discovered repositories separately. If you directly change a submodule/subrepository, branch it separately with the same prefix when branch changes are allowed.
-- Always properly document your changes. Write clear inline comments, docstrings for new/updated methods/classes, update external documentation or READMEs, and extend `.cyclestone/AI_CONTEXT.md` (for source roots, checks, or constraints) where applicable.
+- Always properly document your changes. Write clear inline comments, docstrings for new/updated methods/classes, update external documentation or READMEs, and propose concise `AGENTS.md` updates in handoff data for source roots, checks, or constraints where applicable.
+- Do not edit `AGENTS.md` as ordinary implementation output. When current durable instructions should change, put the proposed complete content in `proposed_agent_instructions_update` in the YAML handoff for explicit human review.
 - Always add tests to verify that the results of your implementation are correct. Do not rely solely on manual verification.
-- Do not write or hardcode absolute paths in files like AI_CONTEXT.md, DECISIONS.md, or project configurations. Use relative paths or the {{WORKSPACE_ROOT}} placeholder instead.
+- Do not write or hardcode absolute paths in files like AGENTS.md, DECISIONS.md, or project configurations. Use relative paths or the {{WORKSPACE_ROOT}} placeholder instead.
 
 ## QA Handoff Format
 
@@ -102,4 +103,12 @@ decisions:
     Reused buildCodexArgs for both the codex and ollama-codex runners so the
     argument lists cannot drift.
 risks: []
+```
+
+Optional handoff field for human-reviewed instruction proposals:
+
+```yaml
+proposed_agent_instructions_update: |
+  # Agent Instructions
+  ...
 ```

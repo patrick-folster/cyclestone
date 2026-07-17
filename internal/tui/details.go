@@ -14,27 +14,29 @@ import (
 
 // DetailsModel handles rendering the detail specs and historical log timeline for a milestone.
 type DetailsModel struct {
-	Milestone              config.Milestone
-	History                []config.MilestoneCycleLog
-	Width                  int
-	Height                 int
-	Styles                 Styles
-	ShowAgentSelector      bool
-	SelectedAgentIdx       int
-	Agents                 []config.Agent
-	ShowHistoryTab         bool
-	LLM                    string
-	Mode                   string
-	BranchChange           bool
-	Groups                 []config.AgentGroup
-	SelectedGroupIdx       int
-	ScrollOffset           int // Details scroll offset
-	HistoryScrollOffset    int // History scroll offset
-	AgentScrollOffset      int // Agent Selector scroll offset
-	RecommendationScore    int
-	HistorySelectedIdx     int
-	ConfirmDeleteMilestone bool
-	ConfirmDeleteCycle     bool
+	Milestone               config.Milestone
+	History                 []config.MilestoneCycleLog
+	Width                   int
+	Height                  int
+	Styles                  Styles
+	ShowAgentSelector       bool
+	SelectedAgentIdx        int
+	Agents                  []config.Agent
+	ShowHistoryTab          bool
+	LLM                     string
+	Mode                    string
+	BranchChange            bool
+	Groups                  []config.AgentGroup
+	SelectedGroupIdx        int
+	ScrollOffset            int // Details scroll offset
+	HistoryScrollOffset     int // History scroll offset
+	AgentScrollOffset       int // Agent Selector scroll offset
+	RecommendationScore     int
+	HistorySelectedIdx      int
+	ConfirmDeleteMilestone  bool
+	ConfirmDeleteCycle      bool
+	ShowInstructionDiff     bool
+	InstructionReviewStatus map[int]string
 }
 
 type detailsPhaseHandoff struct {
@@ -42,6 +44,12 @@ type detailsPhaseHandoff struct {
 	OutputContract   string                 `yaml:"output_contract,omitempty"`
 	ValidationStatus string                 `yaml:"validation_status,omitempty"`
 	ValidationErrors []string               `yaml:"validation_errors,omitempty"`
+}
+
+type proposedInstructionUpdate struct {
+	SourceAgent string
+	Content     string
+	Patch       string
 }
 
 // NewDetailsModel creates a DetailsModel instance.
@@ -208,6 +216,42 @@ func (m DetailsModel) Update(msg tea.Msg) (DetailsModel, tea.Cmd) {
 				(&m).clampScrollOffset()
 			}
 			return m, nil
+		case "v":
+			if m.ShowHistoryTab && m.selectedInstructionUpdate().Content != "" || m.ShowHistoryTab && m.selectedInstructionUpdate().Patch != "" {
+				m.ShowInstructionDiff = !m.ShowInstructionDiff
+			}
+			return m, nil
+		case "i":
+			if m.ShowHistoryTab {
+				if proposal := m.selectedInstructionUpdate(); proposal.Content != "" {
+					if err := os.MkdirAll(filepath.Join(".cyclestone", "temp"), 0755); err == nil {
+						_ = os.WriteFile(filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed"), []byte(proposal.Content), 0644)
+						m.setInstructionReviewStatus("draft saved to .cyclestone/temp/AGENTS.md.proposed")
+					}
+				}
+			}
+			return m, nil
+		case "y":
+			if m.ShowHistoryTab {
+				if proposal := m.selectedInstructionUpdate(); proposal.Content != "" {
+					if err := os.WriteFile("AGENTS.md", []byte(proposal.Content), 0644); err == nil {
+						m.setInstructionReviewStatus("applied to AGENTS.md")
+					} else {
+						m.setInstructionReviewStatus("apply failed: " + err.Error())
+					}
+				}
+			}
+			return m, nil
+		case "n":
+			if m.ShowHistoryTab && (m.selectedInstructionUpdate().Content != "" || m.selectedInstructionUpdate().Patch != "") {
+				m.setInstructionReviewStatus("dismissed")
+			}
+			return m, nil
+		case "o":
+			if m.ShowHistoryTab && (m.selectedInstructionUpdate().Content != "" || m.selectedInstructionUpdate().Patch != "") {
+				m.setInstructionReviewStatus("kept in report")
+			}
+			return m, nil
 		case "d":
 			m.ConfirmDeleteMilestone = true
 			return m, nil
@@ -354,6 +398,9 @@ func (m DetailsModel) getHelpCommands(useTabs bool, scrollHelp string) []string 
 
 		if len(m.History) > 0 {
 			cmds = append(cmds, "x Delete-Cycle")
+		}
+		if m.ShowHistoryTab && (m.selectedInstructionUpdate().Content != "" || m.selectedInstructionUpdate().Patch != "") {
+			cmds = append(cmds, "v Diff", "y Apply-AGENTS", "i Edit-Draft", "n Dismiss", "o Keep")
 		}
 		cmds = append(cmds, "d Delete-MS")
 
@@ -821,9 +868,96 @@ func (m DetailsModel) getHistoryTextForHeight(rightHeight int, rightWidth int) s
 					}
 				}
 			}
+			if proposal := m.selectedInstructionUpdate(); proposal.Content != "" || proposal.Patch != "" {
+				rightBuilder.WriteString(m.renderInstructionUpdateReview(proposal, rightWidth))
+			}
 		}
 	}
 	return rightBuilder.String()
+}
+
+func (m DetailsModel) selectedInstructionUpdate() proposedInstructionUpdate {
+	if len(m.History) == 0 || m.HistorySelectedIdx < 0 || m.HistorySelectedIdx >= len(m.History) {
+		return proposedInstructionUpdate{}
+	}
+	for _, action := range m.History[m.HistorySelectedIdx].Actions {
+		handoff, ok := loadDetailsPhaseHandoff(action.OutputFile)
+		if !ok || handoff.Summary == nil {
+			continue
+		}
+		if text := contractStringValue(handoff.Summary["proposed_agent_instructions_update"]); text != "" {
+			return proposedInstructionUpdate{SourceAgent: action.AgentID, Content: text}
+		}
+		if text := contractStringValue(handoff.Summary["proposed_agents_md_update"]); text != "" {
+			return proposedInstructionUpdate{SourceAgent: action.AgentID, Content: text}
+		}
+		if text := contractStringValue(handoff.Summary["proposed_agent_instructions_patch"]); text != "" {
+			return proposedInstructionUpdate{SourceAgent: action.AgentID, Patch: text}
+		}
+	}
+	return proposedInstructionUpdate{}
+}
+
+func (m *DetailsModel) setInstructionReviewStatus(status string) {
+	if m.InstructionReviewStatus == nil {
+		m.InstructionReviewStatus = map[int]string{}
+	}
+	if len(m.History) > 0 && m.HistorySelectedIdx >= 0 && m.HistorySelectedIdx < len(m.History) {
+		m.InstructionReviewStatus[m.History[m.HistorySelectedIdx].CycleNumber] = status
+	}
+}
+
+func (m DetailsModel) currentInstructionReviewStatus() string {
+	if m.InstructionReviewStatus == nil || len(m.History) == 0 || m.HistorySelectedIdx < 0 || m.HistorySelectedIdx >= len(m.History) {
+		return ""
+	}
+	return m.InstructionReviewStatus[m.History[m.HistorySelectedIdx].CycleNumber]
+}
+
+func (m DetailsModel) renderInstructionUpdateReview(proposal proposedInstructionUpdate, width int) string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(m.Styles.DetailLabel.Render("  Proposed AGENTS.md Update:") + "\n")
+	if proposal.SourceAgent != "" {
+		sb.WriteString(fmt.Sprintf("    %s %s\n", m.Styles.HelpStyle.Render("Source:"), m.Styles.DetailValue.Render(proposal.SourceAgent)))
+	}
+	if status := m.currentInstructionReviewStatus(); status != "" {
+		sb.WriteString(fmt.Sprintf("    %s %s\n", m.Styles.HelpStyle.Render("Status:"), m.Styles.DetailValue.Render(status)))
+	}
+	sb.WriteString(fmt.Sprintf("    %s\n", m.Styles.HelpStyle.Render("v diff  y apply  i save editable draft  n dismiss  o keep in report")))
+	if m.ShowInstructionDiff {
+		text := proposal.Patch
+		if text == "" {
+			text = renderInstructionContentDiff(proposal.Content)
+		}
+		for _, line := range strings.Split(wrapText(text, width-8), "\n") {
+			sb.WriteString("    " + m.Styles.DetailValue.Render(line) + "\n")
+		}
+	}
+	return sb.String()
+}
+
+func renderInstructionContentDiff(proposed string) string {
+	currentBytes, _ := os.ReadFile("AGENTS.md")
+	current := strings.TrimSpace(string(currentBytes))
+	proposed = strings.TrimSpace(proposed)
+	if current == proposed {
+		return "No content changes from current AGENTS.md."
+	}
+	var sb strings.Builder
+	if current == "" {
+		sb.WriteString("--- AGENTS.md (missing or empty)\n")
+	} else {
+		sb.WriteString("--- AGENTS.md (current)\n")
+	}
+	sb.WriteString("+++ AGENTS.md (proposed)\n")
+	if current != "" {
+		sb.WriteString("- " + current + "\n")
+	}
+	if proposed != "" {
+		sb.WriteString("+ " + proposed + "\n")
+	}
+	return sb.String()
 }
 
 func (m DetailsModel) renderActionContractMetadata(action config.AgentActionLog, width int) string {
@@ -926,6 +1060,15 @@ func contractStringSlice(value interface{}) []string {
 		}
 	}
 	return out
+}
+
+func contractStringValue(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return ""
+	}
 }
 
 // View structures a responsive split-screen displaying details and chronological cycle history.

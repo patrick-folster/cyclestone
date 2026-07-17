@@ -347,6 +347,79 @@ validation_status: valid
 	}
 }
 
+func TestHistoryInstructionUpdateReviewActions(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	outputPath := filepath.Join(root, "MS-cycle-001-02-developer-output.log")
+	handoffPath := filepath.Join(root, "MS-cycle-001-02-developer-handoff.yaml")
+	if err := os.WriteFile(outputPath, []byte("developer output"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	handoff := `summary:
+  changed_files: []
+  implemented_behavior: []
+  checks_run: []
+  decisions: []
+  risks: []
+  proposed_agent_instructions_update: |
+    # Agent Instructions
+    - Proposed durable instruction.
+output_contract: developer
+validation_status: valid
+`
+	if err := os.WriteFile(handoffPath, []byte(handoff), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewDetailsModel(DefaultStyles(true, true))
+	m.Width = 100
+	m.Height = 30
+	m.Milestone = config.Milestone{ID: "MS", Title: "Milestone"}
+	m.History = []config.MilestoneCycleLog{{
+		CycleNumber: 1,
+		Status:      "approved",
+		Timestamp:   time.Now(),
+		Actions:     []config.AgentActionLog{{AgentID: "developer", ExitCode: 0, OutputFile: outputPath}},
+	}}
+	m.ShowHistoryTab = true
+	m.HistorySelectedIdx = 0
+
+	text := m.getHistoryText(100)
+	if !strings.Contains(text, "Proposed AGENTS.md Update") || !strings.Contains(text, "v diff") {
+		t.Fatalf("expected proposed instruction update review controls, got:\n%s", text)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = updated
+	if !m.ShowInstructionDiff || !strings.Contains(m.getHistoryText(100), "+++ AGENTS.md (proposed)") {
+		t.Fatalf("expected diff view after v, got:\n%s", m.getHistoryText(100))
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated
+	if _, err := os.Stat(filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")); err != nil {
+		t.Fatalf("expected editable draft to be saved: %v", err)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = updated
+	agentsBytes, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatalf("expected AGENTS.md to be applied: %v", err)
+	}
+	if !strings.Contains(string(agentsBytes), "Proposed durable instruction") {
+		t.Fatalf("expected applied AGENTS.md content, got %q", string(agentsBytes))
+	}
+}
+
 func TestMilestoneDeletionTransition(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	m := NewDetailsModel(styles)

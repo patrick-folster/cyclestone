@@ -10,6 +10,8 @@ You are the Cycle Recommender agent. Your task is to evaluate the outputs and lo
 
 Review the details of the latest cycle report below.
 
+Use root `AGENTS.md` as the current durable operating instructions when it is included in the prompt, and treat `.cyclestone/DECISIONS.md` as the chronological decision log. Do not edit `AGENTS.md`; if durable operating instructions should change, mention that need in `next_cycle_focus` for human review.
+
 ## Milestone: {{MILESTONE_ID}}
 
 ### Goal

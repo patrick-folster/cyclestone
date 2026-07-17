@@ -97,6 +97,15 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if defaults.DefaultGitBranchPrefix != "cyclestone/milestones/" {
 		t.Errorf("expected default Git branch prefix 'cyclestone/milestones/', got '%s'", defaults.DefaultGitBranchPrefix)
 	}
+	if defaults.AgentInstructions.File != "AGENTS.md" {
+		t.Errorf("expected default agent instructions file AGENTS.md, got %q", defaults.AgentInstructions.File)
+	}
+	if defaults.AgentInstructions.ProposeUpdates == nil || !*defaults.AgentInstructions.ProposeUpdates {
+		t.Errorf("expected default propose_updates true, got %v", defaults.AgentInstructions.ProposeUpdates)
+	}
+	if defaults.AgentInstructions.AutoApplyUpdates == nil || *defaults.AgentInstructions.AutoApplyUpdates {
+		t.Errorf("expected default auto_apply_updates false, got %v", defaults.AgentInstructions.AutoApplyUpdates)
+	}
 
 	// 2. Save global settings
 	globalSettings := Settings{
@@ -104,6 +113,11 @@ func TestSettingsMergeAndSave(t *testing.T) {
 		DefaultMode:           "sandbox",
 		AutoGitBranch:         &falseVal,
 		CreateMilestoneBranch: &trueVal,
+		AgentInstructions: AgentInstructionsSettings{
+			File:             "GLOBAL_AGENTS.md",
+			ProposeUpdates:   &falseVal,
+			AutoApplyUpdates: &trueVal,
+		},
 	}
 	if err := SaveGlobalSettings(globalSettings); err != nil {
 		t.Fatalf("failed to save global settings: %v", err)
@@ -120,6 +134,9 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	if merged.CreateMilestoneBranch == nil || !*merged.CreateMilestoneBranch {
 		t.Errorf("expected merged CreateMilestoneBranch true from global, got %v", merged.CreateMilestoneBranch)
 	}
+	if merged.AgentInstructions.File != "GLOBAL_AGENTS.md" || merged.AgentInstructions.ProposeUpdates == nil || *merged.AgentInstructions.ProposeUpdates || merged.AgentInstructions.AutoApplyUpdates == nil || !*merged.AgentInstructions.AutoApplyUpdates {
+		t.Errorf("expected merged agent_instructions from global, got %#v", merged.AgentInstructions)
+	}
 
 	// 4. Save project settings (override global)
 	projectSettings := Settings{
@@ -128,6 +145,11 @@ func TestSettingsMergeAndSave(t *testing.T) {
 		AutoGitBranch:          &trueVal,
 		CreateMilestoneBranch:  &falseVal,
 		DefaultGitBranchPrefix: "custom/prefix/",
+		AgentInstructions: AgentInstructionsSettings{
+			File:             "PROJECT_AGENTS.md",
+			ProposeUpdates:   &trueVal,
+			AutoApplyUpdates: &falseVal,
+		},
 	}
 	if err := SaveProjectSettings(projectSettings); err != nil {
 		t.Fatalf("failed to save project settings: %v", err)
@@ -149,6 +171,9 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	}
 	if mergedOverride.DefaultGitBranchPrefix != "custom/prefix/" {
 		t.Errorf("expected merged DefaultGitBranchPrefix 'custom/prefix/' from project override, got '%s'", mergedOverride.DefaultGitBranchPrefix)
+	}
+	if mergedOverride.AgentInstructions.File != "PROJECT_AGENTS.md" || mergedOverride.AgentInstructions.AutoApplyUpdates == nil || *mergedOverride.AgentInstructions.AutoApplyUpdates {
+		t.Errorf("expected project agent_instructions override with auto_apply_updates false, got %#v", mergedOverride.AgentInstructions)
 	}
 
 	// 6. Project settings unsetting / inheriting from global
@@ -175,6 +200,9 @@ func TestSettingsMergeAndSave(t *testing.T) {
 	}
 	if mergedInherit.CreateMilestoneBranch == nil || !*mergedInherit.CreateMilestoneBranch { // inherited from global (trueVal)
 		t.Errorf("expected inherited CreateMilestoneBranch true from global, got %v", mergedInherit.CreateMilestoneBranch)
+	}
+	if mergedInherit.AgentInstructions.File != "GLOBAL_AGENTS.md" || mergedInherit.AgentInstructions.AutoApplyUpdates == nil || !*mergedInherit.AgentInstructions.AutoApplyUpdates {
+		t.Errorf("expected inherited global agent_instructions, got %#v", mergedInherit.AgentInstructions)
 	}
 
 	// 7. Verify AgentGroups merging and default fallback

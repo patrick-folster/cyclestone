@@ -47,7 +47,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 		var sb strings.Builder
 		sb.WriteString(promptText)
 		sb.WriteString("\n\n")
-		appendAIContextToBuilder(&sb)
+		appendAgentInstructionsToBuilder(&sb, settings)
 		appendDecisionsLogToBuilder(&sb)
 		return sb.String()
 	}
@@ -97,7 +97,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 		if content, err := os.ReadFile(path); err == nil {
 			sb.WriteString(fmt.Sprintf("## %s\n\n", heading))
 			text := string(content)
-			if strings.HasSuffix(path, "AI_CONTEXT.md") || strings.HasSuffix(path, "DECISIONS.md") {
+			if strings.HasSuffix(path, "AGENTS.md") || strings.HasSuffix(path, "DECISIONS.md") {
 				text = strings.ReplaceAll(text, "{{WORKSPACE_ROOT}}", absRoot)
 			}
 			sb.WriteString(limitTextMiddle(text, maxPromptFileChars, path))
@@ -119,10 +119,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 		}
 	}
 
-	appendFileContent("AI Context", ".cyclestone/AI_CONTEXT.md")
-	if _, err := os.Stat(".cyclestone/AI_CONTEXT.md"); os.IsNotExist(err) {
-		appendFileContent("AI Context", "AI_CONTEXT.md")
-	}
+	appendAgentInstructionsToBuilder(&sb, settings)
 
 	appendScopedMilestoneContext()
 
@@ -170,7 +167,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 
 func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum int, opts RunOptions, previousReportPath, gitContextPath string, settings config.Settings, pipeline []config.Agent) string {
 	if agent.ID == "recommender" {
-		return assembleCompactRecommenderInput(milestone, agent, cycleNum, pipeline)
+		return assembleCompactRecommenderInput(milestone, agent, cycleNum, settings, pipeline)
 	}
 
 	var sb strings.Builder
@@ -195,7 +192,7 @@ func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum
 		appendContinuationGuidance(&sb, cyclePadded)
 	}
 
-	appendAIContextToBuilder(&sb)
+	appendAgentInstructionsToBuilder(&sb, settings)
 	appendDecisionsLogToBuilder(&sb)
 
 	switch agent.ID {
@@ -233,7 +230,7 @@ func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum
 	return res
 }
 
-func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Agent, cycleNum int, pipeline []config.Agent) string {
+func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Agent, cycleNum int, settings config.Settings, pipeline []config.Agent) string {
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
 	reportsDir := filepath.Join(".cyclestone", "reports")
 	qaHandoff := readHandoffOrFallback(milestone.ID, cyclePadded, "qa", maxRecommenderReportOutputChars, pipeline)
@@ -257,19 +254,27 @@ func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Ag
 	promptText = strings.ReplaceAll(promptText, "{{ACCEPTANCE_CRITERIA}}", criteriaBuilder.String())
 	promptText = strings.ReplaceAll(promptText, "{{LATEST_CYCLE_REPORT}}", qaHandoff)
 
+	return appendInstructionContextToPromptText(promptText, settings)
+}
+
+func appendInstructionContextToPromptText(promptText string, settings config.Settings) string {
 	var sb strings.Builder
 	sb.WriteString(promptText)
 	sb.WriteString("\n\n")
-	appendAIContextToBuilder(&sb)
+	appendAgentInstructionsToBuilder(&sb, settings)
 	appendDecisionsLogToBuilder(&sb)
 	return sb.String()
 }
 
-func appendAIContextToBuilder(sb *strings.Builder) {
-	appendFileContentToBuilder(sb, "AI Context", ".cyclestone/AI_CONTEXT.md")
-	if _, err := os.Stat(".cyclestone/AI_CONTEXT.md"); os.IsNotExist(err) {
-		appendFileContentToBuilder(sb, "AI Context", "AI_CONTEXT.md")
+func appendAgentInstructionsToBuilder(sb *strings.Builder, settings config.Settings) {
+	instructionPath := strings.TrimSpace(settings.AgentInstructions.File)
+	if instructionPath == "" {
+		instructionPath = "AGENTS.md"
 	}
+	if filepath.IsAbs(instructionPath) || strings.Contains(instructionPath, "..") {
+		return
+	}
+	appendFileContentToBuilder(sb, "Agent Instructions", instructionPath)
 }
 
 func appendDecisionsLogToBuilder(sb *strings.Builder) {
@@ -303,7 +308,7 @@ func appendFileContentToBuilder(sb *strings.Builder, heading, path string) {
 	if content, err := os.ReadFile(path); err == nil {
 		sb.WriteString(fmt.Sprintf("## %s\n\n", heading))
 		text := string(content)
-		if strings.HasSuffix(path, "AI_CONTEXT.md") || strings.HasSuffix(path, "DECISIONS.md") {
+		if strings.HasSuffix(path, "AGENTS.md") || strings.HasSuffix(path, "DECISIONS.md") {
 			absRoot, err := filepath.Abs(".")
 			if err != nil {
 				absRoot = "."

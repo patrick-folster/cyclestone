@@ -129,6 +129,7 @@ Setup writes files only after final confirmation:
 - `.cyclestone/milestone.yml`
 - `.cyclestone/settings.yml`
 - `.cyclestone/state.json`
+- `AGENTS.md` when you keep the editable preview enabled
 - `.cyclestone/milestones/`
 - `.cyclestone/milestones/<id>.md` when you create the first milestone
 
@@ -170,7 +171,13 @@ default_llm: codex
 default_mode: sandbox
 auto_git_branch: true
 max_llm_input_chars: 900000
+agent_instructions:
+  file: AGENTS.md
+  propose_updates: true
+  auto_apply_updates: false
 ```
+
+`AGENTS.md` is the concise current operating instruction file loaded into agent prompts when present. `.cyclestone/DECISIONS.md` remains the chronological decision log. Cycles may propose `AGENTS.md` updates in handoffs and reports, but applying those changes requires an explicit human review action; `auto_apply_updates` defaults to `false`.
 
 ### Sandbox and Consent
 

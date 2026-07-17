@@ -79,6 +79,49 @@ func TestPreflightRenderingAndConfirmCancelFlow(t *testing.T) {
 	}
 }
 
+func TestPreflightRendersInstructionSourcesPresentAndMissing(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.MkdirAll(".cyclestone", 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("AGENTS.md", []byte("# instructions\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewPreflightModel(DefaultStyles(true, true))
+	model.Width = 100
+	model.Height = 40
+	model.Settings = config.LoadDefaultSettings()
+	model.InstructionSources = model.loadInstructionSources()
+	model.Milestone = config.Milestone{ID: "MS", Title: "Sources"}
+
+	text := model.content()
+	if !strings.Contains(text, "Agent instructions: AGENTS.md (present)") {
+		t.Fatalf("expected AGENTS.md present status, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Decisions log: .cyclestone/DECISIONS.md (missing)") {
+		t.Fatalf("expected decisions missing status, got:\n%s", text)
+	}
+
+	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte("# decisions\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	model.InstructionSources = model.loadInstructionSources()
+	text = model.content()
+	if !strings.Contains(text, "Decisions log: .cyclestone/DECISIONS.md (present)") {
+		t.Fatalf("expected decisions present status, got:\n%s", text)
+	}
+}
+
 func TestPreflightValidationBlocksInvalidGroupAndUnsupportedRunner(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	state := &config.State{

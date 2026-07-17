@@ -190,12 +190,102 @@ type CycleMetadata struct {
 	GitContext     string                   `json:"git_context"`
 }
 
+type agentInstructionsSnapshot struct {
+	Path   string
+	Bytes  []byte
+	Exists bool
+}
+
+type agentInstructionsInterception struct {
+	Path            string
+	Change          string
+	ProposedContent string
+}
+
 // handoffTempYAMLPath returns the path to the dedicated temp YAML handoff file
 // that an agent is instructed to write (via the {{HANDOFF_YAML_PATH}}
 // placeholder). The file lives under .cyclestone/temp so it is kept separate
 // from the reports directory and the runner's console output log.
 func handoffTempYAMLPath(milestoneID, cyclePadded, agentFileID string) string {
 	return filepath.Join(".cyclestone", "temp", fmt.Sprintf("%s-cycle-%s-%s-handoff.yaml", milestoneID, cyclePadded, agentFileID))
+}
+
+func protectedAgentInstructionsPath(settings config.Settings) string {
+	instructionPath := strings.TrimSpace(settings.AgentInstructions.File)
+	if instructionPath == "" {
+		instructionPath = "AGENTS.md"
+	}
+	if filepath.IsAbs(instructionPath) || strings.Contains(instructionPath, "..") {
+		return ""
+	}
+	cleaned := filepath.Clean(instructionPath)
+	if cleaned == "AGENTS.md" {
+		return "AGENTS.md"
+	}
+	return ""
+}
+
+func snapshotAgentInstructions(settings config.Settings) (agentInstructionsSnapshot, error) {
+	path := protectedAgentInstructionsPath(settings)
+	if path == "" {
+		return agentInstructionsSnapshot{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return agentInstructionsSnapshot{Path: path, Bytes: data, Exists: true}, nil
+	}
+	if os.IsNotExist(err) {
+		return agentInstructionsSnapshot{Path: path}, nil
+	}
+	return agentInstructionsSnapshot{Path: path}, err
+}
+
+func restoreAgentInstructions(snapshot agentInstructionsSnapshot) error {
+	if snapshot.Path == "" {
+		return nil
+	}
+	if snapshot.Exists {
+		return os.WriteFile(snapshot.Path, snapshot.Bytes, 0644)
+	}
+	if err := os.Remove(snapshot.Path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func interceptAgentInstructionsMutation(snapshot agentInstructionsSnapshot) (agentInstructionsInterception, error) {
+	if snapshot.Path == "" {
+		return agentInstructionsInterception{}, nil
+	}
+	afterBytes, err := os.ReadFile(snapshot.Path)
+	afterExists := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return agentInstructionsInterception{}, err
+	}
+
+	change := ""
+	proposedContent := ""
+	switch {
+	case snapshot.Exists && !afterExists:
+		change = "deleted"
+	case !snapshot.Exists && afterExists:
+		change = "created"
+		proposedContent = string(afterBytes)
+	case snapshot.Exists && afterExists && !bytes.Equal(snapshot.Bytes, afterBytes):
+		change = "modified"
+		proposedContent = string(afterBytes)
+	}
+	if change == "" {
+		return agentInstructionsInterception{}, nil
+	}
+	if err := restoreAgentInstructions(snapshot); err != nil {
+		return agentInstructionsInterception{}, err
+	}
+	return agentInstructionsInterception{
+		Path:            snapshot.Path,
+		Change:          change,
+		ProposedContent: proposedContent,
+	}, nil
 }
 
 // ExecuteCycle runs the milestone cycle as a background task.
@@ -1733,15 +1823,25 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 
 		actionStartTime := time.Now()
+		instructionSnapshot, instructionSnapshotErr := snapshotAgentInstructions(settings)
 		exitCode, runErr := runRunnerWithSession(ctx, runner, agent.ID, agent.Name, inputContent, outputPath, opts, ch, codexThreadID)
 		actionDuration := time.Since(actionStartTime)
+		instructionInterception, instructionInterceptionErr := interceptAgentInstructionsMutation(instructionSnapshot)
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
 		}
 		handoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, agentFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, agent.OutputContract)
+		if instructionInterception.Path != "" {
+			writeHandoff = true
+		}
 		if writeHandoff {
 			_ = writePhaseHandoff(ctx, settings, handoffPath, milestone.ID, cycleNum, agent.ID, agent.OutputContract, outputPath, settings.MaxHandoffChars, opts.CycleNote, runner, handoffYAMLPath)
+			if instructionInterception.Path != "" {
+				if err := mergeProposedAgentInstructionsUpdate(handoffPath, instructionInterception); err != nil && instructionInterceptionErr == nil {
+					instructionInterceptionErr = err
+				}
+			}
 		}
 
 		if agent.ID == "recommender" {
@@ -1760,6 +1860,17 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 		if *codexThreadID != "" {
 			writeReportDetailf(reportFile, "- Codex thread metadata: `%s`\n", codexThreadMetadataPath)
+		}
+		if instructionSnapshotErr != nil {
+			writeReportDetailf(reportFile, "\n### AGENTS.md Protection\n\nUnable to snapshot `AGENTS.md` before the phase: %v\n", instructionSnapshotErr)
+			cycleStatus = "failed"
+		}
+		if instructionInterception.Path != "" {
+			writeReportDetailf(reportFile, "\n### AGENTS.md Protection\n\nIntercepted %s `%s` from %s phase output, restored the prior filesystem state, and stored the proposed content in `%s` for human review.\n", instructionInterception.Change, instructionInterception.Path, agent.Name, handoffPath)
+		}
+		if instructionInterceptionErr != nil {
+			writeReportDetailf(reportFile, "\n### AGENTS.md Protection\n\nFailed to restore or record `AGENTS.md` protection result: %v\n", instructionInterceptionErr)
+			cycleStatus = "failed"
 		}
 		if compactPhaseHandoffsEnabled(settings) {
 			writeReportDetailf(reportFile, "- Handoff summary: `%s`\n", handoffPath)
@@ -1953,6 +2064,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		opts.HandoffYAMLPath = recommenderHandoffYAMLPath
 		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_INSTRUCTION}}", handoffInstruction(activeRunner, "recommender"))
 		promptText = strings.ReplaceAll(promptText, "{{HANDOFF_YAML_PATH}}", recommenderHandoffYAMLPath)
+		promptText = appendInstructionContextToPromptText(promptText, settings)
 
 		if ch != nil {
 			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
@@ -1973,7 +2085,9 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 			})
 			sendExecutorMsg(ctx, ch, AgentStartedMsg{AgentID: "recommender"})
 		}
+		instructionSnapshot, instructionSnapshotErr := snapshotAgentInstructions(settings)
 		exitCode, runErr := runRunnerWithSession(ctx, activeRunner, "recommender", "Recommender", promptText, recommenderLogPath, opts, ch, codexThreadID)
+		instructionInterception, instructionInterceptionErr := interceptAgentInstructionsMutation(instructionSnapshot)
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
 		}
@@ -1982,8 +2096,16 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		}
 		recommenderHandoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, recommenderFileID)
 		writeHandoff := shouldWritePhaseHandoff(settings, "recommender")
+		if instructionInterception.Path != "" {
+			writeHandoff = true
+		}
 		if writeHandoff {
 			_ = writePhaseHandoff(ctx, settings, recommenderHandoffPath, milestone.ID, cycleNum, "recommender", "recommender", recommenderLogPath, settings.MaxHandoffChars, opts.CycleNote, activeRunner, recommenderHandoffYAMLPath)
+			if instructionInterception.Path != "" {
+				if err := mergeProposedAgentInstructionsUpdate(recommenderHandoffPath, instructionInterception); err != nil && instructionInterceptionErr == nil {
+					instructionInterceptionErr = err
+				}
+			}
 		}
 
 		recommenderScore := parseRecommendationScore(recommenderHandoffPath)
@@ -1999,6 +2121,15 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 			writeReportDetailf(reportFile, "Cycle Recommender execution succeeded.\n")
 		}
 		writeReportDetailf(reportFile, "Recommendation score: %d\n\n", recommenderScore)
+		if instructionSnapshotErr != nil {
+			writeReportDetailf(reportFile, "AGENTS.md protection: unable to snapshot `AGENTS.md` before recommender phase: %v\n\n", instructionSnapshotErr)
+		}
+		if instructionInterception.Path != "" {
+			writeReportDetailf(reportFile, "AGENTS.md protection: intercepted %s `%s`, restored the prior filesystem state, and stored the proposed content in `%s` for human review.\n\n", instructionInterception.Change, instructionInterception.Path, recommenderHandoffPath)
+		}
+		if instructionInterceptionErr != nil {
+			writeReportDetailf(reportFile, "AGENTS.md protection: failed to restore or record result: %v\n\n", instructionInterceptionErr)
+		}
 		if compactPhaseHandoffsEnabled(settings) {
 			writeReportDetailf(reportFile, "- Handoff summary: `%s`\n\n", recommenderHandoffPath)
 		}

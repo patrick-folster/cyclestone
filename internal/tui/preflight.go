@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -22,24 +23,31 @@ type preflightIssue struct {
 	Message  string
 }
 
+type instructionSourceStatus struct {
+	Label   string
+	Path    string
+	Present bool
+}
+
 // PreflightModel renders the non-mutating cycle review that must be confirmed
 // before RootModel receives StartCycleMsg for executor startup.
 type PreflightModel struct {
-	Request       StartCycleMsg
-	Milestone     config.Milestone
-	State         *config.State
-	ConfigPath    string
-	StatePath     string
-	Width         int
-	Height        int
-	FocusIndex    int
-	ScrollOffset  int
-	Styles        Styles
-	Settings      config.Settings
-	Pipeline      []config.Agent
-	MissingAgents []string
-	Repos         []git.RepoStatusSummary
-	Issues        []preflightIssue
+	Request            StartCycleMsg
+	Milestone          config.Milestone
+	State              *config.State
+	ConfigPath         string
+	StatePath          string
+	Width              int
+	Height             int
+	FocusIndex         int
+	ScrollOffset       int
+	Styles             Styles
+	Settings           config.Settings
+	Pipeline           []config.Agent
+	MissingAgents      []string
+	Repos              []git.RepoStatusSummary
+	Issues             []preflightIssue
+	InstructionSources []instructionSourceStatus
 }
 
 func NewPreflightModel(styles Styles) PreflightModel {
@@ -63,6 +71,7 @@ func (m *PreflightModel) Load(req StartCycleMsg, state *config.State, configPath
 	m.MissingAgents = nil
 	m.Repos = git.SummarizeTrackedRepoStatuses()
 	m.Issues = nil
+	m.InstructionSources = m.loadInstructionSources()
 
 	agents, err := config.LoadDynamicAgents()
 	if err != nil {
@@ -74,6 +83,22 @@ func (m *PreflightModel) Load(req StartCycleMsg, state *config.State, configPath
 	if m.HasBlockers() {
 		m.FocusIndex = 1
 	}
+}
+
+func (m PreflightModel) loadInstructionSources() []instructionSourceStatus {
+	instructionPath := strings.TrimSpace(m.Settings.AgentInstructions.File)
+	if instructionPath == "" {
+		instructionPath = "AGENTS.md"
+	}
+	sources := []instructionSourceStatus{
+		{Label: "Agent instructions", Path: instructionPath},
+		{Label: "Decisions log", Path: filepath.Join(".cyclestone", "DECISIONS.md")},
+	}
+	for i := range sources {
+		_, err := os.Stat(sources[i].Path)
+		sources[i].Present = err == nil
+	}
+	return sources
 }
 
 func resolvePreflightPipeline(agents []config.Agent, group config.AgentGroup, singleAgentID string) ([]config.Agent, []string) {
@@ -384,6 +409,17 @@ func (m PreflightModel) content() string {
 	sb.WriteString(fmt.Sprintf("State: %s\n", emptyFallback(m.StatePath, filepath.Join(".cyclestone", "state.json"))))
 	sb.WriteString(fmt.Sprintf("Config: %s\n", emptyFallback(m.ConfigPath, filepath.Join(".cyclestone", "milestone.yml"))))
 	sb.WriteString(fmt.Sprintf("Context size: %s\n", m.contextSizeText()))
+	sb.WriteString("Instruction sources:\n")
+	for _, source := range m.InstructionSources {
+		status := "missing"
+		if source.Present {
+			status = "present"
+		}
+		sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", source.Label, source.Path, status))
+	}
+	if strings.TrimSpace(m.Request.Note) != "" {
+		sb.WriteString("Cycle note: present\n")
+	}
 
 	sb.WriteString("\nRepositories:\n")
 	for _, repo := range m.Repos {
@@ -401,9 +437,6 @@ func (m PreflightModel) content() string {
 			}
 			sb.WriteString(fmt.Sprintf("  %s: %s\n", label, issue.Message))
 		}
-	}
-	if strings.TrimSpace(m.Request.Note) != "" {
-		sb.WriteString("\nCycle note: present\n")
 	}
 	return sb.String()
 }

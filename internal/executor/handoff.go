@@ -343,6 +343,27 @@ func marshalPhaseHandoffYAML(handoff phaseHandoff) ([]byte, error) {
 	return yaml.Marshal(handoff)
 }
 
+func mergeProposedAgentInstructionsUpdate(handoffPath string, interception agentInstructionsInterception) error {
+	if strings.TrimSpace(interception.Path) == "" || strings.TrimSpace(interception.Change) == "" {
+		return nil
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		return err
+	}
+	if handoff.Summary == nil {
+		handoff.Summary = map[string]interface{}{}
+	}
+	handoff.Summary["proposed_agent_instructions_update"] = interception.ProposedContent
+	handoff.Summary["proposed_agent_instructions_path"] = interception.Path
+	handoff.Summary["proposed_agent_instructions_change"] = interception.Change
+	data, err := marshalPhaseHandoffYAML(handoff)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(handoffPath, data, 0644)
+}
+
 func effectiveOutputContract(_ string, configured string) string {
 	configured = strings.TrimSpace(configured)
 	if configured != "" {

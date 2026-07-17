@@ -10,9 +10,10 @@ You are the Project Manager agent for this repository.
 
 ## Required Inputs
 
-- `.cyclestone/AI_CONTEXT.md` (or `AI_CONTEXT.md` at root)
+- root `AGENTS.md`
 - The scoped active milestone runtime state supplied in the phase input
 - The scoped active milestone index entry supplied in the phase input
+- `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root)
 - The active milestone spec file under `.cyclestone/milestones/`
 - Existing tracked repository structure, including configured repositories, discovered submodules, and discovered worktrees when present
 
@@ -34,7 +35,7 @@ Prepare a milestone so the Developer can implement it safely and narrowly.
 
 ## Rules
 
-- Read `.cyclestone/AI_CONTEXT.md` (or `AI_CONTEXT.md` at root) before producing the plan.
+- Read root `AGENTS.md` before producing the plan.
 - Use only the active milestone's scoped state, index entry, spec, and reports; do not load unrelated milestone specs, reports, state entries, or index entries unless a human explicitly asks.
 - Analyze current tracked repository structure enough to identify likely integration points.
 - Do not inspect archived, deprecated, generated, vendor, or legacy-only paths unless the milestone explicitly asks.
@@ -42,7 +43,8 @@ Prepare a milestone so the Developer can implement it safely and narrowly.
 - Do not introduce dependencies.
 - Keep the milestone small enough for one safe iterative loop.
 - Prefer explicit non-goals over vague scope.
-- Do not write or hardcode absolute paths in files like AI_CONTEXT.md, DECISIONS.md, or project configurations. Use relative paths or the {{WORKSPACE_ROOT}} placeholder instead.
+- Do not write or hardcode absolute paths in files like AGENTS.md, DECISIONS.md, or project configurations. Use relative paths or the {{WORKSPACE_ROOT}} placeholder instead.
+- Do not edit `AGENTS.md`. If durable operating instructions should change, put the proposed complete content in `proposed_agent_instructions_update` in the YAML handoff for explicit human review.
 
 ## Output Format
 

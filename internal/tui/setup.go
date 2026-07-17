@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,8 @@ const (
 	setupFieldSafetyMode
 	setupFieldUnrestrictedAck
 	setupFieldBranchBehavior
+	setupFieldAgentInstructions
+	setupFieldAgentInstructionsPreview
 	setupFieldCreateFirstMilestone
 	setupFieldMilestoneID
 	setupFieldMilestoneTitle
@@ -49,19 +52,21 @@ type SetupWizardModel struct {
 	// RunnerInherit, SafetyInherit, and BranchesInherit mirror the settings
 	// screen "inherit" option: when true the corresponding project setting is
 	// saved empty/nil so it resolves from the global settings at merge time.
-	RunnerInherit   bool
-	Unrestricted    bool
-	SafetyInherit   bool
-	UnrestrictedAck bool
-	AutoBranches    bool
-	BranchesInherit bool
-	CreateFirst     bool
-	IsGitWorktree   bool
-	FocusIndex      int
-	Width           int
-	Height          int
-	Styles          Styles
-	ErrorMsg        string
+	RunnerInherit           bool
+	Unrestricted            bool
+	SafetyInherit           bool
+	UnrestrictedAck         bool
+	AutoBranches            bool
+	BranchesInherit         bool
+	CreateAgentInstructions bool
+	AgentInstructions       textarea.Model
+	CreateFirst             bool
+	IsGitWorktree           bool
+	FocusIndex              int
+	Width                   int
+	Height                  int
+	Styles                  Styles
+	ErrorMsg                string
 }
 
 func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizardModel {
@@ -90,6 +95,14 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 	criteria.ShowLineNumbers = false
 	criteria.Cursor.Style = styles.AccentText
 
+	agentInstructions := textarea.New()
+	agentInstructions.Placeholder = "Durable agent instructions"
+	agentInstructions.SetValue(defaultAgentInstructionsContent())
+	agentInstructions.SetWidth(60)
+	agentInstructions.SetHeight(5)
+	agentInstructions.ShowLineNumbers = false
+	agentInstructions.Cursor.Style = styles.AccentText
+
 	runners := detectSetupRunnerAvailability()
 	global, _ := config.LoadGlobalSettings()
 	m := SetupWizardModel{
@@ -106,15 +119,17 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 		// settings screen project-scope behavior. Runner is left empty
 		// because RunnerInherit is true; the cycling logic discovers the
 		// first available runner when the user switches away from inherit.
-		Runner:          "",
-		RunnerInherit:   true,
-		SafetyInherit:   true,
-		AutoBranches:    true,
-		BranchesInherit: true,
-		CreateFirst:     false,
-		IsGitWorktree:   git.IsGitRepository(),
-		FocusIndex:      setupFieldRunner,
-		Styles:          styles,
+		Runner:                  "",
+		RunnerInherit:           true,
+		SafetyInherit:           true,
+		AutoBranches:            true,
+		BranchesInherit:         true,
+		CreateAgentInstructions: true,
+		AgentInstructions:       agentInstructions,
+		CreateFirst:             false,
+		IsGitWorktree:           git.IsGitRepository(),
+		FocusIndex:              setupFieldRunner,
+		Styles:                  styles,
 	}
 	m.updateFocus()
 	return m
@@ -166,6 +181,8 @@ func (m SetupWizardModel) Update(msg tea.Msg) (SetupWizardModel, tea.Cmd) {
 	}
 
 	switch m.FocusIndex {
+	case setupFieldAgentInstructionsPreview:
+		m.AgentInstructions, cmd = m.AgentInstructions.Update(msg)
 	case setupFieldMilestoneID:
 		m.MilestoneIDInput, cmd = m.MilestoneIDInput.Update(msg)
 	case setupFieldMilestoneTitle:
@@ -189,12 +206,18 @@ func (m *SetupWizardModel) resizeInputs() {
 	m.MilestoneTitleInput.Width = width
 	m.MilestoneGoalInput.SetWidth(width)
 	m.MilestoneCriteria.SetWidth(width)
+	m.AgentInstructions.SetWidth(width)
 	height := 4
 	if m.Height < 24 {
 		height = 2
 	}
 	m.MilestoneGoalInput.SetHeight(height)
 	m.MilestoneCriteria.SetHeight(height)
+	agentHeight := 5
+	if m.Height < 28 {
+		agentHeight = 3
+	}
+	m.AgentInstructions.SetHeight(agentHeight)
 }
 
 func (m SetupWizardModel) nextFocusable(delta int) int {
@@ -211,6 +234,9 @@ func (m SetupWizardModel) fieldVisible(idx int) bool {
 	if idx == setupFieldUnrestrictedAck {
 		return m.Unrestricted
 	}
+	if idx == setupFieldAgentInstructionsPreview {
+		return m.CreateAgentInstructions && m.Height >= 24
+	}
 	if idx == setupFieldMilestoneID || idx == setupFieldMilestoneTitle || idx == setupFieldMilestoneGoal || idx == setupFieldMilestoneCriteria {
 		return m.CreateFirst
 	}
@@ -218,7 +244,7 @@ func (m SetupWizardModel) fieldVisible(idx int) bool {
 }
 
 func (m SetupWizardModel) isChoiceField(idx int) bool {
-	return idx == setupFieldRunner || idx == setupFieldSafetyMode || idx == setupFieldUnrestrictedAck || idx == setupFieldBranchBehavior || idx == setupFieldCreateFirstMilestone
+	return idx == setupFieldRunner || idx == setupFieldSafetyMode || idx == setupFieldUnrestrictedAck || idx == setupFieldBranchBehavior || idx == setupFieldAgentInstructions || idx == setupFieldCreateFirstMilestone
 }
 
 // runnerCycleOptions builds the ordered list of selectable runner options for
@@ -325,6 +351,8 @@ func (m *SetupWizardModel) adjustChoice(delta int) {
 				m.AutoBranches = true
 			}
 		}
+	case setupFieldAgentInstructions:
+		m.CreateAgentInstructions = !m.CreateAgentInstructions
 	case setupFieldCreateFirstMilestone:
 		m.CreateFirst = !m.CreateFirst
 	}
@@ -341,6 +369,7 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 	}
 	m.MilestoneGoalInput.Blur()
 	m.MilestoneCriteria.Blur()
+	m.AgentInstructions.Blur()
 
 	switch m.FocusIndex {
 	case setupFieldMilestoneID:
@@ -353,6 +382,8 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 		cmds = append(cmds, m.MilestoneGoalInput.Focus())
 	case setupFieldMilestoneCriteria:
 		cmds = append(cmds, m.MilestoneCriteria.Focus())
+	case setupFieldAgentInstructionsPreview:
+		cmds = append(cmds, m.AgentInstructions.Focus())
 	}
 	return tea.Batch(cmds...)
 }
@@ -394,6 +425,13 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 	settings := config.Settings{
 		DefaultGitBranchPrefix: "cyclestone/milestones/",
 	}
+	proposeUpdates := true
+	autoApplyUpdates := false
+	settings.AgentInstructions = config.AgentInstructionsSettings{
+		File:             "AGENTS.md",
+		ProposeUpdates:   &proposeUpdates,
+		AutoApplyUpdates: &autoApplyUpdates,
+	}
 	// Save explicit values only for non-inherited fields so the project
 	// settings defer to the global configuration for inherited ones.
 	if !m.RunnerInherit {
@@ -415,6 +453,16 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 	if err := config.SaveProjectSettingsAt(settingsPath, settings); err != nil {
 		m.ErrorMsg = fmt.Sprintf("Error saving settings: %v", err)
 		return m, nil
+	}
+	if m.CreateAgentInstructions {
+		rootDir := filepath.Dir(filepath.Dir(configPath))
+		agentsPath := filepath.Join(rootDir, "AGENTS.md")
+		if _, err := os.Stat(agentsPath); os.IsNotExist(err) {
+			if err := os.WriteFile(agentsPath, []byte(strings.TrimSpace(m.AgentInstructions.Value())+"\n"), 0644); err != nil {
+				m.ErrorMsg = fmt.Sprintf("Error creating AGENTS.md: %v", err)
+				return m, nil
+			}
+		}
 	}
 
 	milestoneID := ""
@@ -458,6 +506,14 @@ func splitCriteria(value string) []string {
 	return criteria
 }
 
+func defaultAgentInstructionsContent() string {
+	return strings.TrimSpace(`# Agent Instructions
+
+- Keep current operating instructions concise and durable in this file.
+- Keep chronological decisions in .cyclestone/DECISIONS.md.
+- Propose instruction updates in cycle reports or handoffs for human review instead of editing this file automatically.`)
+}
+
 func (m SetupWizardModel) View() string {
 	(&m).resizeInputs()
 	var sb strings.Builder
@@ -481,6 +537,10 @@ func (m SetupWizardModel) View() string {
 		sb.WriteString(m.renderChoice(setupFieldUnrestrictedAck, "Confirm", boolLabel(m.UnrestrictedAck, "I understand unrestricted mode", "Required before save")) + "\n")
 	}
 	sb.WriteString(m.renderChoice(setupFieldBranchBehavior, "Branches", m.branchesSummary()) + "\n")
+	sb.WriteString(m.renderChoice(setupFieldAgentInstructions, "AGENTS.md", boolLabel(m.CreateAgentInstructions, "Create from preview", "Skip")) + "\n")
+	if m.CreateAgentInstructions && m.Height >= 24 {
+		sb.WriteString(m.renderInput(setupFieldAgentInstructionsPreview, "AGENTS.md preview", m.AgentInstructions.View()) + "\n")
+	}
 	sb.WriteString(m.renderChoice(setupFieldCreateFirstMilestone, "First milestone", boolLabel(m.CreateFirst, "Create now", "Skip")) + "\n")
 	if m.CreateFirst {
 		sb.WriteString(m.renderInput(setupFieldMilestoneID, "Milestone ID", m.MilestoneIDInput.View()) + "\n")

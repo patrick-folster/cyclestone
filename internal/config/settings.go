@@ -17,6 +17,14 @@ type AgentGroup struct {
 	AgentIDs []string `yaml:"agent_ids" json:"agent_ids"`
 }
 
+// AgentInstructionsSettings controls the durable instruction file loaded into
+// agent prompts and whether agents may propose updates for human review.
+type AgentInstructionsSettings struct {
+	File             string `yaml:"file,omitempty" json:"file,omitempty"`
+	ProposeUpdates   *bool  `yaml:"propose_updates,omitempty" json:"propose_updates,omitempty"`
+	AutoApplyUpdates *bool  `yaml:"auto_apply_updates,omitempty" json:"auto_apply_updates,omitempty"`
+}
+
 // Settings represents global and project configurations.
 type Settings struct {
 	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", "ollama-codex", or "" (inherit)
@@ -27,22 +35,23 @@ type Settings struct {
 	DisableRoundedBorders  *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
 	DefaultGitBranchPrefix string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
 
-	AiderModel                      string       `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
-	OllamaModel                     string       `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
-	OllamaCodexModel                string       `yaml:"ollama_codex_model,omitempty" json:"ollama_codex_model,omitempty"`
-	OllamaHost                      string       `yaml:"ollama_host,omitempty" json:"ollama_host,omitempty"`
-	EnableContextCaching            *bool        `yaml:"enable_context_caching,omitempty" json:"enable_context_caching,omitempty"`
-	EnableCompactPhaseHandoffs      *bool        `yaml:"enable_compact_phase_handoffs,omitempty" json:"enable_compact_phase_handoffs,omitempty"`
-	EnableCodexSessionResume        *bool        `yaml:"enable_codex_session_resume,omitempty" json:"enable_codex_session_resume,omitempty"`
-	CacheTTLMinutes                 int          `yaml:"cache_ttl_minutes,omitempty" json:"cache_ttl_minutes,omitempty"`
-	MaxHandoffChars                 int          `yaml:"max_handoff_chars,omitempty" json:"max_handoff_chars,omitempty"`
-	OllamaNumCtx                    int          `yaml:"ollama_num_ctx,omitempty" json:"ollama_num_ctx,omitempty"`
-	OllamaNumPredict                int          `yaml:"ollama_num_predict,omitempty" json:"ollama_num_predict,omitempty"`
-	MaxModelCallsPerPhase           int          `yaml:"max_model_calls_per_phase,omitempty" json:"max_model_calls_per_phase,omitempty"`
-	MaxTokenBudgetPerPhase          int          `yaml:"max_token_budget_per_phase,omitempty" json:"max_token_budget_per_phase,omitempty"`
-	MaxLLMInputChars                int          `yaml:"max_llm_input_chars,omitempty" json:"max_llm_input_chars,omitempty"`
-	MaxRetainedConversationMessages int          `yaml:"max_retained_conversation_messages,omitempty" json:"max_retained_conversation_messages,omitempty"`
-	AgentGroups                     []AgentGroup `yaml:"agent_groups,omitempty" json:"agent_groups,omitempty"`
+	AiderModel                      string                    `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
+	OllamaModel                     string                    `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
+	OllamaCodexModel                string                    `yaml:"ollama_codex_model,omitempty" json:"ollama_codex_model,omitempty"`
+	OllamaHost                      string                    `yaml:"ollama_host,omitempty" json:"ollama_host,omitempty"`
+	EnableContextCaching            *bool                     `yaml:"enable_context_caching,omitempty" json:"enable_context_caching,omitempty"`
+	EnableCompactPhaseHandoffs      *bool                     `yaml:"enable_compact_phase_handoffs,omitempty" json:"enable_compact_phase_handoffs,omitempty"`
+	EnableCodexSessionResume        *bool                     `yaml:"enable_codex_session_resume,omitempty" json:"enable_codex_session_resume,omitempty"`
+	CacheTTLMinutes                 int                       `yaml:"cache_ttl_minutes,omitempty" json:"cache_ttl_minutes,omitempty"`
+	MaxHandoffChars                 int                       `yaml:"max_handoff_chars,omitempty" json:"max_handoff_chars,omitempty"`
+	OllamaNumCtx                    int                       `yaml:"ollama_num_ctx,omitempty" json:"ollama_num_ctx,omitempty"`
+	OllamaNumPredict                int                       `yaml:"ollama_num_predict,omitempty" json:"ollama_num_predict,omitempty"`
+	MaxModelCallsPerPhase           int                       `yaml:"max_model_calls_per_phase,omitempty" json:"max_model_calls_per_phase,omitempty"`
+	MaxTokenBudgetPerPhase          int                       `yaml:"max_token_budget_per_phase,omitempty" json:"max_token_budget_per_phase,omitempty"`
+	MaxLLMInputChars                int                       `yaml:"max_llm_input_chars,omitempty" json:"max_llm_input_chars,omitempty"`
+	MaxRetainedConversationMessages int                       `yaml:"max_retained_conversation_messages,omitempty" json:"max_retained_conversation_messages,omitempty"`
+	AgentGroups                     []AgentGroup              `yaml:"agent_groups,omitempty" json:"agent_groups,omitempty"`
+	AgentInstructions               AgentInstructionsSettings `yaml:"agent_instructions,omitempty" json:"agent_instructions,omitempty"`
 }
 
 // IsValidLLM checks if a given LLM runner name is supported.
@@ -89,6 +98,8 @@ func LoadDefaultSettings() Settings {
 	enableContextCaching := false
 	enableCompactPhaseHandoffs := true
 	enableCodexSessionResume := false
+	proposeInstructionUpdates := true
+	autoApplyInstructionUpdates := false
 	return Settings{
 		DefaultLLM:                      "codex",
 		DefaultMode:                     "sandbox",
@@ -109,7 +120,39 @@ func LoadDefaultSettings() Settings {
 		MaxLLMInputChars:                900000,
 		MaxRetainedConversationMessages: 8,
 		AgentGroups:                     []AgentGroup{PredefinedDefaultGroup},
+		AgentInstructions: AgentInstructionsSettings{
+			File:             "AGENTS.md",
+			ProposeUpdates:   &proposeInstructionUpdates,
+			AutoApplyUpdates: &autoApplyInstructionUpdates,
+		},
 	}
+}
+
+func normalizeAgentInstructionsSettings(s *Settings) {
+	if strings.TrimSpace(s.AgentInstructions.File) == "" {
+		s.AgentInstructions.File = "AGENTS.md"
+	}
+	if s.AgentInstructions.ProposeUpdates == nil {
+		trueVal := true
+		s.AgentInstructions.ProposeUpdates = &trueVal
+	}
+	if s.AgentInstructions.AutoApplyUpdates == nil {
+		falseVal := false
+		s.AgentInstructions.AutoApplyUpdates = &falseVal
+	}
+}
+
+func mergeAgentInstructionsSettings(base *Settings, override AgentInstructionsSettings) {
+	if strings.TrimSpace(override.File) != "" {
+		base.AgentInstructions.File = override.File
+	}
+	if override.ProposeUpdates != nil {
+		base.AgentInstructions.ProposeUpdates = override.ProposeUpdates
+	}
+	if override.AutoApplyUpdates != nil {
+		base.AgentInstructions.AutoApplyUpdates = override.AutoApplyUpdates
+	}
+	normalizeAgentInstructionsSettings(base)
 }
 
 // LoadGlobalSettings reads the global settings.yml if it exists.
@@ -192,6 +235,7 @@ func LoadMergedSettings() Settings {
 		falseVal := false
 		s.EnableCodexSessionResume = &falseVal
 	}
+	normalizeAgentInstructionsSettings(&s)
 	if s.DefaultGitBranchPrefix == "" {
 		s.DefaultGitBranchPrefix = "cyclestone/milestones/"
 	}
@@ -261,6 +305,7 @@ func LoadMergedSettings() Settings {
 				if projectSettings.EnableCodexSessionResume != nil {
 					s.EnableCodexSessionResume = projectSettings.EnableCodexSessionResume
 				}
+				mergeAgentInstructionsSettings(&s, projectSettings.AgentInstructions)
 				if projectSettings.CacheTTLMinutes != 0 {
 					s.CacheTTLMinutes = projectSettings.CacheTTLMinutes
 				}
@@ -334,6 +379,7 @@ func LoadMergedSettings() Settings {
 		falseVal := false
 		s.EnableCodexSessionResume = &falseVal
 	}
+	normalizeAgentInstructionsSettings(&s)
 	if s.DefaultGitBranchPrefix == "" {
 		s.DefaultGitBranchPrefix = "cyclestone/milestones/"
 	}

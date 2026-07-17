@@ -813,6 +813,125 @@ func TestWritePhaseHandoffPrefersTempYAMLFile(t *testing.T) {
 	}
 }
 
+func TestInterceptAgentInstructionsMutationRestoresFileStates(t *testing.T) {
+	stringPtr := func(value string) *string { return &value }
+	tests := []struct {
+		name            string
+		before          *string
+		after           *string
+		wantChange      string
+		wantFinalExists bool
+		wantFinal       string
+		wantProposed    string
+	}{
+		{
+			name:            "created",
+			after:           stringPtr("created instructions\n"),
+			wantChange:      "created",
+			wantFinalExists: false,
+			wantProposed:    "created instructions\n",
+		},
+		{
+			name:            "modified",
+			before:          stringPtr("original instructions\n"),
+			after:           stringPtr("updated instructions\n"),
+			wantChange:      "modified",
+			wantFinalExists: true,
+			wantFinal:       "original instructions\n",
+			wantProposed:    "updated instructions\n",
+		},
+		{
+			name:            "deleted",
+			before:          stringPtr("original instructions\n"),
+			wantChange:      "deleted",
+			wantFinalExists: true,
+			wantFinal:       "original instructions\n",
+			wantProposed:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Chdir(tmpDir)
+			if tt.before != nil {
+				if err := os.WriteFile("AGENTS.md", []byte(*tt.before), 0644); err != nil {
+					t.Fatalf("failed to write initial AGENTS.md: %v", err)
+				}
+			}
+
+			snapshot, err := snapshotAgentInstructions(config.LoadDefaultSettings())
+			if err != nil {
+				t.Fatalf("snapshotAgentInstructions failed: %v", err)
+			}
+			if tt.after != nil {
+				if err := os.WriteFile("AGENTS.md", []byte(*tt.after), 0644); err != nil {
+					t.Fatalf("failed to write changed AGENTS.md: %v", err)
+				}
+			} else if err := os.Remove("AGENTS.md"); err != nil {
+				t.Fatalf("failed to remove changed AGENTS.md: %v", err)
+			}
+
+			interception, err := interceptAgentInstructionsMutation(snapshot)
+			if err != nil {
+				t.Fatalf("interceptAgentInstructionsMutation failed: %v", err)
+			}
+			if interception.Change != tt.wantChange || interception.Path != "AGENTS.md" || interception.ProposedContent != tt.wantProposed {
+				t.Fatalf("unexpected interception: %#v", interception)
+			}
+			finalBytes, err := os.ReadFile("AGENTS.md")
+			if tt.wantFinalExists {
+				if err != nil {
+					t.Fatalf("expected restored AGENTS.md: %v", err)
+				}
+				if string(finalBytes) != tt.wantFinal {
+					t.Fatalf("expected restored content %q, got %q", tt.wantFinal, string(finalBytes))
+				}
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("expected created AGENTS.md mutation to be removed, read err=%v content=%q", err, string(finalBytes))
+			}
+		})
+	}
+}
+
+func TestMergeProposedAgentInstructionsUpdateAddsReviewFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "developer.log")
+	handoffPath := filepath.Join(tmpDir, "developer-handoff.yaml")
+	tempYAMLPath := filepath.Join(tmpDir, "developer-temp-handoff.yaml")
+	if err := os.WriteFile(logPath, []byte("done\n"), 0644); err != nil {
+		t.Fatalf("failed to write log: %v", err)
+	}
+	tempYAML := "changed_files: []\nimplemented_behavior:\n  - implemented code\nchecks_run: []\ndecisions: []\nrisks: []\n"
+	if err := os.WriteFile(tempYAMLPath, []byte(tempYAML), 0644); err != nil {
+		t.Fatalf("failed to write temp yaml: %v", err)
+	}
+	if err := writePhaseHandoff(context.Background(), config.Settings{}, handoffPath, "MS-I", 1, "developer", "developer", logPath, 1000, "", "codex", tempYAMLPath); err != nil {
+		t.Fatalf("writePhaseHandoff failed: %v", err)
+	}
+	interception := agentInstructionsInterception{
+		Path:            "AGENTS.md",
+		Change:          "modified",
+		ProposedContent: "proposed instructions\n",
+	}
+	if err := mergeProposedAgentInstructionsUpdate(handoffPath, interception); err != nil {
+		t.Fatalf("mergeProposedAgentInstructionsUpdate failed: %v", err)
+	}
+	handoff, err := loadPhaseHandoff(handoffPath)
+	if err != nil {
+		t.Fatalf("failed to load handoff: %v", err)
+	}
+	if handoff.ValidationStatus != "valid" {
+		t.Fatalf("expected original validation status to remain valid, got %q", handoff.ValidationStatus)
+	}
+	if got, _ := handoff.Summary["proposed_agent_instructions_update"].(string); got != "proposed instructions\n" {
+		t.Fatalf("expected proposed content in summary, got %#v", handoff.Summary["proposed_agent_instructions_update"])
+	}
+	if got, _ := handoff.Summary["proposed_agent_instructions_change"].(string); got != "modified" {
+		t.Fatalf("expected change type in summary, got %#v", handoff.Summary["proposed_agent_instructions_change"])
+	}
+}
+
 func TestWritePhaseHandoffFallsBackWhenTempFileMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "pm.log")
@@ -1407,7 +1526,10 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-P.md"), []byte("# Spec\nAC one\n"), 0644); err != nil {
 		t.Fatalf("failed to write spec: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("AI-CONTEXT-SHOULD-BE-PM-ONLY\n"), 0644); err != nil {
+	if err := os.WriteFile("AGENTS.md", []byte("AGENTS-SHOULD-BE-LOADED\n"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("AI-CONTEXT-SHOULD-BE-IGNORED\n"), 0644); err != nil {
 		t.Fatalf("failed to write AI context: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
@@ -1443,8 +1565,11 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if strings.Contains(devInput, "RAW-PRIOR-LOG") || strings.Contains(devInput, "## QA Checklist") {
 		t.Fatalf("expected developer input to skip raw prior logs and QA checklist, got:\n%s", devInput)
 	}
-	if !strings.Contains(devInput, "AI-CONTEXT-SHOULD-BE-PM-ONLY") {
-		t.Fatalf("expected developer input to include AI context, got:\n%s", devInput)
+	if !strings.Contains(devInput, "AGENTS-SHOULD-BE-LOADED") {
+		t.Fatalf("expected developer input to include AGENTS.md, got:\n%s", devInput)
+	}
+	if strings.Contains(devInput, "AI-CONTEXT-SHOULD-BE-IGNORED") {
+		t.Fatalf("expected developer input to ignore AI_CONTEXT.md, got:\n%s", devInput)
 	}
 
 	qaInput := assemblePhaseInput(
@@ -1463,8 +1588,11 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if strings.Contains(qaInput, "RAW-PRIOR-LOG") {
 		t.Fatalf("expected QA input to exclude prior report body, got:\n%s", qaInput)
 	}
-	if !strings.Contains(qaInput, "AI-CONTEXT-SHOULD-BE-PM-ONLY") {
-		t.Fatalf("expected QA input to include AI context, got:\n%s", qaInput)
+	if !strings.Contains(qaInput, "AGENTS-SHOULD-BE-LOADED") {
+		t.Fatalf("expected QA input to include AGENTS.md, got:\n%s", qaInput)
+	}
+	if strings.Contains(qaInput, "AI-CONTEXT-SHOULD-BE-IGNORED") {
+		t.Fatalf("expected QA input to ignore AI_CONTEXT.md, got:\n%s", qaInput)
 	}
 }
 
@@ -2044,8 +2172,8 @@ func TestAssembleInputLimitsPromptFacingContextFiles(t *testing.T) {
 		t.Fatalf("failed to create milestone dir: %v", err)
 	}
 	largeContext := "CTX-HEAD\n" + strings.Repeat("A", 160000) + "CTX-MIDDLE-OMITTED\n" + strings.Repeat("Z", 160000) + "CTX-TAIL\n"
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte(largeContext), 0644); err != nil {
-		t.Fatalf("failed to write AI context: %v", err)
+	if err := os.WriteFile("AGENTS.md", []byte(largeContext), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-CONTEXT.md"), []byte("# MS-CONTEXT\n"), 0644); err != nil {
 		t.Fatalf("failed to write milestone spec: %v", err)
@@ -2066,8 +2194,8 @@ func TestAssembleInputLimitsPromptFacingContextFiles(t *testing.T) {
 	if !strings.Contains(input, "CTX-HEAD") || !strings.Contains(input, "CTX-TAIL") {
 		t.Fatalf("expected context head and tail to be retained")
 	}
-	if !strings.Contains(input, "[Content truncated: .cyclestone/AI_CONTEXT.md") {
-		t.Fatalf("expected truncation notice for AI context")
+	if !strings.Contains(input, "[Content truncated: AGENTS.md") {
+		t.Fatalf("expected truncation notice for AGENTS.md")
 	}
 }
 
@@ -2181,9 +2309,15 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 		t.Fatalf("failed to create milestone dir: %v", err)
 	}
 
-	aiContextContent := "Constraint: Keep work inside {{WORKSPACE_ROOT}}."
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte(aiContextContent), 0644); err != nil {
-		t.Fatalf("failed to write AI context: %v", err)
+	agentsContent := "Constraint: Keep work inside {{WORKSPACE_ROOT}}."
+	if err := os.WriteFile("AGENTS.md", []byte(agentsContent), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("SHOULD-NOT-LOAD"), 0644); err != nil {
+		t.Fatalf("failed to write ignored AI context: %v", err)
+	}
+	if err := os.WriteFile("AI_CONTEXT.md", []byte("ROOT-SHOULD-NOT-LOAD"), 0644); err != nil {
+		t.Fatalf("failed to write ignored root AI context: %v", err)
 	}
 	decisionsContent := "Decisions log at {{WORKSPACE_ROOT}}/decisions."
 	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte(decisionsContent), 0644); err != nil {
@@ -2215,6 +2349,9 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputNonCompact, expectedAI) {
 		t.Errorf("Non-compact: expected input to contain %q, but got:\n%s", expectedAI, inputNonCompact)
 	}
+	if strings.Contains(inputNonCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputNonCompact, "ROOT-SHOULD-NOT-LOAD") {
+		t.Errorf("Non-compact: expected AI_CONTEXT.md files to be ignored, got:\n%s", inputNonCompact)
+	}
 	if !strings.Contains(inputNonCompact, expectedDecisions) {
 		t.Errorf("Non-compact: expected input to contain %q, but got:\n%s", expectedDecisions, inputNonCompact)
 	}
@@ -2241,6 +2378,9 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputCompact, expectedDecisions) {
 		t.Errorf("Compact: expected input to contain %q, but got:\n%s", expectedDecisions, inputCompact)
 	}
+	if strings.Contains(inputCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputCompact, "ROOT-SHOULD-NOT-LOAD") {
+		t.Errorf("Compact: expected AI_CONTEXT.md files to be ignored, got:\n%s", inputCompact)
+	}
 
 	// Test 3: Recommender agent (non-compact)
 	inputRecommender := assembleInputWithSettings(
@@ -2260,6 +2400,9 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputRecommender, expectedDecisions) {
 		t.Errorf("Recommender (non-compact): expected input to contain %q, but got:\n%s", expectedDecisions, inputRecommender)
 	}
+	if strings.Contains(inputRecommender, "SHOULD-NOT-LOAD") || strings.Contains(inputRecommender, "ROOT-SHOULD-NOT-LOAD") {
+		t.Errorf("Recommender (non-compact): expected AI_CONTEXT.md files to be ignored, got:\n%s", inputRecommender)
+	}
 
 	// Test 4: Recommender agent (compact)
 	inputRecommenderCompact := assembleInputWithSettings(
@@ -2278,6 +2421,99 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	}
 	if !strings.Contains(inputRecommenderCompact, expectedDecisions) {
 		t.Errorf("Recommender (compact): expected input to contain %q, but got:\n%s", expectedDecisions, inputRecommenderCompact)
+	}
+	if strings.Contains(inputRecommenderCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputRecommenderCompact, "ROOT-SHOULD-NOT-LOAD") {
+		t.Errorf("Recommender (compact): expected AI_CONTEXT.md files to be ignored, got:\n%s", inputRecommenderCompact)
+	}
+}
+
+func TestAssembleInputWithoutAgentsIgnoresAIContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "milestones"), 0755); err != nil {
+		t.Fatalf("failed to create milestone dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("SHOULD-NOT-LOAD-CYCLESTONE"), 0644); err != nil {
+		t.Fatalf("failed to write ignored AI context: %v", err)
+	}
+	if err := os.WriteFile("AI_CONTEXT.md", []byte("SHOULD-NOT-LOAD-ROOT"), 0644); err != nil {
+		t.Fatalf("failed to write ignored root AI context: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte("DECISION-CONTENT"), 0644); err != nil {
+		t.Fatalf("failed to write decisions log: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-NO-AGENTS.md"), []byte("# MS-NO-AGENTS\nMilestone body"), 0644); err != nil {
+		t.Fatalf("failed to write milestone spec: %v", err)
+	}
+
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compact_%v", compact), func(t *testing.T) {
+			settings := config.Settings{EnableCompactPhaseHandoffs: &compact}
+			input := assembleInputWithSettings(
+				config.Milestone{ID: "MS-NO-AGENTS", Goal: "assemble without agents"},
+				config.Agent{ID: "pm", Name: "Project Manager", PromptBody: "role prompt"},
+				1,
+				RunOptions{},
+				"",
+				"",
+				settings,
+				nil,
+			)
+
+			if strings.Contains(input, "SHOULD-NOT-LOAD-CYCLESTONE") || strings.Contains(input, "SHOULD-NOT-LOAD-ROOT") {
+				t.Fatalf("expected AI_CONTEXT.md files to be ignored when AGENTS.md is absent, got:\n%s", input)
+			}
+			if !strings.Contains(input, "MS-NO-AGENTS") || !strings.Contains(input, "role prompt") {
+				t.Fatalf("expected role and milestone content without AGENTS.md, got:\n%s", input)
+			}
+			if !strings.Contains(input, "DECISION-CONTENT") {
+				t.Fatalf("expected decisions log to remain loaded, got:\n%s", input)
+			}
+		})
+	}
+}
+
+func TestCompactRecommenderUsesProvidedAgentInstructionSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "reports"), 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	if err := os.WriteFile("AGENTS.md", []byte("DEFAULT-AGENTS-SHOULD-NOT-LOAD"), 0644); err != nil {
+		t.Fatalf("failed to write default AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile("CUSTOM_AGENTS.md", []byte("CUSTOM-AGENTS-SHOULD-LOAD"), 0644); err != nil {
+		t.Fatalf("failed to write custom AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte("DECISIONS-SHOULD-LOAD"), 0644); err != nil {
+		t.Fatalf("failed to write decisions log: %v", err)
+	}
+
+	compactEnabled := true
+	input := assembleInputWithSettings(
+		config.Milestone{ID: "MS-CUSTOM", Goal: "custom instructions"},
+		config.Agent{ID: "recommender", Name: "Recommender", PromptBody: "role prompt"},
+		1,
+		RunOptions{},
+		"",
+		"",
+		config.Settings{
+			EnableCompactPhaseHandoffs: &compactEnabled,
+			AgentInstructions: config.AgentInstructionsSettings{
+				File: "CUSTOM_AGENTS.md",
+			},
+		},
+		nil,
+	)
+
+	if !strings.Contains(input, "CUSTOM-AGENTS-SHOULD-LOAD") {
+		t.Fatalf("expected compact recommender input to load configured instruction file, got:\n%s", input)
+	}
+	if strings.Contains(input, "DEFAULT-AGENTS-SHOULD-NOT-LOAD") {
+		t.Fatalf("expected compact recommender input not to reload default AGENTS.md, got:\n%s", input)
+	}
+	if !strings.Contains(input, "DECISIONS-SHOULD-LOAD") {
+		t.Fatalf("expected compact recommender input to include decisions log, got:\n%s", input)
 	}
 }
 
