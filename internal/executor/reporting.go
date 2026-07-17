@@ -111,6 +111,19 @@ func writePhaseCostMetrics(reportFile *os.File, metrics phaseCostMetrics) {
 	}
 }
 
+func writeRecommenderScoreReportLines(reportFile *os.File, recommendationScore, agentInstructionsUpdateScore int) {
+	if recommendationScore >= 0 {
+		writeReportDetailf(reportFile, "Recommendation score: %d\n", recommendationScore)
+	} else {
+		writeReportDetailf(reportFile, "Recommendation score: N/A\n")
+	}
+	if agentInstructionsUpdateScore >= 0 {
+		writeReportDetailf(reportFile, "AGENTS.md update recommendation score: %d\n\n", agentInstructionsUpdateScore)
+	} else {
+		writeReportDetailf(reportFile, "AGENTS.md update recommendation score: N/A\n\n")
+	}
+}
+
 func writeReportDetailf(reportFile *os.File, format string, args ...interface{}) {
 	writeReportDetailString(reportFile, fmt.Sprintf(format, args...))
 }

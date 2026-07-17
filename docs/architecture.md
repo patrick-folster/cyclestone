@@ -33,7 +33,7 @@ Built-in Developer, QA, and Recommender agents opt in to structured output contr
 
 - `developer`: YAML document with `changed_files`, `implemented_behavior`, `checks_run`, `decisions`, and `risks`, all arrays of strings.
 - `qa`: YAML document with string `verdict`, `criteria_results` objects containing string `criterion` and `result`, plus `reviewed_files`, `failing_checks`, and `required_fixes` arrays of strings.
-- `recommender`: YAML document with integer `score` from 0 to 10, string `verdict`, string `reason`, and `next_cycle_focus` array of strings.
+- `recommender`: YAML document with integer `score` from 0 to 10 for recommending another cycle, integer `agent_instructions_update_score` from 0 to 10 for recommending human review of root `AGENTS.md`, string `verdict`, string `reason`, and `next_cycle_focus` array of strings.
 
 For contracted agents, the executor reads the output-contract YAML document from a dedicated temp file under `.cyclestone/temp/` (for example `001-cycle-001-01-pm-handoff.yaml`). The prompt injects the concrete file path via a `{{HANDOFF_YAML_PATH}}` placeholder and instructs the agent to write its structured handoff directly to that file using a file-write tool or shell command, avoiding the brittle console-log extraction pipeline. When the temp file is absent or unparseable (for example manual mode, older runners, or custom agents without the placeholder), the executor falls back to extracting the YAML from the phase output log (final fenced `yaml`/`yml` block, inline handoff keys, or a raw YAML document at the end), and also checks for a sibling sidecar `.yaml` file next to the output log (for example `001-01-pm-output.log` -> `001-01-pm-output.yaml`). Explicit contracts are still validated and persisted when `EnableCompactPhaseHandoffs` is false; that setting disables compact phase-input summaries and uncontracted fallback handoff persistence. Custom or uncontracted outputs continue through fallback YAML handoff summarization.
 
@@ -58,21 +58,21 @@ Project config:
 - `.cyclestone/milestone.yml`: compact milestone index.
 - `.cyclestone/milestones/*.md`: milestone specs.
 - `.cyclestone/settings.yml`: local project runner/settings overrides.
-- `AGENTS.md`: concise current operating instructions loaded into agent prompts when present.
+- `AGENTS.md`: optional concise current operating instructions loaded into agent prompts when present.
 - `.cyclestone/DECISIONS.md`: chronological durable decision log kept separate from current instructions.
 
 Runtime output:
 
-- `.cyclestone/state.json`: active milestone, status, cycles, and history.
+- `.cyclestone/state.json`: active milestone, status, cycles, cycle-continuation recommendation scores, `AGENTS.md` update recommendation scores, and history.
 - `.cyclestone/reports/*-cycle-NNN.yaml`: structured cycle reports.
 - `.cyclestone/reports/*.md`: milestone summary rollups.
 - `.cyclestone/reports/*handoff.yaml`: structured phase handoffs. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`.
 - `.cyclestone/reports/*metadata.json`: cycle metadata.
 - `.cyclestone/temp/*handoff.yaml`: per-phase temp YAML files agents are instructed to write their structured handoff to (cleaned before each run).
 
-Malformed YAML, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading uses validated structured handoff data.
+Malformed YAML, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading uses validated structured handoff data. Missing or invalid recommender handoffs leave both recommendation scores unavailable rather than fabricating numeric defaults.
 
-Instruction updates are captured as optional proposed `AGENTS.md` content in handoff summaries. The TUI surfaces those proposals from cycle history with diff, apply, editable draft, dismiss, and keep-in-report actions; cycles do not automatically edit `AGENTS.md` as normal agent output.
+Instruction updates are captured as optional proposed `AGENTS.md` content in handoff summaries. The TUI surfaces those proposals from cycle history with diff, apply, editable draft, dismiss, and keep-in-report actions; cycles do not automatically edit `AGENTS.md` as normal agent output. The recommender's `agent_instructions_update_score` is a review signal only, not authorization to apply changes.
 
 ## Branch Behavior
 

@@ -1844,8 +1844,13 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 			}
 		}
 
+		recommenderScore := -1
+		agentInstructionsUpdateScore := -1
 		if agent.ID == "recommender" {
-			state.SetMilestoneRecommendation(milestone.ID, parseRecommendationScore(handoffPath))
+			recommenderScore = parseRecommendationScore(handoffPath)
+			agentInstructionsUpdateScore = parseAgentInstructionsUpdateRecommendationScore(handoffPath)
+			state.SetMilestoneRecommendation(milestone.ID, recommenderScore)
+			state.SetMilestoneAgentInstructionsUpdateScore(milestone.ID, agentInstructionsUpdateScore)
 		}
 
 		if runner == "manual" {
@@ -1857,6 +1862,9 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 			metrics := collectPhaseCostMetrics(inputContent, outputPath)
 			metrics.ReportChars = reportAfter - reportBefore
 			writePhaseCostMetrics(reportFile, metrics)
+		}
+		if agent.ID == "recommender" {
+			writeRecommenderScoreReportLines(reportFile, recommenderScore, agentInstructionsUpdateScore)
 		}
 		if *codexThreadID != "" {
 			writeReportDetailf(reportFile, "- Codex thread metadata: `%s`\n", codexThreadMetadataPath)
@@ -2109,9 +2117,11 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		}
 
 		recommenderScore := parseRecommendationScore(recommenderHandoffPath)
+		agentInstructionsUpdateScore := parseAgentInstructionsUpdateRecommendationScore(recommenderHandoffPath)
 
-		// Save recommendation score to state
+		// Save recommendation scores to state.
 		state.SetMilestoneRecommendation(milestone.ID, recommenderScore)
+		state.SetMilestoneAgentInstructionsUpdateScore(milestone.ID, agentInstructionsUpdateScore)
 
 		// Append recommender details to the main cycle report
 		writeReportDetailf(reportFile, "\n## Cycle Recommender Phase\n\n")
@@ -2120,7 +2130,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		} else {
 			writeReportDetailf(reportFile, "Cycle Recommender execution succeeded.\n")
 		}
-		writeReportDetailf(reportFile, "Recommendation score: %d\n\n", recommenderScore)
+		writeRecommenderScoreReportLines(reportFile, recommenderScore, agentInstructionsUpdateScore)
 		if instructionSnapshotErr != nil {
 			writeReportDetailf(reportFile, "AGENTS.md protection: unable to snapshot `AGENTS.md` before recommender phase: %v\n\n", instructionSnapshotErr)
 		}

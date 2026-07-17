@@ -225,6 +225,30 @@ func TestNarrowWidthMetadataFormatting(t *testing.T) {
 	t.Logf("Wide layout lines: %d, Narrow layout lines: %d", len(linesWide), len(linesNarrow))
 }
 
+func TestDetailsMetadataShowsAgentInstructionsUpdateScore(t *testing.T) {
+	styles := DefaultStyles(true, true)
+	m := NewDetailsModel(styles)
+	m.Milestone = config.Milestone{
+		ID:     "0007",
+		Title:  "Instruction score",
+		Status: "In Progress",
+		Cycles: 1,
+	}
+	m.RecommendationScore = 2
+	m.AgentInstructionsUpdateScore = 8
+	m.LLM = "codex"
+	m.Mode = "sandbox"
+	m.BranchChange = false
+
+	text := m.getDetailsTextForHeight(20, 100)
+	if !strings.Contains(text, "Rec Score: 2/10") {
+		t.Fatalf("expected cycle recommendation score in details text, got:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTS.md Score: 8/10") {
+		t.Fatalf("expected AGENTS.md update score in details text, got:\n%s", text)
+	}
+}
+
 func TestHistoryRichDetailsAndDeletion(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	m := NewDetailsModel(styles)
@@ -344,6 +368,49 @@ validation_status: valid
 		!strings.Contains(text, "Failing: go test ./...") ||
 		!strings.Contains(text, "Fixes: fix validation status mapping") {
 		t.Fatalf("expected structured QA fields in history text, got:\n%s", text)
+	}
+}
+
+func TestHistoryRendersRecommenderScoresSeparately(t *testing.T) {
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "MS-cycle-001-04-recommender-output.log")
+	handoffPath := filepath.Join(tmpDir, "MS-cycle-001-04-recommender-handoff.yaml")
+	if err := os.WriteFile(outputPath, []byte("recommender output"), 0644); err != nil {
+		t.Fatalf("failed to write output: %v", err)
+	}
+	handoff := `summary:
+  score: 2
+  agent_instructions_update_score: 7
+  verdict: approved
+  reason: complete
+  next_cycle_focus: []
+output_contract: recommender
+validation_status: valid
+`
+	if err := os.WriteFile(handoffPath, []byte(handoff), 0644); err != nil {
+		t.Fatalf("failed to write handoff: %v", err)
+	}
+
+	styles := DefaultStyles(true, true)
+	m := NewDetailsModel(styles)
+	m.Width = 100
+	m.Height = 30
+	m.Milestone = config.Milestone{ID: "MS", Title: "Milestone"}
+	m.History = []config.MilestoneCycleLog{{
+		CycleNumber: 1,
+		Status:      "approved",
+		Timestamp:   time.Now(),
+		Actions:     []config.AgentActionLog{{AgentID: "recommender", ExitCode: 0, OutputFile: outputPath}},
+	}}
+	m.ShowHistoryTab = true
+	m.HistorySelectedIdx = 0
+
+	text := m.getHistoryText(100)
+	if !strings.Contains(text, "Score: 2/10") {
+		t.Fatalf("expected recommender cycle score in history text, got:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTS.md score: 7/10") {
+		t.Fatalf("expected recommender AGENTS.md score in history text, got:\n%s", text)
 	}
 }
 

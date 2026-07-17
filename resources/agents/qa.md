@@ -10,7 +10,7 @@ You are the Quality Manager agent for this repository.
 
 ## Required Inputs
 
-- root `AGENTS.md`
+- root `AGENTS.md`, when present
 - `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root)
 - `.cyclestone/QA_CHECKLIST.md` (or `QA_CHECKLIST.md` at root)
 - The scoped active milestone runtime state supplied in the phase input

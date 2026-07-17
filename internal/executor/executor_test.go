@@ -78,6 +78,100 @@ func TestRunAgentPipelineCancellationDoesNotBlockWithoutListener(t *testing.T) {
 		t.Fatal("expected cancelled pipeline to return without a waiting executor listener")
 	}
 }
+
+func TestRunAgentPipelineRecommenderPersistsAndReportsBothScores(t *testing.T) {
+	withFakeCodexTestDir(t, `#!/bin/sh
+input=$(cat)
+handoff_path=$(printf '%s\n' "$input" | sed -n 's/.*\(\.cyclestone\/temp\/[^[:space:]]*handoff.yaml\).*/\1/p' | tail -n 1)
+if [ -z "$handoff_path" ]; then
+  echo "missing handoff path" >&2
+  exit 1
+fi
+mkdir -p "$(dirname "$handoff_path")"
+cat > "$handoff_path" <<'YAML'
+score: 3
+agent_instructions_update_score: 9
+verdict: needs-another-cycle
+reason: AGENTS.md should be reviewed separately from the cycle recommendation.
+next_cycle_focus:
+  - Verify score persistence.
+YAML
+echo '{"msg":"thread.started","thread_id":"thread-recommender-pipeline"}'
+`)
+
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "reports"), 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "temp"), 0755); err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	statePath := filepath.Join(".cyclestone", "state.json")
+	state := &config.State{
+		MilestoneStatuses:                     map[string]string{},
+		MilestoneCycles:                       map[string]int{},
+		MilestoneRecommendations:              map[string]int{},
+		MilestoneAgentInstructionUpdateScores: map[string]int{},
+		History: map[string][]config.MilestoneCycleLog{
+			"MS-PIPE": {{CycleNumber: 1, Branch: "develop", Status: "approved"}},
+		},
+	}
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-PIPE-cycle-001.yaml")
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to create report: %v", err)
+	}
+	defer reportFile.Close()
+
+	status, interrupted := runAgentPipeline(
+		context.Background(),
+		[]config.Agent{{
+			ID:             "recommender",
+			Name:           "Recommender",
+			PromptBody:     "Write recommender handoff to {{HANDOFF_YAML_PATH}}. {{HANDOFF_INSTRUCTION}}",
+			RunnerBinary:   "codex",
+			OutputContract: "recommender",
+		}},
+		config.Milestone{ID: "MS-PIPE", Goal: "persist recommender scores"},
+		RunOptions{StatePath: statePath},
+		state,
+		nil,
+		filepath.Join(".cyclestone", "reports"),
+		1,
+		"",
+		"",
+		config.Settings{},
+		reportFile,
+		filepath.Join(".cyclestone", "reports", "thread.json"),
+		new(string),
+	)
+	if interrupted {
+		t.Fatalf("expected pipeline to complete")
+	}
+	if status != "approved" {
+		t.Fatalf("expected approved status, got %q", status)
+	}
+	if got := state.GetMilestoneRecommendation("MS-PIPE"); got != 3 {
+		t.Fatalf("expected recommender score 3, got %d", got)
+	}
+	if got := state.GetMilestoneAgentInstructionsUpdateScore("MS-PIPE"); got != 9 {
+		t.Fatalf("expected AGENTS.md update score 9, got %d", got)
+	}
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "Recommendation score: 3") {
+		t.Fatalf("expected cycle recommendation score in report, got:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTS.md update recommendation score: 9") {
+		t.Fatalf("expected AGENTS.md update score in report, got:\n%s", text)
+	}
+}
+
 func TestCompactConversationHistoryBoundsOlderToolTurns(t *testing.T) {
 	history := []UnifiedMessage{{Role: "user", Content: "initial prompt"}}
 	for i := 0; i < 6; i++ {
@@ -1320,13 +1414,23 @@ func TestRecommenderContractRequiresVerdict(t *testing.T) {
 	}{
 		{
 			name:     "missing verdict",
-			body:     "```yaml\nscore: 1\nreason: complete\nnext_cycle_focus: []\n```",
+			body:     "```yaml\nscore: 1\nagent_instructions_update_score: 0\nreason: complete\nnext_cycle_focus: []\n```",
 			contains: "missing required field \"verdict\"",
 		},
 		{
 			name:     "wrong verdict type",
-			body:     "```yaml\nscore: 1\nverdict: true\nreason: complete\nnext_cycle_focus: []\n```",
+			body:     "```yaml\nscore: 1\nagent_instructions_update_score: 0\nverdict: true\nreason: complete\nnext_cycle_focus: []\n```",
 			contains: "field \"verdict\" must be a string",
+		},
+		{
+			name:     "missing AGENTS.md update score",
+			body:     "```yaml\nscore: 1\nverdict: approved\nreason: complete\nnext_cycle_focus: []\n```",
+			contains: "missing required field \"agent_instructions_update_score\"",
+		},
+		{
+			name:     "out of range AGENTS.md update score",
+			body:     "```yaml\nscore: 1\nagent_instructions_update_score: 11\nverdict: approved\nreason: complete\nnext_cycle_focus: []\n```",
+			contains: "field \"agent_instructions_update_score\" must be an integer from 0 to 10",
 		},
 	}
 	for _, tt := range tests {
@@ -1345,6 +1449,7 @@ func TestRecommenderContractRequiresVerdict(t *testing.T) {
 func TestRecommenderContractAcceptsYAMLIntegerScore(t *testing.T) {
 	body := strings.Join([]string{
 		"score: 1",
+		"agent_instructions_update_score: 4",
 		"verdict: approved",
 		"reason: complete",
 		"next_cycle_focus: []",
@@ -1359,7 +1464,7 @@ func TestRecommenderHandoffPersistsMissingVerdictValidationError(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "recommender.log")
 	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
-	body := "```yaml\nscore: 1\nreason: complete\nnext_cycle_focus: []\n```"
+	body := "```yaml\nscore: 1\nagent_instructions_update_score: 0\nreason: complete\nnext_cycle_focus: []\n```"
 	if err := os.WriteFile(logPath, []byte(body), 0644); err != nil {
 		t.Fatalf("failed to write log: %v", err)
 	}
@@ -1407,17 +1512,67 @@ func TestQAVerdictAndValidationStatusMapping(t *testing.T) {
 func TestRecommenderScoreUsesStructuredHandoffOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
-	if err := os.WriteFile(handoffPath, []byte("summary:\n  score: 2\noutput_contract: recommender\nvalidation_status: valid\n"), 0644); err != nil {
+	if err := os.WriteFile(handoffPath, []byte("summary:\n  score: 2\n  agent_instructions_update_score: 6\noutput_contract: recommender\nvalidation_status: valid\n"), 0644); err != nil {
 		t.Fatalf("failed to write handoff: %v", err)
 	}
 	if got := parseRecommendationScore(handoffPath); got != 2 {
 		t.Fatalf("expected structured score, got %d", got)
+	}
+	if got := parseAgentInstructionsUpdateRecommendationScore(handoffPath); got != 6 {
+		t.Fatalf("expected structured AGENTS.md update score, got %d", got)
 	}
 	if err := os.WriteFile(handoffPath, []byte("summary: {}\noutput_contract: recommender\nvalidation_status: invalid\n"), 0644); err != nil {
 		t.Fatalf("failed to write invalid handoff: %v", err)
 	}
 	if got := parseRecommendationScore(handoffPath); got != -1 {
 		t.Fatalf("expected invalid handoff score to be unavailable, got %d", got)
+	}
+	if got := parseAgentInstructionsUpdateRecommendationScore(handoffPath); got != -1 {
+		t.Fatalf("expected invalid handoff AGENTS.md update score to be unavailable, got %d", got)
+	}
+}
+
+func TestRecommenderReportScoreLinesShowBothScores(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "report.md")
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to create report: %v", err)
+	}
+	writeRecommenderScoreReportLines(reportFile, 2, 8)
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "Recommendation score: 2") {
+		t.Fatalf("expected existing recommendation score line, got:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTS.md update recommendation score: 8") {
+		t.Fatalf("expected AGENTS.md update score line, got:\n%s", text)
+	}
+
+	reportFile, err = os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to recreate report: %v", err)
+	}
+	writeRecommenderScoreReportLines(reportFile, -1, -1)
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+	data, err = os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+	text = string(data)
+	if !strings.Contains(text, "Recommendation score: N/A") {
+		t.Fatalf("expected unavailable recommendation score line, got:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTS.md update recommendation score: N/A") {
+		t.Fatalf("expected unavailable AGENTS.md update score line, got:\n%s", text)
 	}
 }
 
@@ -1529,9 +1684,6 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if err := os.WriteFile("AGENTS.md", []byte("AGENTS-SHOULD-BE-LOADED\n"), 0644); err != nil {
 		t.Fatalf("failed to write AGENTS.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("AI-CONTEXT-SHOULD-BE-IGNORED\n"), 0644); err != nil {
-		t.Fatalf("failed to write AI context: %v", err)
-	}
 	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
 		t.Fatalf("failed to write prior report: %v", err)
 	}
@@ -1568,9 +1720,6 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if !strings.Contains(devInput, "AGENTS-SHOULD-BE-LOADED") {
 		t.Fatalf("expected developer input to include AGENTS.md, got:\n%s", devInput)
 	}
-	if strings.Contains(devInput, "AI-CONTEXT-SHOULD-BE-IGNORED") {
-		t.Fatalf("expected developer input to ignore AI_CONTEXT.md, got:\n%s", devInput)
-	}
 
 	qaInput := assemblePhaseInput(
 		config.Milestone{ID: "MS-P", Goal: "compact"},
@@ -1590,9 +1739,6 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	}
 	if !strings.Contains(qaInput, "AGENTS-SHOULD-BE-LOADED") {
 		t.Fatalf("expected QA input to include AGENTS.md, got:\n%s", qaInput)
-	}
-	if strings.Contains(qaInput, "AI-CONTEXT-SHOULD-BE-IGNORED") {
-		t.Fatalf("expected QA input to ignore AI_CONTEXT.md, got:\n%s", qaInput)
 	}
 }
 
@@ -2313,12 +2459,6 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if err := os.WriteFile("AGENTS.md", []byte(agentsContent), 0644); err != nil {
 		t.Fatalf("failed to write AGENTS.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("SHOULD-NOT-LOAD"), 0644); err != nil {
-		t.Fatalf("failed to write ignored AI context: %v", err)
-	}
-	if err := os.WriteFile("AI_CONTEXT.md", []byte("ROOT-SHOULD-NOT-LOAD"), 0644); err != nil {
-		t.Fatalf("failed to write ignored root AI context: %v", err)
-	}
 	decisionsContent := "Decisions log at {{WORKSPACE_ROOT}}/decisions."
 	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte(decisionsContent), 0644); err != nil {
 		t.Fatalf("failed to write decisions log: %v", err)
@@ -2349,9 +2489,6 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputNonCompact, expectedAI) {
 		t.Errorf("Non-compact: expected input to contain %q, but got:\n%s", expectedAI, inputNonCompact)
 	}
-	if strings.Contains(inputNonCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputNonCompact, "ROOT-SHOULD-NOT-LOAD") {
-		t.Errorf("Non-compact: expected AI_CONTEXT.md files to be ignored, got:\n%s", inputNonCompact)
-	}
 	if !strings.Contains(inputNonCompact, expectedDecisions) {
 		t.Errorf("Non-compact: expected input to contain %q, but got:\n%s", expectedDecisions, inputNonCompact)
 	}
@@ -2378,9 +2515,6 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputCompact, expectedDecisions) {
 		t.Errorf("Compact: expected input to contain %q, but got:\n%s", expectedDecisions, inputCompact)
 	}
-	if strings.Contains(inputCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputCompact, "ROOT-SHOULD-NOT-LOAD") {
-		t.Errorf("Compact: expected AI_CONTEXT.md files to be ignored, got:\n%s", inputCompact)
-	}
 
 	// Test 3: Recommender agent (non-compact)
 	inputRecommender := assembleInputWithSettings(
@@ -2399,9 +2533,6 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	}
 	if !strings.Contains(inputRecommender, expectedDecisions) {
 		t.Errorf("Recommender (non-compact): expected input to contain %q, but got:\n%s", expectedDecisions, inputRecommender)
-	}
-	if strings.Contains(inputRecommender, "SHOULD-NOT-LOAD") || strings.Contains(inputRecommender, "ROOT-SHOULD-NOT-LOAD") {
-		t.Errorf("Recommender (non-compact): expected AI_CONTEXT.md files to be ignored, got:\n%s", inputRecommender)
 	}
 
 	// Test 4: Recommender agent (compact)
@@ -2422,22 +2553,13 @@ func TestAssembleInputWorkspaceRootReplacement(t *testing.T) {
 	if !strings.Contains(inputRecommenderCompact, expectedDecisions) {
 		t.Errorf("Recommender (compact): expected input to contain %q, but got:\n%s", expectedDecisions, inputRecommenderCompact)
 	}
-	if strings.Contains(inputRecommenderCompact, "SHOULD-NOT-LOAD") || strings.Contains(inputRecommenderCompact, "ROOT-SHOULD-NOT-LOAD") {
-		t.Errorf("Recommender (compact): expected AI_CONTEXT.md files to be ignored, got:\n%s", inputRecommenderCompact)
-	}
 }
 
-func TestAssembleInputWithoutAgentsIgnoresAIContext(t *testing.T) {
+func TestAssembleInputWithoutAgentsStillBuildsPrompt(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 	if err := os.MkdirAll(filepath.Join(".cyclestone", "milestones"), 0755); err != nil {
 		t.Fatalf("failed to create milestone dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "AI_CONTEXT.md"), []byte("SHOULD-NOT-LOAD-CYCLESTONE"), 0644); err != nil {
-		t.Fatalf("failed to write ignored AI context: %v", err)
-	}
-	if err := os.WriteFile("AI_CONTEXT.md", []byte("SHOULD-NOT-LOAD-ROOT"), 0644); err != nil {
-		t.Fatalf("failed to write ignored root AI context: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte("DECISION-CONTENT"), 0644); err != nil {
 		t.Fatalf("failed to write decisions log: %v", err)
@@ -2460,9 +2582,6 @@ func TestAssembleInputWithoutAgentsIgnoresAIContext(t *testing.T) {
 				nil,
 			)
 
-			if strings.Contains(input, "SHOULD-NOT-LOAD-CYCLESTONE") || strings.Contains(input, "SHOULD-NOT-LOAD-ROOT") {
-				t.Fatalf("expected AI_CONTEXT.md files to be ignored when AGENTS.md is absent, got:\n%s", input)
-			}
 			if !strings.Contains(input, "MS-NO-AGENTS") || !strings.Contains(input, "role prompt") {
 				t.Fatalf("expected role and milestone content without AGENTS.md, got:\n%s", input)
 			}
@@ -3234,12 +3353,18 @@ func TestRecommenderFallbackOmitsScore(t *testing.T) {
 	if got := parseRecommendationScore(handoffPath); got != -1 {
 		t.Fatalf("expected -1 (no recommendation) for recommender fallback, got %d", got)
 	}
+	if got := parseAgentInstructionsUpdateRecommendationScore(handoffPath); got != -1 {
+		t.Fatalf("expected -1 (no AGENTS.md update recommendation) for recommender fallback, got %d", got)
+	}
 	handoff, err := loadPhaseHandoff(handoffPath)
 	if err != nil {
 		t.Fatalf("failed to load handoff: %v", err)
 	}
 	if _, hasScore := handoff.Summary["score"]; hasScore {
 		t.Fatalf("expected score to be absent from recommender fallback, got %#v", handoff.Summary["score"])
+	}
+	if _, hasScore := handoff.Summary["agent_instructions_update_score"]; hasScore {
+		t.Fatalf("expected AGENTS.md update score to be absent from recommender fallback, got %#v", handoff.Summary["agent_instructions_update_score"])
 	}
 }
 

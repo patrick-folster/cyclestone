@@ -1090,6 +1090,7 @@ func (m *RootModel) refreshUI(milestoneID string) {
 		}
 		m.Details.History = m.getHistoryForMilestone(milestoneID)
 		m.Details.RecommendationScore = m.State.GetMilestoneRecommendation(milestoneID)
+		m.Details.AgentInstructionsUpdateScore = m.State.GetMilestoneAgentInstructionsUpdateScore(milestoneID)
 		m.Details.clampHistorySelection()
 	}
 }
@@ -1108,6 +1109,7 @@ func (m *RootModel) initDetailsScreen(ms config.Milestone) {
 	m.Details.Milestone = ms
 	m.Details.History = m.getHistoryForMilestone(ms.ID)
 	m.Details.RecommendationScore = m.State.GetMilestoneRecommendation(ms.ID)
+	m.Details.AgentInstructionsUpdateScore = m.State.GetMilestoneAgentInstructionsUpdateScore(ms.ID)
 	settings := config.LoadMergedSettings()
 	m.Details.LLM = normalizeMilestoneRunner(settings.DefaultLLM)
 	if m.Unrestricted {

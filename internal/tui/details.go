@@ -14,29 +14,30 @@ import (
 
 // DetailsModel handles rendering the detail specs and historical log timeline for a milestone.
 type DetailsModel struct {
-	Milestone               config.Milestone
-	History                 []config.MilestoneCycleLog
-	Width                   int
-	Height                  int
-	Styles                  Styles
-	ShowAgentSelector       bool
-	SelectedAgentIdx        int
-	Agents                  []config.Agent
-	ShowHistoryTab          bool
-	LLM                     string
-	Mode                    string
-	BranchChange            bool
-	Groups                  []config.AgentGroup
-	SelectedGroupIdx        int
-	ScrollOffset            int // Details scroll offset
-	HistoryScrollOffset     int // History scroll offset
-	AgentScrollOffset       int // Agent Selector scroll offset
-	RecommendationScore     int
-	HistorySelectedIdx      int
-	ConfirmDeleteMilestone  bool
-	ConfirmDeleteCycle      bool
-	ShowInstructionDiff     bool
-	InstructionReviewStatus map[int]string
+	Milestone                    config.Milestone
+	History                      []config.MilestoneCycleLog
+	Width                        int
+	Height                       int
+	Styles                       Styles
+	ShowAgentSelector            bool
+	SelectedAgentIdx             int
+	Agents                       []config.Agent
+	ShowHistoryTab               bool
+	LLM                          string
+	Mode                         string
+	BranchChange                 bool
+	Groups                       []config.AgentGroup
+	SelectedGroupIdx             int
+	ScrollOffset                 int // Details scroll offset
+	HistoryScrollOffset          int // History scroll offset
+	AgentScrollOffset            int // Agent Selector scroll offset
+	RecommendationScore          int
+	AgentInstructionsUpdateScore int
+	HistorySelectedIdx           int
+	ConfirmDeleteMilestone       bool
+	ConfirmDeleteCycle           bool
+	ShowInstructionDiff          bool
+	InstructionReviewStatus      map[int]string
 }
 
 type detailsPhaseHandoff struct {
@@ -571,19 +572,8 @@ func (m DetailsModel) getDetailsTextForHeight(leftHeight int, leftWidth int) str
 	if m.SelectedGroupIdx >= 0 && m.SelectedGroupIdx < len(m.Groups) {
 		groupName = m.Groups[m.SelectedGroupIdx].Name
 	}
-	var recScoreStr string
-	if m.RecommendationScore < 0 || m.RecommendationScore > 10 {
-		recScoreStr = m.Styles.SubtleText.Render("N/A")
-	} else {
-		scoreStr := fmt.Sprintf("%d/10", m.RecommendationScore)
-		if m.RecommendationScore <= 3 {
-			recScoreStr = m.Styles.SuccessText.Render(scoreStr)
-		} else if m.RecommendationScore <= 7 {
-			recScoreStr = m.Styles.WarningText.Render(scoreStr)
-		} else {
-			recScoreStr = m.Styles.ErrorText.Render(scoreStr)
-		}
-	}
+	recScoreStr := m.renderScoreValue(m.RecommendationScore)
+	agentInstructionsScoreStr := m.renderScoreValue(m.AgentInstructionsUpdateScore)
 
 	// Redesign metadata/status lines to wrap and format dynamically across multiple columns/rows if narrow
 	type metaItem struct {
@@ -598,6 +588,7 @@ func (m DetailsModel) getDetailsTextForHeight(leftHeight int, leftWidth int) str
 		{m.Styles.DetailLabel.Render("Git:"), m.Styles.SuccessText.Render(gitText)},
 		{m.Styles.DetailLabel.Render("Group:"), m.Styles.AccentText.Render(groupName)},
 		{m.Styles.DetailLabel.Render("Rec Score:"), recScoreStr},
+		{m.Styles.DetailLabel.Render("AGENTS.md Score:"), agentInstructionsScoreStr},
 	}
 
 	var currentLine []string
@@ -989,11 +980,28 @@ func (m DetailsModel) renderActionContractMetadata(action config.AgentActionLog,
 		if score, ok := numericDetailsScore(handoff.Summary["score"]); ok {
 			sb.WriteString(fmt.Sprintf("        %s %d/10\n", m.Styles.HelpStyle.Render("Score:"), score))
 		}
+		if score, ok := numericDetailsScore(handoff.Summary["agent_instructions_update_score"]); ok {
+			sb.WriteString(fmt.Sprintf("        %s %d/10\n", m.Styles.HelpStyle.Render("AGENTS.md score:"), score))
+		}
 		if verdict, ok := handoff.Summary["verdict"].(string); ok && verdict != "" {
 			sb.WriteString(fmt.Sprintf("        %s %s\n", m.Styles.HelpStyle.Render("Verdict:"), m.Styles.DetailValue.Render(verdict)))
 		}
 	}
 	return sb.String()
+}
+
+func (m DetailsModel) renderScoreValue(score int) string {
+	if score < 0 || score > 10 {
+		return m.Styles.SubtleText.Render("N/A")
+	}
+	scoreStr := fmt.Sprintf("%d/10", score)
+	if score <= 3 {
+		return m.Styles.SuccessText.Render(scoreStr)
+	}
+	if score <= 7 {
+		return m.Styles.WarningText.Render(scoreStr)
+	}
+	return m.Styles.ErrorText.Render(scoreStr)
 }
 
 func loadDetailsPhaseHandoff(outputPath string) (detailsPhaseHandoff, bool) {

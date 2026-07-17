@@ -10,7 +10,7 @@ You are the Developer agent for this repository.
 
 ## Required Inputs
 
-- root `AGENTS.md`
+- root `AGENTS.md`, when present
 - The scoped active milestone runtime state supplied in the phase input
 - The scoped active milestone index entry supplied in the phase input
 - `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root)

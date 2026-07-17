@@ -56,10 +56,11 @@ type QAOutputContract struct {
 }
 
 type RecommenderOutputContract struct {
-	Score          int      `yaml:"score"`
-	Verdict        string   `yaml:"verdict"`
-	Reason         string   `yaml:"reason"`
-	NextCycleFocus []string `yaml:"next_cycle_focus"`
+	Score                        int      `yaml:"score"`
+	AgentInstructionsUpdateScore int      `yaml:"agent_instructions_update_score"`
+	Verdict                      string   `yaml:"verdict"`
+	Reason                       string   `yaml:"reason"`
+	NextCycleFocus               []string `yaml:"next_cycle_focus"`
 }
 
 type contractValidationResult struct {
@@ -555,6 +556,7 @@ func validateContractSummary(summary map[string]interface{}, contract string) []
 	case "recommender":
 		var errs []string
 		errs = append(errs, requireNumberField(summary, contract, "score")...)
+		errs = append(errs, requireNumberField(summary, contract, "agent_instructions_update_score")...)
 		errs = append(errs, requireStringField(summary, contract, "verdict")...)
 		errs = append(errs, requireStringField(summary, contract, "reason")...)
 		errs = append(errs, validateRequiredStringArrays(summary, contract, []string{"next_cycle_focus"})...)
@@ -739,6 +741,15 @@ func applyQAVerdictToCycleStatus(verdict, current string) string {
 func parseRecommendationScore(handoffPath string) int {
 	if handoff, err := loadPhaseHandoff(handoffPath); err == nil && handoff.Summary != nil && handoff.ValidationStatus != "invalid" {
 		if score, ok := numericValueAsIntInRange(handoff.Summary["score"], 0, 10); ok {
+			return score
+		}
+	}
+	return -1
+}
+
+func parseAgentInstructionsUpdateRecommendationScore(handoffPath string) int {
+	if handoff, err := loadPhaseHandoff(handoffPath); err == nil && handoff.Summary != nil && handoff.ValidationStatus != "invalid" {
+		if score, ok := numericValueAsIntInRange(handoff.Summary["agent_instructions_update_score"], 0, 10); ok {
 			return score
 		}
 	}
@@ -1461,7 +1472,7 @@ var handoffKeyPrefixes = []string{
 	"scope", "non_goals", "target_paths", "acceptance_map",
 	"changed_files", "implemented_behavior", "checks_run", "decisions", "risks",
 	"verdict", "criteria_results", "reviewed_files", "failing_checks", "required_fixes",
-	"score", "reason", "next_cycle_focus",
+	"score", "agent_instructions_update_score", "reason", "next_cycle_focus",
 }
 
 // isHandoffKeyLine reports whether a line begins with a known handoff key

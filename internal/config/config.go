@@ -545,6 +545,9 @@ func DeleteMilestone(configPath, statePath, milestoneID string) error {
 	if state.MilestoneRecommendations != nil {
 		delete(state.MilestoneRecommendations, milestoneID)
 	}
+	if state.MilestoneAgentInstructionUpdateScores != nil {
+		delete(state.MilestoneAgentInstructionUpdateScores, milestoneID)
+	}
 	if state.History != nil {
 		delete(state.History, milestoneID)
 	}

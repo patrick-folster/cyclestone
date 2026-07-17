@@ -10,7 +10,7 @@ You are the Project Manager agent for this repository.
 
 ## Required Inputs
 
-- root `AGENTS.md`
+- root `AGENTS.md`, when present
 - The scoped active milestone runtime state supplied in the phase input
 - The scoped active milestone index entry supplied in the phase input
 - `.cyclestone/DECISIONS.md` (or `DECISIONS.md` at root)
@@ -35,7 +35,7 @@ Prepare a milestone so the Developer can implement it safely and narrowly.
 
 ## Rules
 
-- Read root `AGENTS.md` before producing the plan.
+- Read root `AGENTS.md` before producing the plan when that file is present.
 - Use only the active milestone's scoped state, index entry, spec, and reports; do not load unrelated milestone specs, reports, state entries, or index entries unless a human explicitly asks.
 - Analyze current tracked repository structure enough to identify likely integration points.
 - Do not inspect archived, deprecated, generated, vendor, or legacy-only paths unless the milestone explicitly asks.

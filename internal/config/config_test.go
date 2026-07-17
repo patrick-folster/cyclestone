@@ -480,11 +480,18 @@ func TestMilestoneRecommendations(t *testing.T) {
 	if score := state.GetMilestoneRecommendation("MS-1"); score != -1 {
 		t.Errorf("expected default recommendation score to be -1, got %d", score)
 	}
+	if score := state.GetMilestoneAgentInstructionsUpdateScore("MS-1"); score != -1 {
+		t.Errorf("expected default AGENTS.md update recommendation score to be -1, got %d", score)
+	}
 
 	// Set recommendation score
 	state.SetMilestoneRecommendation("MS-1", 5)
+	state.SetMilestoneAgentInstructionsUpdateScore("MS-1", 7)
 	if score := state.GetMilestoneRecommendation("MS-1"); score != 5 {
 		t.Errorf("expected recommendation score to be 5, got %d", score)
+	}
+	if score := state.GetMilestoneAgentInstructionsUpdateScore("MS-1"); score != 7 {
+		t.Errorf("expected AGENTS.md update recommendation score to be 7, got %d", score)
 	}
 
 	// Save state
@@ -502,10 +509,16 @@ func TestMilestoneRecommendations(t *testing.T) {
 	if score := stateReloaded.GetMilestoneRecommendation("MS-1"); score != 5 {
 		t.Errorf("expected reloaded recommendation score to be 5, got %d", score)
 	}
+	if score := stateReloaded.GetMilestoneAgentInstructionsUpdateScore("MS-1"); score != 7 {
+		t.Errorf("expected reloaded AGENTS.md update recommendation score to be 7, got %d", score)
+	}
 
 	// Verify loaded non-existent recommendation score is -1
 	if score := stateReloaded.GetMilestoneRecommendation("MS-2"); score != -1 {
 		t.Errorf("expected non-existent reloaded recommendation score to be -1, got %d", score)
+	}
+	if score := stateReloaded.GetMilestoneAgentInstructionsUpdateScore("MS-2"); score != -1 {
+		t.Errorf("expected non-existent reloaded AGENTS.md update recommendation score to be -1, got %d", score)
 	}
 }
 
@@ -585,9 +598,11 @@ func TestDeleteMilestone(t *testing.T) {
 	_ = os.WriteFile(configPath, cfgData, 0644)
 
 	state := &State{
-		ActiveMilestoneID: "MS-1",
-		MilestoneStatuses: map[string]string{"MS-1": "Done", "MS-2": "Todo"},
-		MilestoneCycles:   map[string]int{"MS-1": 1, "MS-2": 0},
+		ActiveMilestoneID:                     "MS-1",
+		MilestoneStatuses:                     map[string]string{"MS-1": "Done", "MS-2": "Todo"},
+		MilestoneCycles:                       map[string]int{"MS-1": 1, "MS-2": 0},
+		MilestoneRecommendations:              map[string]int{"MS-1": 2, "MS-2": 5},
+		MilestoneAgentInstructionUpdateScores: map[string]int{"MS-1": 7, "MS-2": 1},
 		History: map[string][]MilestoneCycleLog{
 			"MS-1": {{CycleNumber: 1}},
 		},
@@ -627,6 +642,15 @@ func TestDeleteMilestone(t *testing.T) {
 	}
 	if _, exists := newState.History["MS-1"]; exists {
 		t.Error("expected MS-1 history to be deleted")
+	}
+	if _, exists := newState.MilestoneRecommendations["MS-1"]; exists {
+		t.Error("expected MS-1 recommendation score to be deleted")
+	}
+	if _, exists := newState.MilestoneAgentInstructionUpdateScores["MS-1"]; exists {
+		t.Error("expected MS-1 AGENTS.md update score to be deleted")
+	}
+	if got := newState.GetMilestoneAgentInstructionsUpdateScore("MS-2"); got != 1 {
+		t.Errorf("expected MS-2 AGENTS.md update score to be preserved, got %d", got)
 	}
 
 	if _, err := os.Stat(spec1); !os.IsNotExist(err) {

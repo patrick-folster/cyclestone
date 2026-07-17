@@ -467,10 +467,11 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 
 	milestoneID := ""
 	state := &config.State{
-		MilestoneStatuses:        map[string]string{},
-		MilestoneCycles:          map[string]int{},
-		MilestoneRecommendations: map[string]int{},
-		History:                  map[string][]config.MilestoneCycleLog{},
+		MilestoneStatuses:                     map[string]string{},
+		MilestoneCycles:                       map[string]int{},
+		MilestoneRecommendations:              map[string]int{},
+		MilestoneAgentInstructionUpdateScores: map[string]int{},
+		History:                               map[string][]config.MilestoneCycleLog{},
 	}
 	if m.CreateFirst {
 		if err := config.AddMilestone(configPath, first); err != nil {

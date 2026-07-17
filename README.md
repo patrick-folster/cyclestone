@@ -160,7 +160,7 @@ repositories:
   - "packages/api" # optional; git submodules and in-root worktrees are discovered automatically
 ```
 
-Long-form goals and acceptance criteria live in the referenced markdown spec. Status, cycle counts, recommendations, and execution history live in `.cyclestone/state.json`.
+Long-form goals and acceptance criteria live in the referenced markdown spec. Status, cycle counts, cycle-continuation recommendations, `AGENTS.md` update recommendation scores, and execution history live in `.cyclestone/state.json`.
 
 ### Runtime Settings (`settings.yml`)
 
@@ -177,7 +177,7 @@ agent_instructions:
   auto_apply_updates: false
 ```
 
-`AGENTS.md` is the concise current operating instruction file loaded into agent prompts when present. `.cyclestone/DECISIONS.md` remains the chronological decision log. Cycles may propose `AGENTS.md` updates in handoffs and reports, but applying those changes requires an explicit human review action; `auto_apply_updates` defaults to `false`.
+`AGENTS.md` is an optional concise current operating instruction file loaded into agent prompts when present. `.cyclestone/DECISIONS.md` remains the chronological decision log. Cycles may propose `AGENTS.md` updates in handoffs and reports, and the recommender records a separate `agent_instructions_update_score` for whether a human should review durable instruction changes. Applying those changes still requires an explicit human review action; `auto_apply_updates` defaults to `false`.
 
 ### Sandbox and Consent
 

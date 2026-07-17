@@ -4,7 +4,7 @@
 
 - Active milestone spec and scoped runtime state are available.
 - Current changed-file list is available.
-- Required process context is available from `.cyclestone/AI_CONTEXT.md` or `AI_CONTEXT.md`.
+- Optional process context is available from `./AGENTS.md` when present.
 
 ## Review Checks
 

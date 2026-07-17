@@ -37,12 +37,13 @@ type MilestoneCycleLog struct {
 
 // State tracks the runtime / progress state of the milestones.
 type State struct {
-	mu                       sync.RWMutex                   `json:"-"`
-	ActiveMilestoneID        string                         `json:"active_milestone_id"`
-	MilestoneStatuses        map[string]string              `json:"milestone_statuses"` // milestone ID -> status
-	MilestoneCycles          map[string]int                 `json:"milestone_cycles"`   // milestone ID -> cycle count
-	MilestoneRecommendations map[string]int                 `json:"milestone_recommendations"`
-	History                  map[string][]MilestoneCycleLog `json:"history"` // milestone ID -> list of cycles
+	mu                                    sync.RWMutex                   `json:"-"`
+	ActiveMilestoneID                     string                         `json:"active_milestone_id"`
+	MilestoneStatuses                     map[string]string              `json:"milestone_statuses"` // milestone ID -> status
+	MilestoneCycles                       map[string]int                 `json:"milestone_cycles"`   // milestone ID -> cycle count
+	MilestoneRecommendations              map[string]int                 `json:"milestone_recommendations"`
+	MilestoneAgentInstructionUpdateScores map[string]int                 `json:"milestone_agent_instruction_update_scores"`
+	History                               map[string][]MilestoneCycleLog `json:"history"` // milestone ID -> list of cycles
 }
 
 // LoadState reads the state.json tracking file and migrates legacy formats if necessary.
@@ -52,10 +53,11 @@ func LoadState(path string) (*State, error) {
 		if os.IsNotExist(err) {
 			// Return a clean default state
 			return &State{
-				MilestoneStatuses:        make(map[string]string),
-				MilestoneCycles:          make(map[string]int),
-				MilestoneRecommendations: make(map[string]int),
-				History:                  make(map[string][]MilestoneCycleLog),
+				MilestoneStatuses:                     make(map[string]string),
+				MilestoneCycles:                       make(map[string]int),
+				MilestoneRecommendations:              make(map[string]int),
+				MilestoneAgentInstructionUpdateScores: make(map[string]int),
+				History:                               make(map[string][]MilestoneCycleLog),
 			}, nil
 		}
 		return nil, fmt.Errorf("failed to read state file: %w", err)
@@ -88,6 +90,9 @@ func LoadState(path string) (*State, error) {
 	if st.MilestoneRecommendations == nil {
 		st.MilestoneRecommendations = make(map[string]int)
 	}
+	if st.MilestoneAgentInstructionUpdateScores == nil {
+		st.MilestoneAgentInstructionUpdateScores = make(map[string]int)
+	}
 	if st.History == nil {
 		st.History = make(map[string][]MilestoneCycleLog)
 	}
@@ -116,11 +121,12 @@ func migrateLegacyState(data []byte, path string) (*State, error) {
 	}
 
 	st := &State{
-		ActiveMilestoneID:        legacy.ActiveMilestoneID,
-		MilestoneStatuses:        legacy.MilestoneStatuses,
-		MilestoneCycles:          legacy.MilestoneCycles,
-		MilestoneRecommendations: make(map[string]int),
-		History:                  make(map[string][]MilestoneCycleLog),
+		ActiveMilestoneID:                     legacy.ActiveMilestoneID,
+		MilestoneStatuses:                     legacy.MilestoneStatuses,
+		MilestoneCycles:                       legacy.MilestoneCycles,
+		MilestoneRecommendations:              make(map[string]int),
+		MilestoneAgentInstructionUpdateScores: make(map[string]int),
+		History:                               make(map[string][]MilestoneCycleLog),
 	}
 	if st.MilestoneStatuses == nil {
 		st.MilestoneStatuses = make(map[string]string)
@@ -130,6 +136,9 @@ func migrateLegacyState(data []byte, path string) (*State, error) {
 	}
 	if st.MilestoneRecommendations == nil {
 		st.MilestoneRecommendations = make(map[string]int)
+	}
+	if st.MilestoneAgentInstructionUpdateScores == nil {
+		st.MilestoneAgentInstructionUpdateScores = make(map[string]int)
 	}
 
 	// Map old cycles to new milestone cycle logs
@@ -300,6 +309,27 @@ func (s *State) SetMilestoneRecommendation(id string, score int) {
 		s.MilestoneRecommendations = make(map[string]int)
 	}
 	s.MilestoneRecommendations[id] = score
+}
+
+func (s *State) GetMilestoneAgentInstructionsUpdateScore(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.MilestoneAgentInstructionUpdateScores == nil {
+		return -1
+	}
+	if score, ok := s.MilestoneAgentInstructionUpdateScores[id]; ok {
+		return score
+	}
+	return -1
+}
+
+func (s *State) SetMilestoneAgentInstructionsUpdateScore(id string, score int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.MilestoneAgentInstructionUpdateScores == nil {
+		s.MilestoneAgentInstructionUpdateScores = make(map[string]int)
+	}
+	s.MilestoneAgentInstructionUpdateScores[id] = score
 }
 
 // DeleteMilestoneCycle removes a specific cycle, renumbers the remaining cycles sequentially, and renames report files to prevent collisions.
