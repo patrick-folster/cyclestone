@@ -548,3 +548,30 @@ func TestDetailsRunRoutesToCycleNoteBeforePreflight(t *testing.T) {
 		t.Fatalf("unexpected start payload: %#v", start)
 	}
 }
+
+func TestDetailsUpdateAgentsRoutesToMilestoneScopedWorkflow(t *testing.T) {
+	styles := DefaultStyles(true, true)
+	m := NewDetailsModel(styles)
+	m.Width = 80
+	m.Height = 24
+	m.Milestone = config.Milestone{ID: "MS-AGENTS", Title: "Instructions"}
+	m.LLM = "codex"
+	m.Mode = "sandbox"
+	m.BranchChange = false
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	if cmd == nil {
+		t.Fatal("expected change screen command")
+	}
+	change, ok := cmd().(ChangeScreenMsg)
+	if !ok || change.Screen != ScreenCreateMilestone {
+		t.Fatalf("expected note screen, got %#v", change)
+	}
+	req, ok := change.Data.(StartCycleMsg)
+	if !ok {
+		t.Fatalf("expected StartCycleMsg payload, got %#v", change.Data)
+	}
+	if req.Workflow != WorkflowAgentInstructionsMilestone || req.Milestone.ID != "MS-AGENTS" || !req.NoBranchChange {
+		t.Fatalf("unexpected scoped update request: %#v", req)
+	}
+}

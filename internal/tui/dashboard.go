@@ -115,6 +115,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			"Enter Details",
 			"c Create",
 			"n Log Cycle",
+			"u Update AGENTS",
 			"s Status",
 			"d Delete",
 			"o Options",
@@ -248,6 +249,24 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 					}
 				}
 			}
+		case "u":
+			settings := config.LoadMergedSettings()
+			return m, func() tea.Msg {
+				return ChangeScreenMsg{
+					Screen: ScreenCreateMilestone,
+					Data: StartCycleMsg{
+						Milestone: config.Milestone{
+							ID:    "AGENTS.md",
+							Title: "Repository AGENTS.md update",
+							Goal:  "Generate a reviewable repository-wide root AGENTS.md proposal.",
+						},
+						RunnerLLM:      normalizeMilestoneRunner(settings.DefaultLLM),
+						RunnerMode:     settings.DefaultMode,
+						NoBranchChange: true,
+						Workflow:       WorkflowAgentInstructionsRepository,
+					},
+				}
+			}
 
 		case "s":
 			// Cycle milestone status: Todo -> In Progress -> Done
@@ -346,6 +365,7 @@ func (m DashboardModel) View() string {
 		"Enter Details",
 		"c Create",
 		"n Log Cycle",
+		"u Update AGENTS",
 		"s Status",
 		"d Delete",
 		"o Options",

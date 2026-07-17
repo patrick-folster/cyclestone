@@ -44,6 +44,8 @@ func isSetupRunnerSelectable(runners []runnerAvailability, id string) bool {
 	return false
 }
 
+var checkRunnerAvailable = isRunnerAvailable
+
 func isRunnerAvailable(runner string) (bool, string) {
 	switch runner {
 	case "codex", "agy":

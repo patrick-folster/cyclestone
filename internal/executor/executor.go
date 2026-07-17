@@ -121,6 +121,7 @@ const maxFallbackHandoffChars = 5000
 const maxFallbackHandoffFieldChars = 900
 const maxRetainedConversationMessages = 8
 const charsPerEstimatedToken = 4
+const maxAgentInstructionsContextChars = 120000
 
 type codexThreadMetadata struct {
 	ThreadID string `json:"thread_id"`
@@ -179,6 +180,108 @@ type CycleFinishedMsg struct {
 	Status      string // "approved", "blocked", "failed"
 	ReportFile  string
 	Error       error
+}
+
+// ExecuteAgentInstructionsUpdate runs a single selected runner to produce a
+// human-reviewable root AGENTS.md replacement proposal. Any direct mutation of
+// root AGENTS.md is intercepted and restored before completion.
+func ExecuteAgentInstructionsUpdate(ctx context.Context, milestone config.Milestone, milestoneScoped bool, runner string, opts RunOptions, ch chan tea.Msg) {
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	tempDir := filepath.Join(".cyclestone", "temp")
+	_ = os.MkdirAll(reportsDir, 0755)
+	_ = os.MkdirAll(tempDir, 0755)
+	if runner == "" {
+		runner = config.LoadMergedSettings().DefaultLLM
+	}
+	if runner == "" {
+		runner = "codex"
+	}
+
+	scopeID := "repository"
+	if milestoneScoped && milestone.ID != "" {
+		scopeID = milestone.ID
+	}
+	stamp := time.Now().Format("20060102-150405")
+	baseID := fmt.Sprintf("agents-update-%s-%s", sanitizeReportID(scopeID), stamp)
+	inputPath := filepath.Join(reportsDir, baseID+"-input.md")
+	outputPath := filepath.Join(reportsDir, baseID+"-output.log")
+	handoffPath := filepath.Join(reportsDir, baseID+"-handoff.yaml")
+	reportPath := filepath.Join(reportsDir, baseID+".yaml")
+	draftPath := filepath.Join(tempDir, "AGENTS.md.proposed")
+
+	settings := config.LoadMergedSettings()
+	prompt := assembleAgentInstructionsUpdateInput(milestone, milestoneScoped, opts)
+	if runner == "ollama" {
+		prompt = appendOllamaPromptFooter(prompt)
+	}
+	_ = os.WriteFile(inputPath, []byte(prompt), 0644)
+	_ = os.WriteFile(draftPath, []byte{}, 0644)
+
+	sendExecutorMsg(ctx, ch, RunnerStatusMsg{
+		MilestoneID:         milestone.ID,
+		CycleStatus:         "running",
+		Phase:               "agent-instructions-updater",
+		AgentID:             "agent-instructions-updater",
+		Runner:              runner,
+		Model:               configuredModelForRunner(runner, settings),
+		Mode:                runnerModeLabel(opts),
+		ReportFile:          reportPath,
+		OutputFile:          outputPath,
+		LatestCommand:       describeRunnerCommand(runner, opts),
+		MaxModelCalls:       normalizedMaxModelCalls(settings),
+		MaxTokenBudget:      normalizedMaxTokenBudget(settings),
+		EstimatedTokens:     estimateTextTokens(prompt),
+		NextSuggestedAction: "Review the generated AGENTS.md proposal before applying it.",
+	})
+	sendExecutorMsg(ctx, ch, AgentStartedMsg{AgentID: "agent-instructions-updater"})
+
+	start := time.Now()
+	snapshot, snapshotErr := snapshotAgentInstructions(settings)
+	exitCode, runErr := runRunner(ctx, runner, "agent-instructions-updater", "Agent Instructions Updater", prompt, outputPath, opts, ch)
+	interception, interceptionErr := interceptAgentInstructionsMutation(snapshot)
+	proposal := strings.TrimSpace(interception.ProposedContent)
+	if proposal != "" {
+		_ = os.WriteFile(draftPath, []byte(proposal), 0644)
+	}
+
+	summary := map[string]interface{}{
+		"scope":                                "repository",
+		"proposal_draft":                       draftPath,
+		"proposed_agent_instructions_update":   proposal,
+		"proposed_agent_instructions_path":     "AGENTS.md",
+		"proposed_agent_instructions_change":   interception.Change,
+		"agent_instructions_update_input_file": inputPath,
+	}
+	if milestoneScoped {
+		summary["scope"] = "milestone"
+		summary["milestone_id"] = milestone.ID
+	}
+	validation := contractValidationResult{Summary: summary, Contract: "agent_instructions_update", Status: "valid"}
+	if proposal == "" {
+		validation.Status = "invalid"
+		validation.Errors = []string{"runner did not produce a root AGENTS.md replacement proposal"}
+	}
+	_ = writeContractPhaseHandoff(handoffPath, milestone.ID, 0, "agent-instructions-updater", outputPath, opts.CycleNote, validation)
+	_ = writeAgentInstructionsUpdateReport(reportPath, milestone, milestoneScoped, runner, inputPath, outputPath, handoffPath, draftPath, proposal, exitCode, runErr, snapshotErr, interceptionErr, time.Since(start))
+
+	sendExecutorMsg(ctx, ch, AgentCompletedMsg{AgentID: "agent-instructions-updater", ExitCode: exitCode, Timestamp: time.Now(), OutputFile: outputPath})
+	status := "approved"
+	err := runErr
+	if exitCode != 0 || proposal == "" || snapshotErr != nil || interceptionErr != nil {
+		status = "failed"
+		if err == nil {
+			err = fmt.Errorf("AGENTS.md proposal generation failed")
+		}
+	}
+	sendExecutorMsg(ctx, ch, RunnerStatusMsg{
+		MilestoneID:         milestone.ID,
+		CycleStatus:         status,
+		Phase:               "complete",
+		ReportFile:          reportPath,
+		OutputFile:          outputPath,
+		NextSuggestedAction: fmt.Sprintf("Review `%s`; save/apply only after explicit human approval.", draftPath),
+	})
+	sendExecutorMsg(ctx, ch, CycleFinishedMsg{MilestoneID: milestone.ID, Status: status, ReportFile: reportPath, Error: err})
 }
 
 // CycleMetadata holds the aggregated context and state validation info for a milestone cycle.
@@ -1735,6 +1838,74 @@ func yamlQuote(value string) string {
 		return `""`
 	}
 	return string(data)
+}
+
+func sanitizeReportID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "repository"
+	}
+	return out
+}
+
+func writeAgentInstructionsUpdateReport(reportPath string, milestone config.Milestone, milestoneScoped bool, runner, inputPath, outputPath, handoffPath, draftPath, proposal string, exitCode int, runErr, snapshotErr, interceptionErr error, duration time.Duration) error {
+	reportFile, err := os.OpenFile(reportPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer reportFile.Close()
+	scope := "repository"
+	if milestoneScoped {
+		scope = "milestone"
+	}
+	fmt.Fprintf(reportFile, "milestone_id: %s\n", yamlQuote(milestone.ID))
+	fmt.Fprintf(reportFile, "started: %s\n", yamlQuote(time.Now().Format("2006-01-02 15:04:05 -0700")))
+	fmt.Fprintf(reportFile, "root: %s\n", yamlQuote("."))
+	fmt.Fprintf(reportFile, "workflow: %s\n", yamlQuote("agent_instructions_update"))
+	fmt.Fprintf(reportFile, "scope: %s\n", yamlQuote(scope))
+	fmt.Fprintf(reportFile, "proposal_draft: %s\n", yamlQuote(draftPath))
+	fmt.Fprintf(reportFile, "handoff: %s\n", yamlQuote(handoffPath))
+	fmt.Fprintf(reportFile, "details: |-\n")
+	writeReportDetailf(reportFile, "## AGENTS.md Update Proposal\n\n")
+	writeReportDetailf(reportFile, "- Scope: %s\n", scope)
+	writeReportDetailf(reportFile, "- Runner: %s\n", runner)
+	writeReportDetailf(reportFile, "- Input: `%s`\n", inputPath)
+	writeReportDetailf(reportFile, "- Output: `%s`\n", outputPath)
+	writeReportDetailf(reportFile, "- Handoff: `%s`\n", handoffPath)
+	writeReportDetailf(reportFile, "- Draft: `%s`\n", draftPath)
+	writeReportDetailf(reportFile, "- Exit status: %d\n", exitCode)
+	writeReportDetailf(reportFile, "- Duration: %s\n\n", duration.String())
+	if runErr != nil {
+		writeReportDetailf(reportFile, "Runner error: %v\n\n", runErr)
+	}
+	if snapshotErr != nil {
+		writeReportDetailf(reportFile, "Snapshot error: %v\n\n", snapshotErr)
+	}
+	if interceptionErr != nil {
+		writeReportDetailf(reportFile, "Interception error: %v\n\n", interceptionErr)
+	}
+	if strings.TrimSpace(proposal) == "" {
+		writeReportDetailf(reportFile, "No complete `AGENTS.md` replacement proposal was captured. The root file was left unchanged.\n\n")
+	} else {
+		writeReportDetailf(reportFile, "A complete `AGENTS.md` replacement proposal was captured and saved for explicit human review. The root file was restored before completion.\n\n")
+	}
+	writeLogExcerpt(reportFile, "### Runner Output", outputPath, runner, maxRecommenderReportOutputChars)
+	return nil
 }
 
 func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone config.Milestone, opts RunOptions, state *config.State, ch chan tea.Msg, reportsDir string, cycleNum int, previousReportPath string, metadataPath string, settings config.Settings, reportFile *os.File, codexThreadMetadataPath string, codexThreadID *string) (cycleStatus string, interrupted bool) {

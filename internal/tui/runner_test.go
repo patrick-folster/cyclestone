@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -271,6 +273,58 @@ func TestRunnerStatusRenderingAndElapsed(t *testing.T) {
 		if !strings.Contains(plainView, want) {
 			t.Fatalf("expected runner view to contain %q\nview:\n%s", want, plainView)
 		}
+	}
+}
+
+func TestRunnerAgentInstructionsProposalReviewActions(t *testing.T) {
+	tmp := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "temp"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("AGENTS.md", []byte("original\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentInstructionsDraftPath(), []byte("proposed\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Width = 100
+	m.Height = 28
+	m.Finished = true
+	m.Workflow = WorkflowAgentInstructionsRepository
+
+	view := stripANSI(m.View())
+	for _, want := range []string{"Proposal Draft: .cyclestone/temp/AGENTS.md.proposed", "proposed", "Apply-AGENTS", "Save-Draft"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected runner proposal view to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if !strings.Contains(m.Status, "Saved editable AGENTS.md draft") {
+		t.Fatalf("expected save-draft status, got %q", m.Status)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	data, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "proposed\n" {
+		t.Fatalf("expected explicit apply to write proposal, got %q", string(data))
+	}
+	if !strings.Contains(m.Status, "Applied AGENTS.md proposal") {
+		t.Fatalf("expected apply status, got %q", m.Status)
 	}
 }
 

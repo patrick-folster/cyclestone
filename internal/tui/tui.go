@@ -331,7 +331,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.CreateMilestone.RunNoBranch = cycleMsg.NoBranchChange
 				m.CreateMilestone.RunGroup = cycleMsg.Group
 				m.CreateMilestone.RunSingleID = cycleMsg.SingleAgentID
-				m.CreateMilestone.GoalInput.Placeholder = "Enter optional cycle note / comment here..."
+				m.CreateMilestone.RunWorkflow = cycleMsg.Workflow
+				if cycleMsg.Workflow == WorkflowAgentInstructionsRepository || cycleMsg.Workflow == WorkflowAgentInstructionsMilestone {
+					m.CreateMilestone.GoalInput.Placeholder = "Enter optional AGENTS.md update guidance here..."
+				} else {
+					m.CreateMilestone.GoalInput.Placeholder = "Enter optional cycle note / comment here..."
+				}
 				m.CreateMilestone.GoalInput.SetValue("")
 				m.CreateMilestone.FocusIndex = 0
 			} else {
@@ -581,6 +586,44 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case StartCycleMsg:
+		if msg.Workflow == WorkflowAgentInstructionsRepository || msg.Workflow == WorkflowAgentInstructionsMilestone {
+			runner := msg.RunnerLLM
+			if runner == "" {
+				runner = config.LoadMergedSettings().DefaultLLM
+			}
+			runner = normalizeMilestoneRunner(runner)
+			ctx, cancel := context.WithCancel(context.Background())
+			pipeline := []config.Agent{{ID: "agent-instructions-updater", Name: "Agent Instructions Updater", RunnerBinary: runner}}
+			m.Runner = NewRunnerModel(m.Styles)
+			m.Runner.Ctx = ctx
+			m.Runner.CancelFunc = cancel
+			m.Runner.Milestone = msg.Milestone
+			m.Runner.Pipeline = pipeline
+			m.Runner.Workflow = msg.Workflow
+			m.Runner.Status = "Initializing AGENTS.md update workflow..."
+			m.Runner.CycleStatus = "preparing"
+			m.Runner.ActivePhase = "preparing"
+			m.Runner.StartedAt = time.Now()
+			m.Runner.Width = m.Width
+			m.Runner.Height = m.Height
+			for len(m.MsgChan) > 0 {
+				<-m.MsgChan
+			}
+			unrestricted := m.Unrestricted
+			if msg.RunnerMode != "" {
+				unrestricted = msg.RunnerMode == "unrestricted"
+			}
+			opts := executor.RunOptions{
+				ConfigPath:     m.ConfigPath,
+				StatePath:      m.StatePath,
+				NoBranchChange: msg.NoBranchChange,
+				Unrestricted:   unrestricted,
+				CycleNote:      msg.Note,
+			}
+			go executor.ExecuteAgentInstructionsUpdate(ctx, msg.Milestone, msg.Workflow == WorkflowAgentInstructionsMilestone, runner, opts, m.MsgChan)
+			m.ActiveScreen = ScreenRunner
+			return m, tea.Batch(m.Runner.Init(), m.ListenForExecutorMessages())
+		}
 		agents, err := config.LoadDynamicAgents()
 		if err != nil {
 			m.StatusMsg = fmt.Sprintf("Error loading agents: %v", err)
@@ -652,6 +695,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Runner.Error = nil
 		m.Runner.ReportFile = ""
 		m.Runner.ActiveTab = RunnerTabLog
+		m.Runner.Workflow = WorkflowCycle
 
 		// Flush pipeline events channel
 		for len(m.MsgChan) > 0 {

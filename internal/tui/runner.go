@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -70,6 +72,8 @@ type RunnerModel struct {
 	Finished            bool
 	ReportFile          string
 	ActiveTab           RunnerTab
+	Workflow            WorkflowKind
+	ReturnScreen        Screen
 }
 
 // NewRunnerModel instantiates a new RunnerModel.
@@ -135,6 +139,30 @@ func (m RunnerModel) Update(msg tea.Msg) (RunnerModel, tea.Cmd) {
 			}
 		}
 		switch msg.String() {
+		case "y":
+			if m.Finished && m.isAgentInstructionsWorkflow() {
+				data, err := os.ReadFile(agentInstructionsDraftPath())
+				if err != nil || strings.TrimSpace(string(data)) == "" {
+					m.LastError = "no AGENTS.md proposal draft available to apply"
+					return m, nil
+				}
+				if err := os.WriteFile("AGENTS.md", data, 0644); err != nil {
+					m.LastError = "apply failed: " + err.Error()
+				} else {
+					m.Status = "Applied AGENTS.md proposal."
+					m.NextSuggestedAction = "Review git diff for AGENTS.md before committing."
+				}
+				return m, nil
+			}
+		case "i":
+			if m.Finished && m.isAgentInstructionsWorkflow() {
+				if _, err := os.Stat(agentInstructionsDraftPath()); err != nil {
+					m.LastError = "no AGENTS.md proposal draft available"
+				} else {
+					m.Status = "Saved editable AGENTS.md draft at .cyclestone/temp/AGENTS.md.proposed."
+				}
+				return m, nil
+			}
 		case "ctrl+c", "esc", "backspace":
 			if !m.Finished {
 				if m.CancelFunc != nil {
@@ -147,6 +175,9 @@ func (m RunnerModel) Update(msg tea.Msg) (RunnerModel, tea.Cmd) {
 				m.Finished = true
 			}
 			return m, func() tea.Msg {
+				if m.Workflow == WorkflowAgentInstructionsRepository && m.Finished {
+					return ChangeScreenMsg{Screen: ScreenDashboard}
+				}
 				return ChangeScreenMsg{
 					Screen: ScreenDetails,
 					Data:   m.Milestone,
@@ -205,10 +236,10 @@ func (m RunnerModel) Update(msg tea.Msg) (RunnerModel, tea.Cmd) {
 					m.FinalVerdict = redactRunnerText(msg.Status)
 				}
 				if m.NextSuggestedAction == "" {
-					m.NextSuggestedAction = "Return to details when ready or start another cycle."
+					m.NextSuggestedAction = "Return when ready."
 				}
 			} else {
-				m.Status = fmt.Sprintf("Cycle failed with error: %v", msg.Error)
+				m.Status = fmt.Sprintf("%s failed with error: %v", m.workflowNounTitle(), msg.Error)
 				m.CycleStatus = "failed"
 				if msg.Status != "" {
 					m.FinalVerdict = redactRunnerText(msg.Status)
@@ -220,7 +251,7 @@ func (m RunnerModel) Update(msg tea.Msg) (RunnerModel, tea.Cmd) {
 			}
 			m.Error = msg.Error
 		} else {
-			m.Status = fmt.Sprintf("Cycle finished. Verdict: %s", strings.ToUpper(msg.Status))
+			m.Status = fmt.Sprintf("%s finished. Verdict: %s", m.workflowNounTitle(), strings.ToUpper(msg.Status))
 			m.FinalVerdict = redactRunnerText(msg.Status)
 			if msg.Status == "failed" {
 				m.CycleStatus = "failed"
@@ -420,6 +451,9 @@ func (m RunnerModel) View() string {
 			helpCommands = []string{"Esc Cancel", "Ctrl+C Cancel"}
 		}
 	}
+	if m.Finished && m.isAgentInstructionsWorkflow() {
+		helpCommands = append([]string{"y Apply-AGENTS", "i Save-Draft"}, helpCommands...)
+	}
 	helpText := renderCommandHelp(m.Styles, helpCommands, helpWidth)
 	helpLines := strings.Count(helpText, "\n") + 1
 
@@ -551,6 +585,9 @@ func (m RunnerModel) View() string {
 		sb.WriteString(m.renderRunnerContext())
 		sb.WriteString(m.renderBudgetLine())
 		sb.WriteString(m.renderSummaryLine())
+		if m.Finished && m.isAgentInstructionsWorkflow() {
+			sb.WriteString(m.renderAgentInstructionsProposal(m.Width - 6))
+		}
 		sb.WriteString("\n")
 
 		var rootOverhead = 3
@@ -704,6 +741,43 @@ func (m RunnerModel) View() string {
 
 	sb.WriteString(helpText)
 	return sb.String()
+}
+
+func (m RunnerModel) workflowNounTitle() string {
+	if m.Workflow == WorkflowAgentInstructionsRepository || m.Workflow == WorkflowAgentInstructionsMilestone {
+		return "AGENTS.md update"
+	}
+	return "Cycle"
+}
+
+func (m RunnerModel) isAgentInstructionsWorkflow() bool {
+	return m.Workflow == WorkflowAgentInstructionsRepository || m.Workflow == WorkflowAgentInstructionsMilestone
+}
+
+func agentInstructionsDraftPath() string {
+	return filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")
+}
+
+func (m RunnerModel) renderAgentInstructionsProposal(width int) string {
+	data, err := os.ReadFile(agentInstructionsDraftPath())
+	if err != nil || strings.TrimSpace(string(data)) == "" {
+		return m.Styles.HelpStyle.Render("Proposal draft: not available yet\n")
+	}
+	text := limitStringForView(string(data), 1600)
+	var sb strings.Builder
+	sb.WriteString(m.Styles.DetailLabel.Render("Proposal Draft: .cyclestone/temp/AGENTS.md.proposed") + "\n")
+	for _, line := range strings.Split(wrapText(text, width), "\n") {
+		sb.WriteString(m.Styles.DetailValue.Render(line) + "\n")
+	}
+	return sb.String()
+}
+
+func limitStringForView(text string, max int) string {
+	runes := []rune(text)
+	if max <= 0 || len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "\n[truncated in view]"
 }
 
 func (m RunnerModel) compactStatusLine() string {

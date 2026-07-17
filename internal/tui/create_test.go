@@ -338,3 +338,51 @@ func TestCreateMilestoneModel_CycleNoteMode(t *testing.T) {
 		t.Errorf("expected screen to transition to ScreenDetails, got %v", changeScreenMsgEsc.Screen)
 	}
 }
+
+func TestCreateMilestoneModelAgentInstructionsUpdateSelectsRunner(t *testing.T) {
+	styles := DefaultStyles(true, true)
+	m := NewCreateMilestoneModel(styles)
+	m.Mode = ModeCycleNote
+	m.Width = 80
+	m.Height = 24
+	m.RunMilestone = config.Milestone{ID: "AGENTS.md", Title: "Repository update"}
+	m.RunRunnerLLM = "codex"
+	m.RunRunnerMode = "sandbox"
+	m.RunNoBranch = true
+	m.RunWorkflow = WorkflowAgentInstructionsRepository
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m.FocusIndex != 2 {
+		t.Fatalf("expected Tab from message to focus runner selection, got %d", m.FocusIndex)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Runner Selection") || !strings.Contains(view, "ollama via codex") {
+		t.Fatalf("expected AGENTS update note view to render shared runner choices, got:\n%s", view)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if m.RunRunnerLLM != "agy" {
+		t.Fatalf("expected right key to select agy, got %q", m.RunRunnerLLM)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m.FocusIndex != 4 {
+		t.Fatalf("expected Tab from runner to focus submit, got %d", m.FocusIndex)
+	}
+
+	m.GoalInput.SetValue("repository guidance")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command")
+	}
+	change, ok := cmd().(ChangeScreenMsg)
+	if !ok || change.Screen != ScreenPreflight {
+		t.Fatalf("expected preflight screen change, got %#v", change)
+	}
+	req, ok := change.Data.(StartCycleMsg)
+	if !ok {
+		t.Fatalf("expected StartCycleMsg payload, got %#v", change.Data)
+	}
+	if req.Workflow != WorkflowAgentInstructionsRepository || req.RunnerLLM != "agy" || req.Note != "repository guidance" || !req.NoBranchChange {
+		t.Fatalf("unexpected AGENTS update request: %#v", req)
+	}
+}

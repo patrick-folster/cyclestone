@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/patrick-folster/cyclestone/internal/config"
@@ -386,6 +387,208 @@ func appendChangedFilesToBuilder(sb *strings.Builder) {
 		}
 	}
 	sb.WriteString("```\n\n")
+}
+
+func assembleAgentInstructionsUpdateInput(milestone config.Milestone, milestoneScoped bool, opts RunOptions) string {
+	settings := config.LoadMergedSettings()
+	absRoot, err := filepath.Abs(".")
+	if err != nil {
+		absRoot = "."
+	}
+	var sb strings.Builder
+	sb.WriteString("# AGENTS.md Update Proposal Input\n\n")
+	sb.WriteString(fmt.Sprintf("Repository root: %s\n\n", absRoot))
+	if milestoneScoped {
+		sb.WriteString(fmt.Sprintf("Scope: milestone-scoped (%s)\n\n", milestone.ID))
+	} else {
+		sb.WriteString("Scope: repository-wide\n\n")
+	}
+	appendBranchPolicy(&sb, milestone.ID, opts)
+	if strings.TrimSpace(opts.CycleNote) != "" {
+		sb.WriteString("## Human Message\n\n")
+		sb.WriteString(strings.TrimSpace(opts.CycleNote))
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("## Proposal Rules\n\n")
+	sb.WriteString("- Produce a complete proposed replacement for root `AGENTS.md` by editing that file only; Cyclestone will restore the current file and save your proposal for human review.\n")
+	sb.WriteString("- Do not edit source files, milestone specs, reports, state, or `.cyclestone/DECISIONS.md`.\n")
+	sb.WriteString("- Keep `.cyclestone/DECISIONS.md` as chronological history; do not merge the decision log wholesale into `AGENTS.md`.\n")
+	sb.WriteString("- Include only durable repository operating guidance. Do not copy transient milestone notes, raw logs, temporary paths, branch names, or one-off implementation details unless they establish stable guidance.\n\n")
+
+	appendAgentInstructionsToBuilder(&sb, settings)
+	appendDecisionsLogToBuilder(&sb)
+	if milestoneScoped {
+		appendMilestoneScopedAgentInstructionsContext(&sb, milestone, opts)
+	} else {
+		appendRepositoryAgentInstructionsContext(&sb)
+	}
+	appendSafetyAndRolePrompt(&sb, absRoot, resources.UpdateAgentInstructionsPrompt)
+	return limitTextMiddle(sb.String(), maxAgentInstructionsContextChars, "AGENTS.md update prompt")
+}
+
+func appendRepositoryAgentInstructionsContext(sb *strings.Builder) {
+	appendFileContentToBuilder(sb, "README", "README.md")
+	appendFileContentToBuilder(sb, "Architecture Docs", filepath.Join("docs", "architecture.md"))
+	appendFileContentToBuilder(sb, "Updater Prompt", filepath.Join("resources", "update_agent_instructions.md"))
+	for _, name := range []string{"pm.md", "developer.md", "qa.md", "recommender.md"} {
+		appendFileContentToBuilder(sb, "Built-in Agent Prompt "+name, filepath.Join("resources", "agents", name))
+	}
+	appendConfiguredChecksContext(sb)
+	sb.WriteString("## Source Layout\n\n```text\n")
+	if out, err := exec.Command("git", "ls-files").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || shouldExcludeAgentInstructionsContextPath(line) {
+				continue
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+	sb.WriteString("```\n\n")
+	appendFilteredCurrentGitStatusToBuilder(sb)
+	appendFilteredChangedFilesToBuilder(sb)
+}
+
+func appendConfiguredChecksContext(sb *strings.Builder) {
+	cfg, err := config.LoadConfig(filepath.Join(".cyclestone", "milestone.yml"))
+	if err != nil {
+		return
+	}
+	repos := append([]string(nil), cfg.Repositories...)
+	sort.Strings(repos)
+	checkSet := map[string]bool{}
+	for _, milestone := range cfg.Milestones {
+		for _, check := range milestone.Checks {
+			check = strings.TrimSpace(check)
+			if check != "" {
+				checkSet[check] = true
+			}
+		}
+	}
+	checks := make([]string, 0, len(checkSet))
+	for check := range checkSet {
+		checks = append(checks, check)
+	}
+	sort.Strings(checks)
+
+	sb.WriteString("## Configured Checks\n\n")
+	sb.WriteString("- Default package checks: for each checked directory with `package.json`, run non-mutating npm lint, test, and build/build:packages scripts when present.\n")
+	if len(repos) == 0 {
+		sb.WriteString("- Configured repositories: none; Cyclestone discovers tracked repositories from the workspace.\n")
+	} else {
+		sb.WriteString("- Configured repositories:\n")
+		for _, repo := range repos {
+			sb.WriteString(fmt.Sprintf("  - %s\n", repo))
+		}
+	}
+	if len(checks) == 0 {
+		sb.WriteString("- Milestone check directories: none configured; package check directories fall back to tracked repositories with `package.json`.\n\n")
+		return
+	}
+	sb.WriteString("- Milestone check directories:\n")
+	for _, check := range checks {
+		sb.WriteString(fmt.Sprintf("  - %s\n", check))
+	}
+	sb.WriteString("\n")
+}
+
+func appendFilteredCurrentGitStatusToBuilder(sb *strings.Builder) {
+	sb.WriteString("## Current Git Status\n\n```text\n")
+	for _, repo := range git.GetTrackedRepos() {
+		sb.WriteString("### " + repo.Label + "\n")
+		if out, err := exec.Command("git", "-C", repo.Path, "status", "--short").Output(); err == nil {
+			sb.WriteString(filterAgentInstructionsGitContext(string(out), gitStatusPathFromLine))
+		}
+	}
+	sb.WriteString("```\n\n")
+}
+
+func appendFilteredChangedFilesToBuilder(sb *strings.Builder) {
+	sb.WriteString("## Changed Files\n\n```text\n")
+	for _, repo := range git.GetTrackedRepos() {
+		sb.WriteString("### " + repo.Label + "\n")
+		if out, err := exec.Command("git", "-C", repo.Path, "diff", "--name-status").Output(); err == nil {
+			sb.WriteString(filterAgentInstructionsGitContext(string(out), gitDiffPathFromLine))
+		}
+	}
+	sb.WriteString("```\n\n")
+}
+
+func filterAgentInstructionsGitContext(text string, pathFn func(string) string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if shouldExcludeAgentInstructionsContextPath(pathFn(line)) {
+			continue
+		}
+		out.WriteString(line + "\n")
+	}
+	return out.String()
+}
+
+func gitStatusPathFromLine(line string) string {
+	if len(line) < 4 {
+		return strings.TrimSpace(line)
+	}
+	path := strings.TrimSpace(line[3:])
+	if strings.Contains(path, " -> ") {
+		parts := strings.Split(path, " -> ")
+		path = parts[len(parts)-1]
+	}
+	return path
+}
+
+func gitDiffPathFromLine(line string) string {
+	fields := strings.Split(line, "\t")
+	if len(fields) == 0 {
+		return strings.TrimSpace(line)
+	}
+	path := strings.TrimSpace(fields[len(fields)-1])
+	if strings.Contains(path, " -> ") {
+		parts := strings.Split(path, " -> ")
+		path = parts[len(parts)-1]
+	}
+	return path
+}
+
+func appendMilestoneScopedAgentInstructionsContext(sb *strings.Builder, milestone config.Milestone, opts RunOptions) {
+	sb.WriteString("## Scoped Context Boundary\n\nOnly the selected milestone spec, reports, handoffs, current git diff/status, and changed files are in scope. Do not load unrelated milestone specs, reports, state entries, or index entries.\n\n")
+	appendMilestoneSpecToBuilder(sb, milestone)
+	cyclePadded := "001"
+	if state, err := config.LoadState(opts.StatePath); err == nil {
+		next := state.GetMilestoneCycles(milestone.ID)
+		if next < 1 {
+			next = 1
+		}
+		cyclePadded = fmt.Sprintf("%03d", next)
+	}
+	for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
+		appendHandoffToBuilder(sb, strings.ToUpper(agentID)+" Handoff", milestone.ID, cyclePadded, agentID, maxPromptFileChars, nil)
+	}
+	if files, err := filepath.Glob(filepath.Join(".cyclestone", "reports", milestone.ID+"-cycle-*.yaml")); err == nil {
+		sort.Strings(files)
+		for _, file := range files {
+			base := filepath.Base(file)
+			if strings.Contains(base, "-metadata") || strings.Contains(base, "-codex-thread") || strings.Contains(base, "-handoff") {
+				continue
+			}
+			appendFileContentToBuilder(sb, "Milestone Report "+base, file)
+		}
+	}
+	appendCurrentGitStatusToBuilder(sb)
+	appendChangedFilesToBuilder(sb)
+}
+
+func shouldExcludeAgentInstructionsContextPath(path string) bool {
+	return strings.HasPrefix(path, ".cyclestone/reports/") ||
+		strings.HasPrefix(path, ".cyclestone/temp/") ||
+		path == ".cyclestone/state.json" ||
+		strings.HasPrefix(path, "vendor/") ||
+		strings.HasPrefix(path, "node_modules/") ||
+		strings.Contains(path, "/vendor/") ||
+		strings.Contains(path, "/node_modules/")
 }
 
 // handoffInstruction returns the runner-aware "Required YAML Handoff" intro text

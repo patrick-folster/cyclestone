@@ -172,6 +172,188 @@ echo '{"msg":"thread.started","thread_id":"thread-recommender-pipeline"}'
 	}
 }
 
+func TestAssembleAgentInstructionsUpdateInputScopesContextAndHumanMessage(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "milestones"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "reports"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join("resources", "agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("AGENTS.md", []byte("CURRENT AGENTS\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "DECISIONS.md"), []byte("DECISIONS BOUNDARY\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-A.md"), []byte("ACTIVE SPEC\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-B.md"), []byte("UNRELATED SPEC\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-A-cycle-001.yaml"), []byte("ACTIVE REPORT\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-B-cycle-001.yaml"), []byte("UNRELATED REPORT\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(".cyclestone", "state.json")
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.SetMilestoneCycles("MS-A", 1)
+	if err := config.SaveState(statePath, state); err != nil {
+		t.Fatal(err)
+	}
+
+	input := assembleAgentInstructionsUpdateInput(config.Milestone{ID: "MS-A"}, true, RunOptions{StatePath: statePath, CycleNote: "human guidance", NoBranchChange: true})
+	for _, want := range []string{"Scope: milestone-scoped (MS-A)", "human guidance", "ACTIVE SPEC", "ACTIVE REPORT", "DECISIONS BOUNDARY", "Do not load unrelated milestone specs"} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("expected scoped input to contain %q, got:\n%s", want, input)
+		}
+	}
+	for _, forbidden := range []string{"UNRELATED SPEC", "UNRELATED REPORT"} {
+		if strings.Contains(input, forbidden) {
+			t.Fatalf("expected scoped input to exclude %q, got:\n%s", forbidden, input)
+		}
+	}
+}
+
+func TestAssembleAgentInstructionsUpdateInputRepositoryContextIncludesChecksAndExcludesGeneratedRuntime(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+
+	for _, dir := range []string{
+		filepath.Join(".cyclestone", "reports"),
+		filepath.Join(".cyclestone", "temp"),
+		filepath.Join(".cyclestone", "milestones"),
+		filepath.Join("docs"),
+		filepath.Join("resources", "agents"),
+		filepath.Join("internal", "tui"),
+		filepath.Join("vendor", "example"),
+		filepath.Join("node_modules", "example"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create %s: %v", dir, err)
+		}
+	}
+	files := map[string]string{
+		"AGENTS.md": "ROOT AGENTS CONTENT\n",
+		filepath.Join(".cyclestone", "DECISIONS.md"):               "DECISION CONTENT\n",
+		filepath.Join(".cyclestone", "milestone.yml"):              "repositories:\n  - service-a\nmilestones:\n  - id: MS-REPO\n    title: Repo checks\n    checks:\n      - frontend\n",
+		filepath.Join(".cyclestone", "reports", "generated.yaml"):  "GENERATED REPORT CONTENT\n",
+		filepath.Join(".cyclestone", "temp", "draft.md"):           "TEMP DRAFT CONTENT\n",
+		filepath.Join(".cyclestone", "state.json"):                 `{"MS-REPO":"runtime state"}`,
+		filepath.Join("README.md"):                                 "README CONTENT\n",
+		filepath.Join("docs", "architecture.md"):                   "ARCHITECTURE CONTENT\n",
+		filepath.Join("resources", "update_agent_instructions.md"): "UPDATER PROMPT CONTENT\n",
+		filepath.Join("resources", "agents", "pm.md"):              "PM PROMPT CONTENT\n",
+		filepath.Join("resources", "agents", "developer.md"):       "DEVELOPER PROMPT CONTENT\n",
+		filepath.Join("resources", "agents", "qa.md"):              "QA PROMPT CONTENT\n",
+		filepath.Join("resources", "agents", "recommender.md"):     "RECOMMENDER PROMPT CONTENT\n",
+		filepath.Join("internal", "tui", "create.go"):              "package tui\n",
+		filepath.Join("vendor", "example", "library.go"):           "VENDOR CONTENT\n",
+		filepath.Join("node_modules", "example", "package.json"):   "NODE MODULE CONTENT\n",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+	if err := exec.Command("git", "init").Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+	if err := exec.Command("git", "add", ".").Run(); err != nil {
+		t.Fatalf("git add failed: %v", err)
+	}
+
+	input := assembleAgentInstructionsUpdateInput(config.Milestone{ID: "AGENTS.md"}, false, RunOptions{CycleNote: "repo guidance", NoBranchChange: true})
+	for _, want := range []string{
+		"Scope: repository-wide",
+		"repo guidance",
+		"ROOT AGENTS CONTENT",
+		"DECISION CONTENT",
+		"README CONTENT",
+		"ARCHITECTURE CONTENT",
+		"UPDATER PROMPT CONTENT",
+		"PM PROMPT CONTENT",
+		"## Configured Checks",
+		"service-a",
+		"frontend",
+		"internal/tui/create.go",
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("expected repository input to contain %q, got:\n%s", want, input)
+		}
+	}
+	for _, forbidden := range []string{
+		"GENERATED REPORT CONTENT",
+		"TEMP DRAFT CONTENT",
+		"runtime state",
+		"VENDOR CONTENT",
+		"NODE MODULE CONTENT",
+		".cyclestone/reports/generated.yaml",
+		".cyclestone/temp/draft.md",
+		".cyclestone/state.json",
+		"vendor/example/library.go",
+		"node_modules/example/package.json",
+	} {
+		if strings.Contains(input, forbidden) {
+			t.Fatalf("expected repository input to exclude %q, got:\n%s", forbidden, input)
+		}
+	}
+}
+
+func TestExecuteAgentInstructionsUpdateCapturesProposalAndRestoresAgents(t *testing.T) {
+	withFakeCodexTestDir(t, `#!/bin/sh
+cat >/dev/null
+cat > AGENTS.md <<'EOF'
+PROPOSED AGENTS
+EOF
+echo proposal written
+`)
+	if err := os.WriteFile("AGENTS.md", []byte("ORIGINAL AGENTS\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan tea.Msg, 20)
+	ExecuteAgentInstructionsUpdate(context.Background(), config.Milestone{ID: "AGENTS.md", Title: "Repository update"}, false, "codex", RunOptions{NoBranchChange: true}, ch)
+
+	agentsBytes, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(agentsBytes) != "ORIGINAL AGENTS\n" {
+		t.Fatalf("expected AGENTS.md restored, got %q", string(agentsBytes))
+	}
+	draftBytes, err := os.ReadFile(filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed"))
+	if err != nil {
+		t.Fatalf("expected proposal draft: %v", err)
+	}
+	if !strings.Contains(string(draftBytes), "PROPOSED AGENTS") {
+		t.Fatalf("expected captured proposal, got %q", string(draftBytes))
+	}
+	foundFinished := false
+	for len(ch) > 0 {
+		if msg, ok := (<-ch).(CycleFinishedMsg); ok {
+			foundFinished = true
+			if msg.Error != nil || msg.Status != "approved" {
+				t.Fatalf("expected approved finish, got %#v", msg)
+			}
+		}
+	}
+	if !foundFinished {
+		t.Fatal("expected CycleFinishedMsg")
+	}
+}
+
 func TestCompactConversationHistoryBoundsOlderToolTurns(t *testing.T) {
 	history := []UnifiedMessage{{Role: "user", Content: "initial prompt"}}
 	for i := 0; i < 6; i++ {

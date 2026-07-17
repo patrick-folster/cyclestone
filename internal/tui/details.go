@@ -40,6 +40,14 @@ type DetailsModel struct {
 	InstructionReviewStatus      map[int]string
 }
 
+type WorkflowKind string
+
+const (
+	WorkflowCycle                       WorkflowKind = ""
+	WorkflowAgentInstructionsRepository WorkflowKind = "agent-instructions-repository"
+	WorkflowAgentInstructionsMilestone  WorkflowKind = "agent-instructions-milestone"
+)
+
 type detailsPhaseHandoff struct {
 	Summary          map[string]interface{} `yaml:"summary"`
 	OutputContract   string                 `yaml:"output_contract,omitempty"`
@@ -69,6 +77,7 @@ type StartCycleMsg struct {
 	NoBranchChange bool
 	Group          config.AgentGroup
 	Note           string
+	Workflow       WorkflowKind
 }
 
 // Init initializes the details sub-model.
@@ -289,6 +298,19 @@ func (m DetailsModel) Update(msg tea.Msg) (DetailsModel, tea.Cmd) {
 					},
 				}
 			}
+		case "u":
+			return m, func() tea.Msg {
+				return ChangeScreenMsg{
+					Screen: ScreenCreateMilestone,
+					Data: StartCycleMsg{
+						Milestone:      m.Milestone,
+						RunnerLLM:      m.LLM,
+						RunnerMode:     m.Mode,
+						NoBranchChange: !m.BranchChange,
+						Workflow:       WorkflowAgentInstructionsMilestone,
+					},
+				}
+			}
 		case "p":
 			if len(m.Groups) > 0 {
 				m.SelectedGroupIdx = (m.SelectedGroupIdx + 1) % len(m.Groups)
@@ -408,7 +430,7 @@ func (m DetailsModel) getHelpCommands(useTabs bool, scrollHelp string) []string 
 		if useTabs {
 			cmds = append(cmds, "r Run", "a Agent", "s Status", "l LLM", "m Mode", "g Git", "p Group", "q Quit", "Ctrl+C Quit")
 		} else {
-			cmds = append(cmds, "r Run-Cycle", "a Agent", "s Status", "l LLM", "m Mode", "g Git", "p Group", "q Quit", "Ctrl+C Quit")
+			cmds = append(cmds, "r Run-Cycle", "u Update-AGENTS", "a Agent", "s Status", "l LLM", "m Mode", "g Git", "p Group", "q Quit", "Ctrl+C Quit")
 		}
 
 		if scrollHelp != "" {

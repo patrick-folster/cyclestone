@@ -79,6 +79,74 @@ func TestPreflightRenderingAndConfirmCancelFlow(t *testing.T) {
 	}
 }
 
+func TestPreflightAgentInstructionsRepositoryUsesSingleSelectedRunner(t *testing.T) {
+	oldCheck := checkRunnerAvailable
+	checkRunnerAvailable = func(runner string) (bool, string) {
+		if runner == "codex" {
+			return true, "test runner available"
+		}
+		return false, "unexpected runner"
+	}
+	defer func() { checkRunnerAvailable = oldCheck }()
+
+	model := NewPreflightModel(DefaultStyles(true, true))
+	model.Width = 100
+	model.Height = 30
+	model.Load(StartCycleMsg{
+		Milestone:      config.Milestone{ID: "AGENTS.md", Title: "Repository AGENTS.md update"},
+		RunnerLLM:      "manual",
+		RunnerMode:     "sandbox",
+		NoBranchChange: true,
+		Workflow:       WorkflowAgentInstructionsRepository,
+		Note:           "keep it concise",
+	}, &config.State{}, ".cyclestone/milestone.yml", ".cyclestone/state.json")
+
+	if model.HasBlockers() {
+		t.Fatalf("expected normalized updater runner not to block, issues=%#v", model.Issues)
+	}
+	if len(model.Pipeline) != 1 || model.Pipeline[0].ID != "agent-instructions-updater" || model.Pipeline[0].RunnerBinary != "codex" {
+		t.Fatalf("expected single updater pipeline, got %#v", model.Pipeline)
+	}
+	if model.Request.RunnerLLM != "codex" {
+		t.Fatalf("expected repository update runner normalized to codex, got %q", model.Request.RunnerLLM)
+	}
+	text := model.View()
+	for _, want := range []string{
+		"AGENTS.MD UPDATE PREFLIGHT REVIEW",
+		"Workflow: Repository AGENTS.md update",
+		"Proposal draft: .cyclestone/temp/AGENTS.md.proposed",
+		"Human message: present",
+		"Generate Proposal",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in preflight view, got:\n%s", want, text)
+		}
+	}
+
+	_, confirmCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if confirmCmd == nil {
+		t.Fatal("expected confirm command")
+	}
+	confirmMsg := confirmCmd()
+	start, ok := confirmMsg.(StartCycleMsg)
+	if !ok {
+		t.Fatalf("expected StartCycleMsg, got %#v", confirmMsg)
+	}
+	if start.Workflow != WorkflowAgentInstructionsRepository || start.RunnerLLM != "codex" || start.Note != "keep it concise" || !start.NoBranchChange {
+		t.Fatalf("confirm did not preserve normalized update request: %#v", start)
+	}
+
+	model.FocusIndex = 1
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected cancel command")
+	}
+	change, ok := cmd().(ChangeScreenMsg)
+	if !ok || change.Screen != ScreenDashboard {
+		t.Fatalf("expected repository update cancel to return dashboard, got %#v", change)
+	}
+}
+
 func TestPreflightRendersInstructionSourcesPresentAndMissing(t *testing.T) {
 	oldWd, err := os.Getwd()
 	if err != nil {

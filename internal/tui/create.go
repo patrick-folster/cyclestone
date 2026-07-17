@@ -40,6 +40,7 @@ type CreateMilestoneModel struct {
 	RunNoBranch   bool
 	RunGroup      config.AgentGroup
 	RunSingleID   string
+	RunWorkflow   WorkflowKind
 	NextID        string
 	TitleInput    textinput.Model
 	GoalInput     textarea.Model
@@ -145,6 +146,9 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 			m.ErrorMsg = ""
 			return m, func() tea.Msg {
 				if m.Mode == ModeCycleNote {
+					if m.RunWorkflow == WorkflowAgentInstructionsRepository {
+						return ChangeScreenMsg{Screen: ScreenDashboard}
+					}
 					return ChangeScreenMsg{
 						Screen: ScreenDetails,
 						Data:   m.RunMilestone,
@@ -157,13 +161,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 
 		case "tab":
 			if m.Mode == ModeCycleNote {
-				if m.FocusIndex == 0 {
-					m.FocusIndex = 4
-				} else if m.FocusIndex == 4 {
-					m.FocusIndex = 5
-				} else {
-					m.FocusIndex = 0
-				}
+				m.FocusIndex = nextCycleNoteFocus(m.FocusIndex, m.hasCycleNoteRunnerSelection())
 			} else {
 				m.FocusIndex = (m.FocusIndex + 1) % 6 // Goal (0), Title (1), Runner (2), Git Branch (3), Submit (4), Cancel (5)
 			}
@@ -171,13 +169,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 
 		case "shift+tab":
 			if m.Mode == ModeCycleNote {
-				if m.FocusIndex == 0 {
-					m.FocusIndex = 5
-				} else if m.FocusIndex == 4 {
-					m.FocusIndex = 0
-				} else {
-					m.FocusIndex = 4
-				}
+				m.FocusIndex = previousCycleNoteFocus(m.FocusIndex, m.hasCycleNoteRunnerSelection())
 			} else {
 				m.FocusIndex = (m.FocusIndex - 1 + 6) % 6
 			}
@@ -207,10 +199,10 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 			// Navigate to next field using Down arrow, EXCEPT when inside the textarea (where Down moves cursor)
 			if m.FocusIndex != 0 {
 				if m.Mode == ModeCycleNote {
-					if m.FocusIndex == 4 {
-						m.FocusIndex = 5
+					if m.hasCycleNoteRunnerSelection() {
+						m.FocusIndex = nextCycleNoteFocus(m.FocusIndex, true)
 					} else {
-						m.FocusIndex = 4
+						m.FocusIndex = cycleNoteButtonToggleFocus(m.FocusIndex)
 					}
 				} else {
 					m.FocusIndex = (m.FocusIndex + 1) % 6
@@ -222,10 +214,10 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 			// Navigate to previous field using Up arrow, EXCEPT when inside the textarea (where Up moves cursor)
 			if m.FocusIndex != 0 {
 				if m.Mode == ModeCycleNote {
-					if m.FocusIndex == 5 {
-						m.FocusIndex = 4
+					if m.hasCycleNoteRunnerSelection() {
+						m.FocusIndex = previousCycleNoteFocus(m.FocusIndex, true)
 					} else {
-						m.FocusIndex = 5
+						m.FocusIndex = cycleNoteButtonToggleFocus(m.FocusIndex)
 					}
 				} else {
 					m.FocusIndex = (m.FocusIndex - 1 + 6) % 6
@@ -238,7 +230,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				opts := getCreateRunnerOptions(m.DefaultLLM)
 				curIdx := -1
 				for i, opt := range opts {
-					if opt == m.RunnerType {
+					if opt == m.selectedRunner() {
 						curIdx = i
 						break
 					}
@@ -247,7 +239,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 					curIdx = 0
 				}
 				newIdx := (curIdx - 1 + len(opts)) % len(opts)
-				m.RunnerType = opts[newIdx]
+				m.setSelectedRunner(opts[newIdx])
 				return m, nil
 			} else if m.FocusIndex == 3 {
 				m.CreateBranch = !m.CreateBranch
@@ -259,7 +251,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				opts := getCreateRunnerOptions(m.DefaultLLM)
 				curIdx := -1
 				for i, opt := range opts {
-					if opt == m.RunnerType {
+					if opt == m.selectedRunner() {
 						curIdx = i
 						break
 					}
@@ -268,7 +260,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 					curIdx = 0
 				}
 				newIdx := (curIdx + 1) % len(opts)
-				m.RunnerType = opts[newIdx]
+				m.setSelectedRunner(opts[newIdx])
 				return m, nil
 			} else if m.FocusIndex == 3 {
 				m.CreateBranch = !m.CreateBranch
@@ -282,6 +274,9 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				m.ErrorMsg = ""
 				return m, func() tea.Msg {
 					if m.Mode == ModeCycleNote {
+						if m.RunWorkflow == WorkflowAgentInstructionsRepository {
+							return ChangeScreenMsg{Screen: ScreenDashboard}
+						}
 						return ChangeScreenMsg{
 							Screen: ScreenDetails,
 							Data:   m.RunMilestone,
@@ -295,7 +290,11 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				m.FocusIndex = 2
 				return m, m.updateFocus()
 			} else if m.FocusIndex == 2 {
-				m.FocusIndex = 3
+				if m.Mode == ModeCycleNote {
+					m.FocusIndex = 4
+				} else {
+					m.FocusIndex = 3
+				}
 				return m, m.updateFocus()
 			} else if m.FocusIndex == 3 {
 				m.FocusIndex = 4
@@ -348,6 +347,7 @@ func (m CreateMilestoneModel) handleSubmit() (CreateMilestoneModel, tea.Cmd) {
 					NoBranchChange: m.RunNoBranch,
 					Group:          m.RunGroup,
 					Note:           note,
+					Workflow:       m.RunWorkflow,
 				},
 			}
 		}
@@ -435,23 +435,43 @@ func (m CreateMilestoneModel) View() string {
 			spacing = "\n"
 		}
 
-		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("ADD OPTIONAL CYCLE NOTE / COMMENT (Milestone: %s)", m.RunMilestone.ID)) + "\n" + spacing)
+		title := fmt.Sprintf("ADD OPTIONAL CYCLE NOTE / COMMENT (Milestone: %s)", m.RunMilestone.ID)
+		label := "Optional Cycle Note / Comment"
+		if m.RunWorkflow == WorkflowAgentInstructionsRepository {
+			title = "ADD OPTIONAL AGENTS.md UPDATE MESSAGE (Repository)"
+			label = "Optional AGENTS.md Update Message"
+		} else if m.RunWorkflow == WorkflowAgentInstructionsMilestone {
+			title = fmt.Sprintf("ADD OPTIONAL AGENTS.md UPDATE MESSAGE (Milestone: %s)", m.RunMilestone.ID)
+			label = "Optional AGENTS.md Update Message"
+		}
+		sb.WriteString(m.Styles.DetailHeader.Render(title) + "\n" + spacing)
 
 		if m.ErrorMsg != "" {
 			sb.WriteString(m.Styles.RenderError(m.ErrorMsg) + "\n" + spacing)
 		}
 
-		// Textarea Block
+		// Textarea block.
 		var labelStyle lipgloss.Style
 		if m.FocusIndex == 0 {
 			labelStyle = m.Styles.DetailLabel.Underline(true)
 		} else {
 			labelStyle = m.Styles.DetailValue.Bold(!m.Styles.NoBold)
 		}
-		sb.WriteString(labelStyle.Render("Optional Cycle Note / Comment") + "\n")
+		sb.WriteString(labelStyle.Render(label) + "\n")
 		sb.WriteString(m.GoalInput.View() + spacing)
 
-		// Confirm Buttons Block
+		if m.hasCycleNoteRunnerSelection() {
+			var runnerLabelStyle lipgloss.Style
+			if m.FocusIndex == 2 {
+				runnerLabelStyle = m.Styles.DetailLabel.Underline(true)
+			} else {
+				runnerLabelStyle = m.Styles.DetailValue.Bold(!m.Styles.NoBold)
+			}
+			sb.WriteString(runnerLabelStyle.Render("Runner Selection") + "\n")
+			sb.WriteString(renderRunnerOptions(m.Styles, m.selectedRunner()) + spacing)
+		}
+
+		// Confirm buttons block.
 		var submitBtn, cancelBtn string
 		if m.FocusIndex == 4 {
 			submitBtn = m.Styles.TableSelectedRow.Render(" [ Submit ] ")
@@ -525,20 +545,7 @@ func (m CreateMilestoneModel) View() string {
 		case 2:
 			// Step 3: Runner
 			sb.WriteString(m.Styles.DetailLabel.Render("Runner Selection:") + "\n")
-			opts := getCreateRunnerOptions(m.DefaultLLM)
-			var renderedOpts []string
-			for _, opt := range opts {
-				display := opt
-				if opt == "ollama-codex" {
-					display = "ollama via codex"
-				}
-				if m.RunnerType == opt {
-					renderedOpts = append(renderedOpts, m.Styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))
-				} else {
-					renderedOpts = append(renderedOpts, m.Styles.HelpStyle.Render(fmt.Sprintf("( ) %s", display)))
-				}
-			}
-			sb.WriteString(strings.Join(renderedOpts, "  ") + "\n")
+			sb.WriteString(renderRunnerOptions(m.Styles, m.RunnerType) + "\n")
 			sb.WriteString(renderCommandHelp(m.Styles, []string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth))
 
 		case 3:
@@ -648,25 +655,13 @@ func (m CreateMilestoneModel) View() string {
 				labelStyle = m.Styles.DetailValue.Bold(!m.Styles.NoBold)
 			}
 
-			opts := getCreateRunnerOptions(m.DefaultLLM)
-			var renderedOpts []string
-			for _, opt := range opts {
-				display := opt
-				if opt == "ollama-codex" {
-					display = "ollama via codex"
-				}
-				if m.RunnerType == opt {
-					renderedOpts = append(renderedOpts, m.Styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))
-				} else {
-					renderedOpts = append(renderedOpts, m.Styles.HelpStyle.Render(fmt.Sprintf("( ) %s", display)))
-				}
-			}
+			renderedOpts := renderRunnerOptions(m.Styles, m.RunnerType)
 
 			if m.Height < 20 {
-				blockSb.WriteString(labelStyle.Render("Runner:") + " " + strings.Join(renderedOpts, "  "))
+				blockSb.WriteString(labelStyle.Render("Runner:") + " " + renderedOpts)
 			} else {
 				blockSb.WriteString(labelStyle.Render("Runner Selection (Left/Right or H/L to choose)") + "\n")
-				blockSb.WriteString(strings.Join(renderedOpts, "  "))
+				blockSb.WriteString(renderedOpts)
 			}
 			allBlocks = append(allBlocks, blockItem{focusIndices: []int{2}, content: blockSb.String()})
 		}
@@ -943,6 +938,84 @@ func getCreateRunnerOptions(_ string) []string {
 	return getMilestoneRunnerOptions()
 }
 
+func (m CreateMilestoneModel) hasCycleNoteRunnerSelection() bool {
+	return m.Mode == ModeCycleNote && (m.RunWorkflow == WorkflowAgentInstructionsRepository || m.RunWorkflow == WorkflowAgentInstructionsMilestone)
+}
+
+func (m CreateMilestoneModel) selectedRunner() string {
+	if m.hasCycleNoteRunnerSelection() {
+		return normalizeMilestoneRunner(m.RunRunnerLLM)
+	}
+	return normalizeMilestoneRunner(m.RunnerType)
+}
+
+func (m *CreateMilestoneModel) setSelectedRunner(runner string) {
+	runner = normalizeMilestoneRunner(runner)
+	if m.hasCycleNoteRunnerSelection() {
+		m.RunRunnerLLM = runner
+		return
+	}
+	m.RunnerType = runner
+}
+
+func nextCycleNoteFocus(current int, includeRunner bool) int {
+	order := []int{0, 4, 5}
+	if includeRunner {
+		order = []int{0, 2, 4, 5}
+	}
+	return nextFocusInOrder(current, order)
+}
+
+func previousCycleNoteFocus(current int, includeRunner bool) int {
+	order := []int{0, 4, 5}
+	if includeRunner {
+		order = []int{0, 2, 4, 5}
+	}
+	return previousFocusInOrder(current, order)
+}
+
+func cycleNoteButtonToggleFocus(current int) int {
+	if current == 4 {
+		return 5
+	}
+	return 4
+}
+
+func nextFocusInOrder(current int, order []int) int {
+	for i, focus := range order {
+		if focus == current {
+			return order[(i+1)%len(order)]
+		}
+	}
+	return order[0]
+}
+
+func previousFocusInOrder(current int, order []int) int {
+	for i, focus := range order {
+		if focus == current {
+			return order[(i-1+len(order))%len(order)]
+		}
+	}
+	return order[len(order)-1]
+}
+
+func renderRunnerOptions(styles Styles, selected string) string {
+	opts := getMilestoneRunnerOptions()
+	var renderedOpts []string
+	for _, opt := range opts {
+		display := opt
+		if opt == "ollama-codex" {
+			display = "ollama via codex"
+		}
+		if selected == opt {
+			renderedOpts = append(renderedOpts, styles.SuccessText.Render(fmt.Sprintf("(•) %s", display)))
+		} else {
+			renderedOpts = append(renderedOpts, styles.HelpStyle.Render(fmt.Sprintf("( ) %s", display)))
+		}
+	}
+	return strings.Join(renderedOpts, "  ")
+}
+
 func (m *CreateMilestoneModel) recalcHeights() {
 	var spacingLen = 2
 	if m.Height < 22 {
@@ -976,6 +1049,9 @@ func (m *CreateMilestoneModel) recalcHeights() {
 			nonTextAreaLines = 3 + 2 + 1 + 3 + helpLines
 		} else {
 			nonTextAreaLines = 4 + 2 + 2 + 3 + helpLines
+		}
+		if m.hasCycleNoteRunnerSelection() {
+			nonTextAreaLines += 2 + spacingLen
 		}
 		if m.ErrorMsg != "" {
 			nonTextAreaLines += 1 + spacingLen

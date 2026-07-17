@@ -29,8 +29,8 @@ type instructionSourceStatus struct {
 	Present bool
 }
 
-// PreflightModel renders the non-mutating cycle review that must be confirmed
-// before RootModel receives StartCycleMsg for executor startup.
+// PreflightModel renders the non-mutating workflow review that must be
+// confirmed before RootModel receives StartCycleMsg for executor startup.
 type PreflightModel struct {
 	Request            StartCycleMsg
 	Milestone          config.Milestone
@@ -78,6 +78,20 @@ func (m *PreflightModel) Load(req StartCycleMsg, state *config.State, configPath
 		m.Issues = append(m.Issues, preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Unable to load agents: %v", err)})
 	}
 	m.Pipeline, m.MissingAgents = resolvePreflightPipeline(agents, req.Group, req.SingleAgentID)
+	if req.Workflow == WorkflowAgentInstructionsRepository || req.Workflow == WorkflowAgentInstructionsMilestone {
+		runner := req.RunnerLLM
+		if runner == "" {
+			runner = m.Settings.DefaultLLM
+		}
+		runner = normalizeMilestoneRunner(runner)
+		m.Request.RunnerLLM = runner
+		m.Pipeline = []config.Agent{{
+			ID:           "agent-instructions-updater",
+			Name:         "Agent Instructions Updater",
+			RunnerBinary: runner,
+		}}
+		m.MissingAgents = nil
+	}
 	m.applyRunnerOverride()
 	m.validate()
 	if m.HasBlockers() {
@@ -219,11 +233,11 @@ func (m PreflightModel) runnerForAgent(agent config.Agent) string {
 func validateRunnerAvailability(runner string) (preflightIssue, bool) {
 	switch runner {
 	case "ollama-codex":
-		if ok, reason := isRunnerAvailable("ollama-codex"); !ok {
+		if ok, reason := checkRunnerAvailable("ollama-codex"); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unavailable: %s.", runner, reason)}, true
 		}
 	case "codex", "agy":
-		if ok, reason := isRunnerAvailable(runner); !ok {
+		if ok, reason := checkRunnerAvailable(runner); !ok {
 			return preflightIssue{Severity: preflightBlocker, Message: fmt.Sprintf("Runner %q is unavailable: %s.", runner, reason)}, true
 		}
 	default:
@@ -286,6 +300,9 @@ func (m PreflightModel) Update(msg tea.Msg) (PreflightModel, tea.Cmd) {
 
 func (m PreflightModel) cancelCmd() tea.Cmd {
 	return func() tea.Msg {
+		if m.Request.Workflow == WorkflowAgentInstructionsRepository {
+			return ChangeScreenMsg{Screen: ScreenDashboard}
+		}
 		return ChangeScreenMsg{Screen: ScreenDetails, Data: m.Milestone}
 	}
 }
@@ -340,7 +357,7 @@ func (m PreflightModel) View() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(m.Styles.DetailHeader.Render("CYCLE PREFLIGHT REVIEW") + "\n")
+	sb.WriteString(m.Styles.DetailHeader.Render(strings.ToUpper(m.workflowLabel())+" PREFLIGHT REVIEW") + "\n")
 	sb.WriteString(strings.Join(lines[m.ScrollOffset:end], "\n") + "\n")
 	sb.WriteString(m.renderButtons(width) + "\n")
 	sb.WriteString(renderCommandHelp(m.Styles, []string{"↑/↓ Scroll", "Tab Toggle", "Enter Confirm", "Esc Cancel"}, width))
@@ -395,17 +412,27 @@ func (m PreflightModel) content() string {
 		expectedBranch = currentBranchFallback()
 	}
 
-	sb.WriteString(fmt.Sprintf("Milestone: %s - %s\n", m.Milestone.ID, emptyFallback(m.Milestone.Title, "(untitled)")))
-	sb.WriteString(fmt.Sprintf("Status: %s\n", status))
-	sb.WriteString(fmt.Sprintf("Next cycle: %s\n", cyclePadded))
-	sb.WriteString(fmt.Sprintf("Agent group: %s\n", group))
+	if m.Request.Workflow == WorkflowAgentInstructionsRepository {
+		sb.WriteString("Workflow: Repository AGENTS.md update\n")
+	} else if m.Request.Workflow == WorkflowAgentInstructionsMilestone {
+		sb.WriteString(fmt.Sprintf("Workflow: Milestone-scoped AGENTS.md update for %s\n", m.Milestone.ID))
+	} else {
+		sb.WriteString(fmt.Sprintf("Milestone: %s - %s\n", m.Milestone.ID, emptyFallback(m.Milestone.Title, "(untitled)")))
+		sb.WriteString(fmt.Sprintf("Status: %s\n", status))
+		sb.WriteString(fmt.Sprintf("Next cycle: %s\n", cyclePadded))
+		sb.WriteString(fmt.Sprintf("Agent group: %s\n", group))
+	}
 	sb.WriteString(fmt.Sprintf("Pipeline: %s\n", m.pipelineText()))
 	sb.WriteString(fmt.Sprintf("Runner/model: %s / %s\n", runner, m.modelForRunner(runner)))
 	sb.WriteString(fmt.Sprintf("Mode: %s\n", mode))
 	sb.WriteString(fmt.Sprintf("Branch changes: %s\n", branchSetting))
 	sb.WriteString(fmt.Sprintf("Expected branch: %s\n", expectedBranch))
-	sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s.yaml", m.Milestone.ID, cyclePadded))))
-	sb.WriteString(fmt.Sprintf("Metadata: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-metadata.json", m.Milestone.ID, cyclePadded))))
+	if m.Request.Workflow == WorkflowCycle {
+		sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s.yaml", m.Milestone.ID, cyclePadded))))
+		sb.WriteString(fmt.Sprintf("Metadata: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-metadata.json", m.Milestone.ID, cyclePadded))))
+	} else {
+		sb.WriteString(fmt.Sprintf("Proposal draft: %s\n", filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")))
+	}
 	sb.WriteString(fmt.Sprintf("State: %s\n", emptyFallback(m.StatePath, filepath.Join(".cyclestone", "state.json"))))
 	sb.WriteString(fmt.Sprintf("Config: %s\n", emptyFallback(m.ConfigPath, filepath.Join(".cyclestone", "milestone.yml"))))
 	sb.WriteString(fmt.Sprintf("Context size: %s\n", m.contextSizeText()))
@@ -418,7 +445,11 @@ func (m PreflightModel) content() string {
 		sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", source.Label, source.Path, status))
 	}
 	if strings.TrimSpace(m.Request.Note) != "" {
-		sb.WriteString("Cycle note: present\n")
+		if m.Request.Workflow == WorkflowCycle {
+			sb.WriteString("Cycle note: present\n")
+		} else {
+			sb.WriteString("Human message: present\n")
+		}
 	}
 
 	sb.WriteString("\nRepositories:\n")
@@ -439,6 +470,15 @@ func (m PreflightModel) content() string {
 		}
 	}
 	return sb.String()
+}
+
+func (m PreflightModel) workflowLabel() string {
+	switch m.Request.Workflow {
+	case WorkflowAgentInstructionsRepository, WorkflowAgentInstructionsMilestone:
+		return "AGENTS.md update"
+	default:
+		return "cycle"
+	}
 }
 
 func (m PreflightModel) pipelineText() string {
@@ -485,6 +525,9 @@ func (m PreflightModel) contextSizeText() string {
 
 func (m PreflightModel) renderButtons(width int) string {
 	confirmLabel := " [ Confirm Run ] "
+	if m.Request.Workflow != WorkflowCycle {
+		confirmLabel = " [ Generate Proposal ] "
+	}
 	if m.HasBlockers() {
 		confirmLabel = " [ Confirm Disabled ] "
 	}
