@@ -719,7 +719,25 @@ func qaVerdictFromHandoff(path string) string {
 		return ""
 	}
 	verdict, _ := handoff.Summary["verdict"].(string)
-	return strings.ToLower(strings.TrimSpace(verdict))
+	normalized := strings.ToLower(strings.TrimSpace(verdict))
+	if qaBlockingVerdictIsOnlyEmbeddedRepoInformationalWarning(normalized, handoff.Summary) {
+		return ""
+	}
+	return normalized
+}
+
+func qaBlockingVerdictIsOnlyEmbeddedRepoInformationalWarning(verdict string, summary map[string]interface{}) bool {
+	switch verdict {
+	case "failed", "fail", "blocked", "needs-human-review", "needs_human_review":
+	default:
+		return false
+	}
+	data, err := yaml.Marshal(summary)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	return embeddedRepoInformationalOnlyBlock("", lines)
 }
 
 func applyQAVerdictToCycleStatus(verdict, current string) string {

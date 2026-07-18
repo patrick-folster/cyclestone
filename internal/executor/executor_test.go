@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1691,6 +1692,41 @@ func TestQAVerdictAndValidationStatusMapping(t *testing.T) {
 	}
 }
 
+func TestQAVerdictFromHandoffIgnoresEmbeddedRepoOnlyBlockingWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	handoffPath := filepath.Join(tmpDir, "qa-handoff.yaml")
+	handoff := strings.Join([]string{
+		"milestone_id: MS-QA",
+		"cycle: 1",
+		"agent_id: qa",
+		"output_contract: qa",
+		"validation_status: valid",
+		"source_log: qa.log",
+		"summary:",
+		"  verdict: blocked",
+		"  criteria_results: []",
+		"  reviewed_files: []",
+		"  failing_checks:",
+		"    - Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately.",
+		"  required_fixes:",
+		"    - Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.",
+	}, "\n")
+	if err := os.WriteFile(handoffPath, []byte(handoff), 0644); err != nil {
+		t.Fatalf("failed to write QA handoff: %v", err)
+	}
+	if got := qaVerdictFromHandoff(handoffPath); got != "" {
+		t.Fatalf("expected embedded-repo-only blocked QA verdict to be neutralized, got %q", got)
+	}
+
+	handoff = strings.Replace(handoff, "  required_fixes:\n    - Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.", "  required_fixes:\n    - Update API docs", 1)
+	if err := os.WriteFile(handoffPath, []byte(handoff), 0644); err != nil {
+		t.Fatalf("failed to rewrite QA handoff: %v", err)
+	}
+	if got := qaVerdictFromHandoff(handoffPath); got != "blocked" {
+		t.Fatalf("expected real blocked QA verdict to remain, got %q", got)
+	}
+}
+
 func TestRecommenderScoreUsesStructuredHandoffOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	handoffPath := filepath.Join(tmpDir, "recommender-handoff.yaml")
@@ -2249,7 +2285,7 @@ func TestCycleReportHeaderAndDetailsAreValidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create report: %v", err)
 	}
-	writeReportHeader(reportFile, "MS-YAML", "develop", 1, "", ".cyclestone/reports/MS-YAML-cycle-001-metadata.json", RunOptions{NoBranchChange: true, CycleNote: "human note"}, nil)
+	writeReportHeader(reportFile, "MS-YAML", "develop", 1, "", ".cyclestone/reports/MS-YAML-cycle-001-metadata.json", RunOptions{NoBranchChange: true, CycleNote: "human note"}, nil, nil)
 	writeReportDetailf(reportFile, "\n## Developer Phase\n\n- Output log: `%s`\n", "developer.log")
 	if err := reportFile.Close(); err != nil {
 		t.Fatalf("failed to close report: %v", err)
@@ -2269,6 +2305,298 @@ func TestCycleReportHeaderAndDetailsAreValidYAML(t *testing.T) {
 	details, ok := parsed["details"].(string)
 	if !ok || !strings.Contains(details, "## Developer Phase") {
 		t.Fatalf("expected report details block to preserve phase text, got %#v", parsed["details"])
+	}
+}
+
+func TestCycleReportInformationalWarningsAreYAMLAndExcludedFromSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "MS-WARN-cycle-001.yaml")
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to create report: %v", err)
+	}
+	warnings := []string{"Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately."}
+	writeReportHeader(reportFile, "MS-WARN", "develop", 1, "", ".cyclestone/reports/MS-WARN-cycle-001-metadata.json", RunOptions{}, warnings, nil)
+	writeReportDetailf(reportFile, "\n## QA Phase\n\nverdict: approved\n")
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("failed to read report: %v", err)
+	}
+	var parsed cycleReportYAML
+	if err := yaml.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("expected generated cycle report to be valid YAML: %v\n%s", err, string(content))
+	}
+	if len(parsed.InformationalWarnings) != 1 || !strings.Contains(parsed.InformationalWarnings[0], "tools/nested") {
+		t.Fatalf("expected top-level informational warning in YAML, got %#v", parsed.InformationalWarnings)
+	}
+	if !strings.Contains(parsed.Details, "## Informational Warnings") {
+		t.Fatalf("expected human-readable informational warning in details, got:\n%s", parsed.Details)
+	}
+
+	summary := summarizeCycleReport(reportPath)
+	if strings.Contains(summary, "Informational Warnings") || strings.Contains(summary, "tools/nested") || strings.Contains(summary, "Embedded Git repository") {
+		t.Fatalf("expected informational warnings to be excluded from recommender summary, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "verdict: approved") {
+		t.Fatalf("expected normal continuation signal to remain in summary, got:\n%s", summary)
+	}
+}
+
+func TestCycleReportSummaryIgnoresEmbeddedRepoOnlyBlockedQAExcerpt(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "MS-WARN-QA-cycle-001.yaml")
+	report := strings.Join([]string{
+		`milestone_id: "MS-WARN-QA"`,
+		`cycle: "001"`,
+		`details: |-`,
+		`  ## QA Phase`,
+		``,
+		`  verdict: blocked`,
+		`  failing_checks:`,
+		`    - Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately.`,
+		`  required_fixes:`,
+		`    - Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		t.Fatalf("failed to write report: %v", err)
+	}
+	summary := summarizeCycleReport(reportPath)
+	for _, forbidden := range []string{
+		"verdict: blocked",
+		"tools/nested",
+		"Embedded Git repository detected at",
+		"required fixes",
+	} {
+		if strings.Contains(summary, forbidden) {
+			t.Fatalf("expected embedded-repo-only QA excerpt to be excluded from summary, found %q in:\n%s", forbidden, summary)
+		}
+	}
+
+	report = strings.Replace(report, "  required_fixes:\n    - Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.", "  required_fixes:\n    - Update API docs", 1)
+	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
+		t.Fatalf("failed to rewrite report: %v", err)
+	}
+	summary = summarizeCycleReport(reportPath)
+	for _, expected := range []string{
+		"verdict: blocked",
+		"Update API docs",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected real QA signal %q to remain in summary, got:\n%s", expected, summary)
+		}
+	}
+}
+
+func TestRecommenderInputExcludesCycleReportInformationalWarnings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-WARN-cycle-001.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	reportFile, err := os.Create(reportPath)
+	if err != nil {
+		t.Fatalf("failed to create report: %v", err)
+	}
+	warnings := []string{"Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately."}
+	writeReportHeader(reportFile, "MS-REC-WARN", "develop", 1, "", ".cyclestone/reports/MS-REC-WARN-cycle-001-metadata.json", RunOptions{}, warnings, nil)
+	writeReportDetailf(reportFile, "\n## QA Phase\n\nverdict: approved\n")
+	if err := reportFile.Close(); err != nil {
+		t.Fatalf("failed to close report: %v", err)
+	}
+
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("compact_%v", compact), func(t *testing.T) {
+			compact := compact
+			input := assembleInputWithSettings(
+				config.Milestone{ID: "MS-REC-WARN", Goal: "score clean cycle"},
+				config.Agent{ID: "recommender", Name: "Cycle Recommender", PromptBody: "Report:\n{{LATEST_CYCLE_REPORT}}"},
+				1,
+				RunOptions{},
+				"",
+				"",
+				config.Settings{EnableCompactPhaseHandoffs: &compact},
+				[]config.Agent{{ID: "qa", Name: "Quality Manager"}, {ID: "recommender", Name: "Cycle Recommender"}},
+			)
+			for _, forbidden := range []string{
+				"Informational Warnings",
+				"informational_warnings",
+				"tools/nested",
+				"Embedded Git repository",
+			} {
+				if strings.Contains(input, forbidden) {
+					t.Fatalf("expected recommender input to exclude %q, got:\n%s", forbidden, input)
+				}
+			}
+			if !strings.Contains(input, "verdict: approved") {
+				t.Fatalf("expected recommender input to retain normal QA signal, got:\n%s", input)
+			}
+		})
+	}
+}
+
+func TestCompactRecommenderInputStripsQAEmbeddedRepoInformationalWarnings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	pipeline := []config.Agent{
+		{ID: "qa", Name: "Quality Manager"},
+		{ID: "recommender", Name: "Cycle Recommender"},
+	}
+	qaHandoffPath := phaseHandoffPath(reportsDir, "MS-REC-HANDOFF", "001", getAgentFileID("qa", pipeline))
+	handoff := strings.Join([]string{
+		"milestone_id: MS-REC-HANDOFF",
+		"cycle: 1",
+		"agent_id: qa",
+		"output_contract: qa",
+		"validation_status: valid",
+		"source_log: qa.log",
+		"summary:",
+		"  verdict: approved",
+		"  reviewed_files:",
+		"    - internal/executor/prompt.go",
+		"  failing_checks:",
+		"    - Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately.",
+		"  required_fixes:",
+		"    - Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.",
+		"  criteria_results: []",
+	}, "\n")
+	if err := os.WriteFile(qaHandoffPath, []byte(handoff), 0644); err != nil {
+		t.Fatalf("failed to write QA handoff: %v", err)
+	}
+
+	compact := true
+	input := assembleInputWithSettings(
+		config.Milestone{ID: "MS-REC-HANDOFF", Goal: "score clean handoff"},
+		config.Agent{ID: "recommender", Name: "Cycle Recommender", PromptBody: "Report:\n{{LATEST_CYCLE_REPORT}}"},
+		1,
+		RunOptions{},
+		"",
+		"",
+		config.Settings{EnableCompactPhaseHandoffs: &compact},
+		pipeline,
+	)
+	for _, forbidden := range []string{
+		"tools/nested",
+		"Embedded Git repository detected at",
+		"Do not treat them as acceptance gaps",
+		"excluded from recommender scoring; add it to repositories or .gitmodules",
+	} {
+		if strings.Contains(input, forbidden) {
+			t.Fatalf("expected compact recommender input to strip %q, got:\n%s", forbidden, input)
+		}
+	}
+	if !strings.Contains(input, "verdict: approved") || !strings.Contains(input, "internal/executor/prompt.go") {
+		t.Fatalf("expected compact recommender input to retain normal QA handoff signal, got:\n%s", input)
+	}
+}
+
+func TestPhaseInputsIncludeEmbeddedRepoInformationalWarnings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := exec.Command("git", "init").Run(); err != nil {
+		t.Fatalf("failed to init root repo: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join("tools", "nested"), 0755); err != nil {
+		t.Fatalf("failed to create nested repo dir: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("tools", "nested"), "init").Run(); err != nil {
+		t.Fatalf("failed to init nested repo: %v", err)
+	}
+	gitContextPath := filepath.Join(tmpDir, "git-context.md")
+	if err := os.WriteFile(gitContextPath, []byte("## root\n\nChanged files:\n\n```text\nA\ttools/nested\n```\n"), 0644); err != nil {
+		t.Fatalf("failed to write git context: %v", err)
+	}
+
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("qa_compact_%v", compact), func(t *testing.T) {
+			compact := compact
+			gitContext := ""
+			if !compact {
+				gitContext = gitContextPath
+			}
+			input := assembleInputWithSettings(
+				config.Milestone{ID: "MS-QA", Goal: "review nested repo warning"},
+				config.Agent{ID: "qa", Name: "Quality Manager", PromptBody: "qa role"},
+				1,
+				RunOptions{},
+				"",
+				gitContext,
+				config.Settings{EnableCompactPhaseHandoffs: &compact},
+				[]config.Agent{{ID: "qa", Name: "Quality Manager"}},
+			)
+			for _, expected := range []string{
+				"## Informational Warnings",
+				"tools/nested",
+				"Do not treat them as acceptance gaps",
+			} {
+				if !strings.Contains(input, expected) {
+					t.Fatalf("expected QA input to contain %q, got:\n%s", expected, input)
+				}
+			}
+		})
+	}
+
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("developer_compact_%v", compact), func(t *testing.T) {
+			compact := compact
+			gitContext := ""
+			if !compact {
+				gitContext = gitContextPath
+			}
+			devInput := assembleInputWithSettings(
+				config.Milestone{ID: "MS-QA", Goal: "review nested repo warning"},
+				config.Agent{ID: "developer", Name: "Developer", PromptBody: "dev role"},
+				1,
+				RunOptions{},
+				"",
+				gitContext,
+				config.Settings{EnableCompactPhaseHandoffs: &compact},
+				[]config.Agent{{ID: "developer", Name: "Developer"}},
+			)
+			for _, expected := range []string{
+				"## Informational Warnings",
+				"tools/nested",
+				"Do not treat them as acceptance gaps",
+			} {
+				if !strings.Contains(devInput, expected) {
+					t.Fatalf("expected Developer input to contain %q, got:\n%s", expected, devInput)
+				}
+			}
+		})
+	}
+
+	for _, compact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pm_compact_%v", compact), func(t *testing.T) {
+			compact := compact
+			pmInput := assembleInputWithSettings(
+				config.Milestone{ID: "MS-QA", Goal: "review nested repo warning"},
+				config.Agent{ID: "pm", Name: "Project Manager", PromptBody: "pm role"},
+				1,
+				RunOptions{},
+				"",
+				gitContextPath,
+				config.Settings{EnableCompactPhaseHandoffs: &compact},
+				[]config.Agent{{ID: "pm", Name: "Project Manager"}},
+			)
+			for _, expected := range []string{
+				"## Informational Warnings",
+				"tools/nested",
+				"Do not treat them as acceptance gaps",
+			} {
+				if !strings.Contains(pmInput, expected) {
+					t.Fatalf("expected PM input to contain %q, got:\n%s", expected, pmInput)
+				}
+			}
+		})
 	}
 }
 
@@ -2292,7 +2620,7 @@ func TestPrepareCycleEnvironmentUsesYAMLReportPaths(t *testing.T) {
 
 	state := &config.State{}
 	state.SetMilestoneCycles("MS-YAML", 1)
-	_, _, previousReportPath, reportPath, _, _, _, err := prepareCycleEnvironment(RunOptions{NoBranchChange: true}, state, config.Milestone{ID: "MS-YAML"}, reportsDir)
+	_, _, previousReportPath, reportPath, _, _, _, _, err := prepareCycleEnvironment(RunOptions{NoBranchChange: true}, state, config.Milestone{ID: "MS-YAML"}, reportsDir)
 	if err != nil {
 		t.Fatalf("prepareCycleEnvironment failed: %v", err)
 	}
@@ -2301,6 +2629,44 @@ func TestPrepareCycleEnvironmentUsesYAMLReportPaths(t *testing.T) {
 	}
 	if !strings.HasSuffix(reportPath, "MS-YAML-cycle-002.yaml") {
 		t.Fatalf("expected current YAML report path, got %q", reportPath)
+	}
+}
+
+func TestPrepareCycleEnvironmentWritesEmbeddedRepoWarningsToMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := exec.Command("git", "init").Run(); err != nil {
+		t.Fatalf("failed to init root repo: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join("tools", "nested"), 0755); err != nil {
+		t.Fatalf("failed to create nested repo dir: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("tools", "nested"), "init").Run(); err != nil {
+		t.Fatalf("failed to init nested repo: %v", err)
+	}
+
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	if err := os.MkdirAll(reportsDir, 0755); err != nil {
+		t.Fatalf("failed to create reports dir: %v", err)
+	}
+	_, _, _, _, metadataPath, _, warnings, _, err := prepareCycleEnvironment(RunOptions{NoBranchChange: true}, &config.State{}, config.Milestone{ID: "MS-META"}, reportsDir)
+	if err != nil {
+		t.Fatalf("prepareCycleEnvironment failed: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "tools/nested") {
+		t.Fatalf("expected embedded repo warning from prepareCycleEnvironment, got %#v", warnings)
+	}
+
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+	var metadata CycleMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatalf("failed to parse metadata: %v\n%s", err, string(data))
+	}
+	if len(metadata.InformationalWarnings) != 1 || !strings.Contains(metadata.InformationalWarnings[0], "tools/nested") {
+		t.Fatalf("expected metadata informational warning, got %#v", metadata.InformationalWarnings)
 	}
 }
 

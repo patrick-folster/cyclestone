@@ -64,10 +64,10 @@ Project config:
 Runtime output:
 
 - `.cyclestone/state.json`: active milestone, status, cycles, cycle-continuation recommendation scores, `AGENTS.md` update recommendation scores, and history.
-- `.cyclestone/reports/*-cycle-NNN.yaml`: structured cycle reports.
+- `.cyclestone/reports/*-cycle-NNN.yaml`: structured cycle reports. Informational repository warnings, such as untracked embedded Git repositories, are written under `informational_warnings` for human awareness and are not recommender score drivers unless the milestone explicitly targets that repository topology.
 - `.cyclestone/reports/*.md`: milestone summary rollups.
 - `.cyclestone/reports/*handoff.yaml`: structured phase handoffs. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`.
-- `.cyclestone/reports/*metadata.json`: cycle metadata.
+- `.cyclestone/reports/*metadata.json`: cycle metadata, including git context and informational warnings when present.
 - `.cyclestone/temp/*handoff.yaml`: per-phase temp YAML files agents are instructed to write their structured handoff to (cleaned before each run).
 
 Malformed YAML, missing required fields, or wrong field types are written to `validation_errors` and surfaced in reports and TUI history. Invalid Developer output marks the cycle failed. Invalid QA output, or a QA verdict of `blocked` or `needs-human-review`, maps to the existing blocked cycle status. Recommender score loading uses validated structured handoff data. Missing or invalid recommender handoffs leave both recommendation scores unavailable rather than fabricating numeric defaults.

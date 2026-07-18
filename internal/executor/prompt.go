@@ -146,6 +146,9 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 
 	if gitContextPath != "" {
 		appendGitContextToBuilder(&sb, gitContextPath)
+		if agent.ID == "pm" || agent.ID == "developer" || agent.ID == "qa" {
+			appendEmbeddedRepoInformationalWarningsToBuilder(&sb, git.GetTrackedRepos())
+		}
 	}
 
 	sb.WriteString("## Workspace Safety Rules\n\n")
@@ -202,6 +205,7 @@ func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum
 		appendMilestoneSpecToBuilder(&sb, milestone)
 		if gitContextPath != "" {
 			appendGitContextToBuilder(&sb, gitContextPath)
+			appendEmbeddedRepoInformationalWarningsToBuilder(&sb, git.GetTrackedRepos())
 		}
 		if cycleNum > 1 && previousReportPath != "" {
 			appendPreviousCycleSummaryToBuilder(&sb, previousReportPath)
@@ -239,6 +243,7 @@ func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Ag
 		reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
 		qaHandoff = summarizeCycleReport(reportPath)
 	}
+	qaHandoff = stripEmbeddedRepoInformationalWarningContext(qaHandoff)
 
 	var criteriaBuilder strings.Builder
 	for _, criterion := range milestone.AcceptanceCriteria {
@@ -369,24 +374,189 @@ func appendHandoffToBuilder(sb *strings.Builder, heading, milestoneID, cyclePadd
 
 func appendCurrentGitStatusToBuilder(sb *strings.Builder) {
 	sb.WriteString("## Current Git Status\n\n```text\n")
-	for _, repo := range git.GetTrackedRepos() {
+	repos := git.GetTrackedRepos()
+	for _, repo := range repos {
 		sb.WriteString("### " + repo.Label + "\n")
 		if out, err := exec.Command("git", "-C", repo.Path, "status", "--short").Output(); err == nil {
 			sb.Write(out)
 		}
 	}
 	sb.WriteString("```\n\n")
+	appendEmbeddedRepoInformationalWarningsToBuilder(sb, repos)
 }
 
 func appendChangedFilesToBuilder(sb *strings.Builder) {
 	sb.WriteString("## Changed Files\n\n```text\n")
-	for _, repo := range git.GetTrackedRepos() {
+	repos := git.GetTrackedRepos()
+	for _, repo := range repos {
 		sb.WriteString("### " + repo.Label + "\n")
 		if out, err := exec.Command("git", "-C", repo.Path, "diff", "--name-status").Output(); err == nil {
 			sb.Write(out)
 		}
 	}
 	sb.WriteString("```\n\n")
+	appendEmbeddedRepoInformationalWarningsToBuilder(sb, repos)
+}
+
+func appendEmbeddedRepoInformationalWarningsToBuilder(sb *strings.Builder, repos []git.RepoInfo) {
+	warnings := embeddedRepoInformationalWarnings(git.DiscoverUntrackedEmbeddedRepos(repos))
+	if len(warnings) == 0 {
+		return
+	}
+	sb.WriteString("## Informational Warnings\n\n")
+	for _, warning := range warnings {
+		sb.WriteString("- " + warning + "\n")
+	}
+	sb.WriteString("\nThese warnings are for human awareness only. Do not treat them as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.\n\n")
+}
+
+func stripEmbeddedRepoInformationalWarningContext(text string) string {
+	if text == "" {
+		return text
+	}
+	type block struct {
+		heading string
+		lines   []string
+	}
+	var blocks []block
+	current := block{}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+			blocks = append(blocks, current)
+			current = block{heading: strings.TrimLeft(trimmed, "# ")}
+		}
+		current.lines = append(current.lines, line)
+	}
+	blocks = append(blocks, current)
+
+	var filtered []string
+	for _, block := range blocks {
+		lines := block.lines
+		if embeddedRepoInformationalOnlyBlock(block.heading, lines) {
+			lines = stripEmbeddedRepoInformationalOnlyBlockLines(lines)
+		} else {
+			lines = stripEmbeddedRepoInformationalWarningLines(lines)
+		}
+		filtered = append(filtered, lines...)
+	}
+	return strings.Join(filtered, "\n")
+}
+
+func embeddedRepoInformationalOnlyBlock(section string, lines []string) bool {
+	hasEmbeddedRepoWarning := false
+	for _, line := range lines {
+		if isEmbeddedRepoInformationalWarningLine(line) {
+			hasEmbeddedRepoWarning = true
+			break
+		}
+	}
+	if !hasEmbeddedRepoWarning {
+		return false
+	}
+	actionableField := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if field, ok := embeddedRepoWarningContextField(trimmed); ok {
+			actionableField = field
+			continue
+		}
+		if embeddedRepoWarningNeutralField(trimmed) {
+			actionableField = ""
+			continue
+		}
+		if trimmed == "" ||
+			isEmbeddedRepoInformationalWarningLine(trimmed) ||
+			isEmbeddedRepoInformationalWarningSchemaLine(trimmed) ||
+			strings.HasPrefix(trimmed, "## ") ||
+			strings.HasPrefix(trimmed, "### ") {
+			continue
+		}
+		if actionableField != "" {
+			return false
+		}
+		if isContinuationSignalLine(trimmed, section) {
+			return false
+		}
+	}
+	return true
+}
+
+func embeddedRepoWarningContextField(line string) (string, bool) {
+	key := strings.TrimSpace(line)
+	if strings.HasPrefix(key, "- ") {
+		return "", false
+	}
+	key = strings.TrimSuffix(key, "[]")
+	key = strings.TrimSpace(key)
+	key = strings.TrimSuffix(key, ":")
+	switch key {
+	case "failing_checks", "required_fixes", "criteria_results", "next_cycle_focus":
+		return key, true
+	default:
+		return "", false
+	}
+}
+
+func embeddedRepoWarningNeutralField(line string) bool {
+	key := strings.TrimSpace(line)
+	if strings.HasPrefix(key, "- ") {
+		return false
+	}
+	key = strings.TrimSuffix(key, "[]")
+	key = strings.TrimSpace(key)
+	key = strings.TrimSuffix(key, ":")
+	switch key {
+	case "reviewed_files", "verdict", "summary", "milestone_id", "cycle", "agent_id", "output_contract", "validation_status", "source_log":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripEmbeddedRepoInformationalOnlyBlockLines(lines []string) []string {
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isEmbeddedRepoInformationalWarningLine(trimmed) || isEmbeddedRepoInformationalWarningSchemaLine(trimmed) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return filtered
+}
+
+func stripEmbeddedRepoInformationalWarningLines(lines []string) []string {
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isEmbeddedRepoInformationalWarningLine(strings.TrimSpace(line)) {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return filtered
+}
+
+func isEmbeddedRepoInformationalWarningLine(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "embedded git repository detected at") ||
+		strings.Contains(lower, "untracked embedded git repositories") ||
+		strings.Contains(lower, "do not treat them as acceptance gaps") ||
+		strings.Contains(lower, "excluded from recommender scoring; add it to repositories or .gitmodules")
+}
+
+func isEmbeddedRepoInformationalWarningSchemaLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	return lower == "verdict: blocked" ||
+		lower == "verdict: failed" ||
+		lower == "verdict: fail" ||
+		lower == "verdict: needs-human-review" ||
+		lower == "verdict: needs_human_review" ||
+		lower == "failing_checks:" ||
+		lower == "required_fixes:" ||
+		lower == "criteria_results:" ||
+		lower == "next_cycle_focus:" ||
+		lower == "- []"
 }
 
 func assembleAgentInstructionsUpdateInput(milestone config.Milestone, milestoneScoped bool, opts RunOptions) string {

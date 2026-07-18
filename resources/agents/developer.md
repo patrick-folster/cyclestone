@@ -50,6 +50,7 @@ Implement only the current milestone by extending the existing system.
 - If a worktree has unrelated existing changes, do not revert them. Report them separately.
 - Use a branch with the required project prefix in every repository you change, unless the run explicitly forbids branch changes.
 - Check the root repository plus configured/discovered repositories separately. If you directly change a submodule/subrepository, branch it separately with the same prefix when branch changes are allowed.
+- Treat informational warnings about untracked embedded Git repositories as human-awareness notes only. Do not include them as implementation risks, skipped checks, required follow-up, or blockers unless the milestone explicitly targets repository topology or embedded repository contents.
 - Always properly document your changes. Write clear inline comments, docstrings for new/updated methods/classes, update external documentation or READMEs, and propose concise `AGENTS.md` updates in handoff data for source roots, checks, or constraints where applicable.
 - Do not edit `AGENTS.md` as ordinary implementation output. When current durable instructions should change, put the proposed complete content in `proposed_agent_instructions_update` in the YAML handoff for explicit human review.
 - Always add tests to verify that the results of your implementation are correct. Do not rely solely on manual verification.

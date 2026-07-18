@@ -123,6 +123,12 @@ type RepoStatusSummary struct {
 	StatusShort  string
 }
 
+// EmbeddedRepoWarning describes a nested git repository that is not part of
+// Cyclestone's configured/discovered tracked repository set.
+type EmbeddedRepoWarning struct {
+	Path string
+}
+
 // ConfigPath is the configurable path to the milestone YAML configuration.
 var ConfigPath = ".cyclestone/milestone.yml"
 
@@ -189,6 +195,84 @@ func GetTrackedRepos() []RepoInfo {
 	}
 
 	return repos
+}
+
+// DiscoverUntrackedEmbeddedRepos returns nested git repository roots that are
+// inside the current repository but absent from the tracked repository list.
+func DiscoverUntrackedEmbeddedRepos(repos []RepoInfo) []EmbeddedRepoWarning {
+	rootAbs, err := filepath.Abs(".")
+	if err != nil {
+		return nil
+	}
+
+	tracked := map[string]bool{}
+	for _, repo := range repos {
+		cleanRel, err := cleanRelativePath(rootAbs, repo.Path)
+		if err != nil || cleanRel == "" {
+			continue
+		}
+		tracked[cleanRel] = true
+	}
+
+	var warnings []EmbeddedRepoWarning
+	seen := map[string]bool{}
+	_ = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		cleanPath := filepath.Clean(path)
+		if cleanPath == "." {
+			return nil
+		}
+
+		if entry.IsDir() {
+			name := entry.Name()
+			if shouldSkipEmbeddedRepoScanDir(name) {
+				return filepath.SkipDir
+			}
+			if name == ".git" {
+				if parent := filepath.Dir(cleanPath); parent != "." {
+					addEmbeddedRepoWarning(parent, tracked, seen, &warnings)
+				}
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if entry.Name() == ".git" {
+			if parent := filepath.Dir(cleanPath); parent != "." {
+				addEmbeddedRepoWarning(parent, tracked, seen, &warnings)
+			}
+		}
+		return nil
+	})
+
+	sort.Slice(warnings, func(i, j int) bool {
+		return warnings[i].Path < warnings[j].Path
+	})
+	return warnings
+}
+
+func addEmbeddedRepoWarning(path string, tracked, seen map[string]bool, warnings *[]EmbeddedRepoWarning) {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "." || tracked[cleanPath] || seen[cleanPath] {
+		return
+	}
+	seen[cleanPath] = true
+	*warnings = append(*warnings, EmbeddedRepoWarning{Path: cleanPath})
+}
+
+func shouldSkipEmbeddedRepoScanDir(name string) bool {
+	switch name {
+	case ".cyclestone", "node_modules", "vendor":
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanRelativePath(rootAbs, p string) (string, error) {

@@ -43,6 +43,7 @@ Prepare a milestone so the Developer can implement it safely and narrowly.
 - Do not introduce dependencies.
 - Keep the milestone small enough for one safe iterative loop.
 - Prefer explicit non-goals over vague scope.
+- Treat untracked embedded Git repository status as a human-awareness note only. Do not include it as a milestone risk, dependency, unknown, or Developer follow-up unless the milestone explicitly targets repository topology or embedded repository contents.
 - Do not write or hardcode absolute paths in files like AGENTS.md, DECISIONS.md, or project configurations. Use relative paths or the {{WORKSPACE_ROOT}} placeholder instead.
 - Do not edit `AGENTS.md`. If durable operating instructions should change, put the proposed complete content in `proposed_agent_instructions_update` in the YAML handoff for explicit human review.
 

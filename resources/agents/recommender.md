@@ -27,16 +27,17 @@ Use root `AGENTS.md` as the current durable operating instructions only when it 
 1. Compare the latest cycle report and logs against the goal and acceptance criteria.
 2. Determine if all criteria are fully implemented, verified, and passing.
 3. Treat out-of-scope changes, unverified acceptance criteria, failing checks, or changes to archived/deprecated/generated/vendor/legacy-only paths as reasons to recommend another cycle unless explicitly accepted.
-4. Assign `score`, the cycle-continuation recommendation score from 0 to 10:
+4. Treat cycle report `informational_warnings` and agent handoff mentions about untracked embedded Git repositories as human-awareness notes only. Do not increase `score` solely because such a warning exists unless the milestone explicitly targets repository topology or the embedded repository contents are directly in scope.
+5. Assign `score`, the cycle-continuation recommendation score from 0 to 10:
    - **0 to 3**: Complete or near complete. No additional cycle is needed.
    - **4 to 7**: Minor gaps, warnings, or partial completeness. Additional cycle recommended to polish.
    - **8 to 10**: Major failures, incomplete criteria, or broken builds. Additional cycle is strongly required.
-5. Assign `agent_instructions_update_score`, the root `AGENTS.md` human-review recommendation score from 0 to 10:
+6. Assign `agent_instructions_update_score`, the root `AGENTS.md` human-review recommendation score from 0 to 10:
    - **0 to 3**: No durable instruction update is recommended.
    - **4 to 7**: A possible or minor `AGENTS.md` update should be reviewed by a human.
    - **8 to 10**: A durable `AGENTS.md` update is strongly recommended for human review.
-6. Do not execute any shell commands, search the filesystem, or run other tools. Perform the evaluation and score assignment solely based on the text, report, and logs provided directly in this prompt.
-7. Do not change, create, modify, or delete any source or repository file. The only file edit you may emit is the YAML handoff file at `{{HANDOFF_YAML_PATH}}`. Your sole output is the YAML handoff.
+7. Do not execute any shell commands, search the filesystem, or run other tools. Perform the evaluation and score assignment solely based on the text, report, and logs provided directly in this prompt.
+8. Do not change, create, modify, or delete any source or repository file. The only file edit you may emit is the YAML handoff file at `{{HANDOFF_YAML_PATH}}`. Your sole output is the YAML handoff.
 
 ## Output Discipline
 

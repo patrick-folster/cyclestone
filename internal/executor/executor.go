@@ -286,11 +286,12 @@ func ExecuteAgentInstructionsUpdate(ctx context.Context, milestone config.Milest
 
 // CycleMetadata holds the aggregated context and state validation info for a milestone cycle.
 type CycleMetadata struct {
-	MilestoneID    string                   `json:"milestone_id"`
-	CycleNumber    int                      `json:"cycle_number"`
-	Timestamp      string                   `json:"timestamp"`
-	BranchSnapshot []git.RepoBranchSnapshot `json:"branch_snapshot,omitempty"`
-	GitContext     string                   `json:"git_context"`
+	MilestoneID           string                   `json:"milestone_id"`
+	CycleNumber           int                      `json:"cycle_number"`
+	Timestamp             string                   `json:"timestamp"`
+	BranchSnapshot        []git.RepoBranchSnapshot `json:"branch_snapshot,omitempty"`
+	GitContext            string                   `json:"git_context"`
+	InformationalWarnings []string                 `json:"informational_warnings,omitempty"`
 }
 
 type agentInstructionsSnapshot struct {
@@ -408,7 +409,7 @@ func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []co
 	}
 
 	cycleStartTime := time.Now()
-	cycleNum, branchName, previousReportPath, reportPath, metadataPath, repos, gitError, err := prepareCycleEnvironment(opts, state, milestone, reportsDir)
+	cycleNum, branchName, previousReportPath, reportPath, metadataPath, repos, informationalWarnings, gitError, err := prepareCycleEnvironment(opts, state, milestone, reportsDir)
 	if err != nil {
 		sendExecutorMsg(ctx, ch, CycleFinishedMsg{MilestoneID: milestone.ID, Error: err})
 		return
@@ -426,7 +427,7 @@ func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []co
 	defer reportFile.Close()
 
 	// Write initial report header
-	writeReportHeader(reportFile, milestone.ID, branchName, cycleNum, previousReportPath, metadataPath, opts, gitError)
+	writeReportHeader(reportFile, milestone.ID, branchName, cycleNum, previousReportPath, metadataPath, opts, informationalWarnings, gitError)
 
 	var cycleStatus = "approved"
 	codexThreadID := ""
@@ -794,20 +795,21 @@ func isPrimaryCycleReportFile(milestoneID, baseName string) bool {
 }
 
 type cycleReportYAML struct {
-	MilestoneID         string `yaml:"milestone_id"`
-	Started             string `yaml:"started"`
-	Root                string `yaml:"root"`
-	Branch              string `yaml:"branch"`
-	BranchChanges       string `yaml:"branch_changes"`
-	Cycle               string `yaml:"cycle"`
-	CycleMode           string `yaml:"cycle_mode"`
-	MilestoneFile       string `yaml:"milestone_file"`
-	SummaryReport       string `yaml:"summary_report"`
-	PreviousCycleReport string `yaml:"previous_cycle_report"`
-	CycleMetadata       string `yaml:"cycle_metadata"`
-	HumanCycleNote      string `yaml:"human_cycle_note"`
-	Details             string `yaml:"details"`
-	ParseError          string
+	MilestoneID           string   `yaml:"milestone_id"`
+	Started               string   `yaml:"started"`
+	Root                  string   `yaml:"root"`
+	Branch                string   `yaml:"branch"`
+	BranchChanges         string   `yaml:"branch_changes"`
+	Cycle                 string   `yaml:"cycle"`
+	CycleMode             string   `yaml:"cycle_mode"`
+	MilestoneFile         string   `yaml:"milestone_file"`
+	SummaryReport         string   `yaml:"summary_report"`
+	PreviousCycleReport   string   `yaml:"previous_cycle_report"`
+	CycleMetadata         string   `yaml:"cycle_metadata"`
+	InformationalWarnings []string `yaml:"informational_warnings"`
+	HumanCycleNote        string   `yaml:"human_cycle_note"`
+	Details               string   `yaml:"details"`
+	ParseError            string
 }
 
 func readCycleReportYAML(path string) (cycleReportYAML, string) {
@@ -903,7 +905,7 @@ func summarizeCycleReport(path string) string {
 		details = text
 	}
 
-	phases, important := summarizeCycleReportDetails(details)
+	phases, important := summarizeCycleReportDetails(stripEmbeddedRepoInformationalWarningContext(details))
 
 	appendList := func(title string, lines []string) {
 		if len(lines) == 0 {
@@ -996,7 +998,9 @@ func summarizeCycleReportDetails(details string) ([]string, []string) {
 		if !inFence && strings.HasPrefix(trimmed, "## ") {
 			flushBlock()
 			currentSection = strings.TrimPrefix(trimmed, "## ")
-			phases = append(phases, currentSection)
+			if currentSection != "Informational Warnings" {
+				phases = append(phases, currentSection)
+			}
 			collectBlock = currentSection == "Check Summary" ||
 				currentSection == "Branch Policy Violation" ||
 				currentSection == "Branch Policy Check" ||
@@ -1087,7 +1091,7 @@ func isContinuationSignalLine(line, section string) bool {
 		return true
 	}
 
-	return strings.Contains(section, "Quality") && strings.HasPrefix(line, "- ")
+	return (strings.Contains(section, "Quality") || strings.Contains(section, "QA")) && strings.HasPrefix(line, "- ")
 }
 
 // CreateMilestoneProgressMsg is sent when the creation agent outputs a line to stdout/stderr.
@@ -1716,7 +1720,7 @@ func runCodex(ctx context.Context, runner string, agentID string, inputContent s
 	}
 	return 0, nil
 }
-func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone config.Milestone, reportsDir string) (cycleNum int, branchName string, previousReportPath string, reportPath string, metadataPath string, repos []git.RepoInfo, gitError error, err error) {
+func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone config.Milestone, reportsDir string) (cycleNum int, branchName string, previousReportPath string, reportPath string, metadataPath string, repos []git.RepoInfo, informationalWarnings []string, gitError error, err error) {
 	cycleNum = state.GetMilestoneCycles(milestone.ID) + 1
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
 	settings := config.LoadMergedSettings()
@@ -1745,6 +1749,7 @@ func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone con
 	reportPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
 	metadataPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-metadata.json", milestone.ID, cyclePadded))
 	repos = git.GetTrackedRepos()
+	informationalWarnings = embeddedRepoInformationalWarnings(git.DiscoverUntrackedEmbeddedRepos(repos))
 
 	// Setup Git branch or snapshot
 	var snapshots []git.RepoBranchSnapshot
@@ -1765,18 +1770,34 @@ func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone con
 
 	// Build and write cycle metadata JSON
 	metadata := CycleMetadata{
-		MilestoneID:    milestone.ID,
-		CycleNumber:    cycleNum,
-		Timestamp:      time.Now().Format(time.RFC3339),
-		BranchSnapshot: snapshots,
-		GitContext:     gitContextStr,
+		MilestoneID:           milestone.ID,
+		CycleNumber:           cycleNum,
+		Timestamp:             time.Now().Format(time.RFC3339),
+		BranchSnapshot:        snapshots,
+		GitContext:            gitContextStr,
+		InformationalWarnings: informationalWarnings,
 	}
 
 	if metadataBytes, err := json.MarshalIndent(metadata, "", "  "); err == nil {
 		_ = os.WriteFile(metadataPath, metadataBytes, 0644)
 	}
 
-	return cycleNum, branchName, previousReportPath, reportPath, metadataPath, repos, gitError, nil
+	return cycleNum, branchName, previousReportPath, reportPath, metadataPath, repos, informationalWarnings, gitError, nil
+}
+
+func embeddedRepoInformationalWarnings(embeddedRepos []git.EmbeddedRepoWarning) []string {
+	if len(embeddedRepos) == 0 {
+		return nil
+	}
+	warnings := make([]string, 0, len(embeddedRepos))
+	for _, embeddedRepo := range embeddedRepos {
+		path := strings.TrimSpace(embeddedRepo.Path)
+		if path == "" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("Embedded Git repository detected at %s without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately.", path))
+	}
+	return warnings
 }
 
 func initCycleLog(state *config.State, opts RunOptions, milestoneID string, cycleNum int, branchName string) {
@@ -1794,7 +1815,7 @@ func initCycleLog(state *config.State, opts RunOptions, milestoneID string, cycl
 	_ = config.SaveState(opts.StatePath, state)
 }
 
-func writeReportHeader(reportFile *os.File, milestoneID string, branchName string, cycleNum int, previousReportPath string, metadataPath string, opts RunOptions, gitError error) {
+func writeReportHeader(reportFile *os.File, milestoneID string, branchName string, cycleNum int, previousReportPath string, metadataPath string, opts RunOptions, informationalWarnings []string, gitError error) {
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
 	cycleMode := "initial"
 	if cycleNum > 1 {
@@ -1818,6 +1839,12 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 		fmt.Fprintf(reportFile, "previous_cycle_report: %s\n", yamlQuote(previousReportPath))
 	}
 	fmt.Fprintf(reportFile, "cycle_metadata: %s\n", yamlQuote(metadataPath))
+	if len(informationalWarnings) > 0 {
+		fmt.Fprintf(reportFile, "informational_warnings:\n")
+		for _, warning := range informationalWarnings {
+			fmt.Fprintf(reportFile, "  - %s\n", yamlQuote(warning))
+		}
+	}
 
 	if strings.TrimSpace(opts.CycleNote) != "" {
 		fmt.Fprintf(reportFile, "human_cycle_note: |-\n")
@@ -1826,10 +1853,22 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 
 	fmt.Fprintf(reportFile, "details: |-\n")
 	writeReportDetailf(reportFile, "## Workflow\n\nExecuting PM -> Developer -> QA phases for cycle %s (%s).\n", cyclePadded, cycleMode)
+	writeInformationalWarningsReportDetail(reportFile, informationalWarnings)
 
 	if gitError != nil {
 		writeReportDetailf(reportFile, "\n### Git Configuration Error\n\n%v\n", gitError)
 	}
+}
+
+func writeInformationalWarningsReportDetail(reportFile *os.File, informationalWarnings []string) {
+	if len(informationalWarnings) == 0 {
+		return
+	}
+	writeReportDetailf(reportFile, "\n## Informational Warnings\n\n")
+	for _, warning := range informationalWarnings {
+		writeReportDetailf(reportFile, "- %s\n", warning)
+	}
+	writeReportDetailf(reportFile, "\nThese warnings are for human awareness only and must not be treated as acceptance gaps, required fixes, failing checks, or cycle-continuation score drivers unless the milestone explicitly targets repository topology.\n")
 }
 
 func yamlQuote(value string) string {

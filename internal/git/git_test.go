@@ -282,6 +282,153 @@ func TestGetTrackedReposNoConfigDiscoversArbitraryReposWithoutLegacyFallback(t *
 	}
 }
 
+func TestDiscoverUntrackedEmbeddedReposFindsNestedReposWithoutGitmodules(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "git_embedded_repo_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origWd)
+	}()
+
+	initTestRepo(t)
+	if err := os.MkdirAll(filepath.Join("tools", "nested"), 0755); err != nil {
+		t.Fatalf("failed to create nested dir: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("tools", "nested"), "init").Run(); err != nil {
+		t.Fatalf("failed to init nested repo: %v", err)
+	}
+
+	warnings := DiscoverUntrackedEmbeddedRepos([]RepoInfo{{Label: "root", Path: "."}})
+	if len(warnings) != 1 || warnings[0].Path != filepath.Join("tools", "nested") {
+		t.Fatalf("unexpected embedded repo warnings: %#v", warnings)
+	}
+}
+
+func TestDiscoverUntrackedEmbeddedReposSkipsTrackedSubmodules(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "git_embedded_tracked_repo_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origWd)
+	}()
+
+	initTestRepo(t)
+	if err := os.MkdirAll(filepath.Join("services", "api"), 0755); err != nil {
+		t.Fatalf("failed to create nested dir: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("services", "api"), "init").Run(); err != nil {
+		t.Fatalf("failed to init nested repo: %v", err)
+	}
+
+	warnings := DiscoverUntrackedEmbeddedRepos([]RepoInfo{
+		{Label: "root", Path: "."},
+		{Label: filepath.Join("services", "api"), Path: filepath.Join("services", "api")},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("expected tracked nested repo to be skipped, got %#v", warnings)
+	}
+}
+
+func TestDiscoverUntrackedEmbeddedReposFindsRepoInsideTrackedRepo(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "git_embedded_inside_tracked_repo_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origWd)
+	}()
+
+	initTestRepo(t)
+	if err := os.MkdirAll(filepath.Join("services", "api", "tools", "nested"), 0755); err != nil {
+		t.Fatalf("failed to create nested dir: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("services", "api"), "init").Run(); err != nil {
+		t.Fatalf("failed to init tracked repo: %v", err)
+	}
+	if err := exec.Command("git", "-C", filepath.Join("services", "api", "tools", "nested"), "init").Run(); err != nil {
+		t.Fatalf("failed to init embedded repo: %v", err)
+	}
+
+	warnings := DiscoverUntrackedEmbeddedRepos([]RepoInfo{
+		{Label: "root", Path: "."},
+		{Label: filepath.Join("services", "api"), Path: filepath.Join("services", "api")},
+	})
+	if len(warnings) != 1 || warnings[0].Path != filepath.Join("services", "api", "tools", "nested") {
+		t.Fatalf("expected nested repo inside tracked repo to be warned, got %#v", warnings)
+	}
+}
+
+func TestDiscoverUntrackedEmbeddedReposSkipsGeneratedVendorDirs(t *testing.T) {
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "git_embedded_generated_repo_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(origWd)
+	}()
+
+	initTestRepo(t)
+	for _, dir := range []string{
+		filepath.Join("node_modules", "pkg"),
+		filepath.Join("vendor", "pkg"),
+		filepath.Join(".cyclestone", "temp", "repo"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create %s: %v", dir, err)
+		}
+		if err := exec.Command("git", "-C", dir, "init").Run(); err != nil {
+			t.Fatalf("failed to init nested repo %s: %v", dir, err)
+		}
+	}
+
+	warnings := DiscoverUntrackedEmbeddedRepos([]RepoInfo{{Label: "root", Path: "."}})
+	if len(warnings) != 0 {
+		t.Fatalf("expected generated/vendor embedded repos to be skipped, got %#v", warnings)
+	}
+}
+
 func TestGetTrackedReposMergesConfiguredAndDiscoveredDeterministically(t *testing.T) {
 	origWd, err := os.Getwd()
 	if err != nil {

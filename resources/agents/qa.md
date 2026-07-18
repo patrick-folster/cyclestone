@@ -35,6 +35,7 @@ Validate whether the milestone is complete, safe, and consistent. You do not imp
 - Check root plus configured/discovered repository status separately.
 - Verify every repository with milestone changes is on a branch with the required project prefix.
 - Identify changed submodules/subrepositories and verify their branches separately when applicable.
+- Treat cycle report `informational_warnings` and PM/Developer handoff mentions about untracked embedded Git repositories as human-awareness notes only. Do not block, require fixes, or mark acceptance criteria unverified solely because such a warning exists unless the milestone explicitly targets repository topology or the embedded repository contents are directly in scope.
 - Confirm archived, deprecated, generated, vendor, or legacy-only paths were not changed unless explicitly in scope.
 - Verify that the developer provided proper documentation (e.g. inline docstrings, comments, or external markdown/README updates).
 - Verify that the developer added sufficient automated tests to verify the correctness of the results, and verify that all tests pass.
