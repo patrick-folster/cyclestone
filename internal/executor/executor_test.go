@@ -313,6 +313,23 @@ func TestAssembleAgentInstructionsUpdateInputRepositoryContextIncludesChecksAndE
 	}
 }
 
+func TestAssembleAgentInstructionsUpdateInputWithoutOptionalInstructionFiles(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+
+	input := assembleAgentInstructionsUpdateInput(config.Milestone{ID: "MS-MISSING-INSTRUCTIONS"}, false, RunOptions{NoBranchChange: true})
+	if !strings.Contains(input, "# AGENTS.md Update Proposal Input") || !strings.Contains(input, "Scope: repository-wide") {
+		t.Fatalf("expected update prompt to build without optional instruction files, got:\n%s", input)
+	}
+	for _, omitted := range []string{"## Agent Instructions", "## Decisions Log"} {
+		if strings.Contains(input, omitted) {
+			t.Fatalf("expected missing optional section %q to be omitted, got:\n%s", omitted, input)
+		}
+	}
+}
+
 func TestExecuteAgentInstructionsUpdateCapturesProposalAndRestoresAgents(t *testing.T) {
 	withFakeCodexTestDir(t, `#!/bin/sh
 cat >/dev/null
@@ -3137,6 +3154,47 @@ func TestAssembleInputWithoutAgentsStillBuildsPrompt(t *testing.T) {
 				t.Fatalf("expected decisions log to remain loaded, got:\n%s", input)
 			}
 		})
+	}
+}
+
+func TestAssembleInputWithoutOptionalInstructionFilesStillBuildsPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "milestones"), 0755); err != nil {
+		t.Fatalf("failed to create milestone dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-NO-OPTIONAL-CONTEXT.md"), []byte("# MS-NO-OPTIONAL-CONTEXT\nMilestone body"), 0644); err != nil {
+		t.Fatalf("failed to write milestone spec: %v", err)
+	}
+
+	for _, compact := range []bool{false, true} {
+		for _, agentID := range []string{"pm", "qa", "recommender"} {
+			t.Run(fmt.Sprintf("compact_%v_%s", compact, agentID), func(t *testing.T) {
+				settings := config.Settings{EnableCompactPhaseHandoffs: &compact}
+				input := assembleInputWithSettings(
+					config.Milestone{ID: "MS-NO-OPTIONAL-CONTEXT", Goal: "assemble without optional context"},
+					config.Agent{ID: agentID, Name: "Test Agent", PromptBody: "role prompt"},
+					1,
+					RunOptions{},
+					"",
+					"",
+					settings,
+					nil,
+				)
+
+				if !strings.Contains(input, "role prompt") {
+					t.Fatalf("expected prompt to build without optional instruction files, got:\n%s", input)
+				}
+				if agentID != "recommender" && !strings.Contains(input, "MS-NO-OPTIONAL-CONTEXT") {
+					t.Fatalf("expected phase prompt to include milestone context, got:\n%s", input)
+				}
+				for _, omitted := range []string{"## Agent Instructions", "## Decisions Log", "## QA Checklist"} {
+					if strings.Contains(input, omitted) {
+						t.Fatalf("expected missing optional section %q to be omitted, got:\n%s", omitted, input)
+					}
+				}
+			})
+		}
 	}
 }
 

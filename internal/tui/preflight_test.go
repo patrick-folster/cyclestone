@@ -190,6 +190,40 @@ func TestPreflightRendersInstructionSourcesPresentAndMissing(t *testing.T) {
 	}
 }
 
+func TestPreflightMissingInstructionSourcesAreNonBlocking(t *testing.T) {
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	model := NewPreflightModel(DefaultStyles(true, true))
+	model.Width = 100
+	model.Height = 40
+	model.Settings = config.LoadDefaultSettings()
+	model.InstructionSources = model.loadInstructionSources()
+	model.Pipeline = []config.Agent{{ID: "manual", Name: "Manual", RunnerBinary: "manual"}}
+	model.Milestone = config.Milestone{ID: "MS", Title: "Sources"}
+	model.validate()
+
+	text := model.content()
+	for _, want := range []string{
+		"Agent instructions: AGENTS.md (missing)",
+		"Decisions log: .cyclestone/DECISIONS.md (missing)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected missing source status %q, got:\n%s", want, text)
+		}
+	}
+	if model.HasBlockers() {
+		t.Fatalf("expected missing instruction sources not to block preflight, issues: %#v", model.Issues)
+	}
+}
+
 func TestPreflightValidationBlocksInvalidGroupAndUnsupportedRunner(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	state := &config.State{
