@@ -27,6 +27,10 @@ const (
 const (
 	maxRunnerLogLines    = 500
 	maxRunnerStatusLines = 200
+	runnerContextLines   = 5
+	runnerBudgetLines    = 2
+	runnerSummaryLines   = 7
+	runnerProposalLines  = 6
 )
 
 // RunnerModel manages the run status screen.
@@ -454,8 +458,13 @@ func (m RunnerModel) View() string {
 	if m.Finished && m.isAgentInstructionsWorkflow() {
 		helpCommands = append([]string{"y Apply-AGENTS", "i Save-Draft"}, helpCommands...)
 	}
+	layoutHelpCommands := helpCommands
+	if !m.Finished && m.isAgentInstructionsWorkflow() {
+		layoutHelpCommands = append([]string{"y Apply-AGENTS", "i Save-Draft"}, helpCommands...)
+	}
 	helpText := renderCommandHelp(m.Styles, helpCommands, helpWidth)
-	helpLines := strings.Count(helpText, "\n") + 1
+	helpLines := renderedLineCount(renderCommandHelp(m.Styles, layoutHelpCommands, helpWidth))
+	helpText = padRenderedText(helpText, helpLines)
 
 	if m.Height < 20 {
 		// Tabbed view layout for small resolution
@@ -504,31 +513,27 @@ func (m RunnerModel) View() string {
 				logBoxHeight = 3
 			}
 
-			var visibleLogs []string
-			if len(m.Logs) > logBoxHeight {
-				visibleLogs = m.Logs[len(m.Logs)-logBoxHeight:]
-			} else {
-				visibleLogs = m.Logs
+			logContentHeight := logBoxHeight - 2
+			if logContentHeight < 1 {
+				logContentHeight = 1
 			}
-
-			if len(visibleLogs) == 0 {
-				visibleLogs = []string{m.Styles.HelpStyle.Render("Preparing execution environment...")}
+			logContentWidth := m.Width - 8
+			if logContentWidth < 10 {
+				logContentWidth = 10
 			}
-			visibleLogs = padLogLines(visibleLogs, logBoxHeight)
-
-			logContent := strings.Join(visibleLogs, "\n")
+			logContent := renderBoundedLines(m.Logs, logContentWidth, logContentHeight, "Preparing execution environment...")
 			logBox := m.Styles.InactiveBorder.
 				Width(m.Width - 6).
 				Height(logBoxHeight).
-				Render(truncateLines(logContent, logBoxHeight))
+				Render(logContent)
 
 			sb.WriteString(logBox + "\n")
 		} else {
 			// PLAN Tab
 			var pipelineBuilder strings.Builder
-			pipelineBuilder.WriteString(m.renderRunnerContext())
-			pipelineBuilder.WriteString(m.renderBudgetLine())
-			pipelineBuilder.WriteString(m.renderSummaryLine())
+			pipelineBuilder.WriteString(m.renderRunnerContext(runnerContextLines))
+			pipelineBuilder.WriteString(m.renderBudgetLine(runnerBudgetLines))
+			pipelineBuilder.WriteString(m.renderSummaryLine(runnerSummaryLines))
 			pipelineBuilder.WriteString(m.Styles.DetailLabel.Render("Agent Workflow Pipeline:") + "\n")
 			for _, agent := range m.Pipeline {
 				state := m.AgentStates[agent.ID]
@@ -582,11 +587,11 @@ func (m RunnerModel) View() string {
 		// Default standard resolution layout
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("RUNNER: %s - %s", m.Milestone.ID, m.Milestone.Title)) + "\n")
 		sb.WriteString(fmt.Sprintf("%s %s\n", m.Styles.DetailLabel.Render("Status:"), m.Styles.DetailValue.Render(m.compactStatusLine())))
-		sb.WriteString(m.renderRunnerContext())
-		sb.WriteString(m.renderBudgetLine())
-		sb.WriteString(m.renderSummaryLine())
-		if m.Finished && m.isAgentInstructionsWorkflow() {
-			sb.WriteString(m.renderAgentInstructionsProposal(m.Width - 6))
+		sb.WriteString(m.renderRunnerContext(runnerContextLines))
+		sb.WriteString(m.renderBudgetLine(runnerBudgetLines))
+		sb.WriteString(m.renderSummaryLine(runnerSummaryLines))
+		if m.isAgentInstructionsWorkflow() {
+			sb.WriteString(m.renderAgentInstructionsProposal(m.Width-6, runnerProposalLines))
 		}
 		sb.WriteString("\n")
 
@@ -718,23 +723,19 @@ func (m RunnerModel) View() string {
 
 		sb.WriteString(m.Styles.DetailLabel.Render("Logs Output (Live Tail):") + "\n")
 
-		var visibleLogs []string
-		if len(m.Logs) > logBoxHeight {
-			visibleLogs = m.Logs[len(m.Logs)-logBoxHeight:]
-		} else {
-			visibleLogs = m.Logs
+		logContentHeight := logBoxHeight - 2
+		if logContentHeight < 1 {
+			logContentHeight = 1
 		}
-
-		if len(visibleLogs) == 0 {
-			visibleLogs = []string{m.Styles.HelpStyle.Render("Preparing execution environment...")}
+		logContentWidth := m.Width - 8
+		if logContentWidth < 10 {
+			logContentWidth = 10
 		}
-		visibleLogs = padLogLines(visibleLogs, logBoxHeight)
-
-		logContent := strings.Join(visibleLogs, "\n")
+		logContent := renderBoundedLines(m.Logs, logContentWidth, logContentHeight, "Preparing execution environment...")
 		logBox := m.Styles.InactiveBorder.
 			Width(m.Width - 6).
 			Height(logBoxHeight).
-			Render(truncateLines(logContent, logBoxHeight))
+			Render(logContent)
 
 		sb.WriteString(logBox + "\n")
 	}
@@ -758,18 +759,18 @@ func agentInstructionsDraftPath() string {
 	return filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")
 }
 
-func (m RunnerModel) renderAgentInstructionsProposal(width int) string {
+func (m RunnerModel) renderAgentInstructionsProposal(width int, maxLines int) string {
+	if !m.Finished {
+		return m.renderBoundedDetailBlock([]string{"Proposal draft: waiting for runner to finish"}, width, maxLines)
+	}
 	data, err := os.ReadFile(agentInstructionsDraftPath())
 	if err != nil || strings.TrimSpace(string(data)) == "" {
-		return m.Styles.HelpStyle.Render("Proposal draft: not available yet\n")
+		return m.renderBoundedDetailBlock([]string{"Proposal draft: not available yet"}, width, maxLines)
 	}
 	text := limitStringForView(string(data), 1600)
-	var sb strings.Builder
-	sb.WriteString(m.Styles.DetailLabel.Render("Proposal Draft: .cyclestone/temp/AGENTS.md.proposed") + "\n")
-	for _, line := range strings.Split(wrapText(text, width), "\n") {
-		sb.WriteString(m.Styles.DetailValue.Render(line) + "\n")
-	}
-	return sb.String()
+	lines := []string{"Proposal Draft: .cyclestone/temp/AGENTS.md.proposed"}
+	lines = append(lines, strings.Split(text, "\n")...)
+	return m.renderBoundedDetailBlock(lines, width, maxLines)
 }
 
 func limitStringForView(text string, max int) string {
@@ -796,7 +797,7 @@ func (m RunnerModel) compactStatusLine() string {
 	return fmt.Sprintf("%s | cycle %s | phase %s | elapsed %s", status, cycle, phase, formatRunnerDuration(m.totalElapsed()))
 }
 
-func (m RunnerModel) renderRunnerContext() string {
+func (m RunnerModel) renderRunnerContext(maxLines int) string {
 	var lines []string
 	width := m.Width - 6
 	if width < 20 {
@@ -821,17 +822,18 @@ func (m RunnerModel) renderRunnerContext() string {
 		lines = append(lines, "Latest tool call: "+m.LatestToolCall)
 	}
 	if len(lines) == 0 {
-		return ""
+		return m.renderBoundedDetailBlock(nil, width, maxLines)
 	}
-	for i, line := range lines {
-		lines[i] = wrapText(line, width)
-	}
-	return m.Styles.DetailValue.Render(strings.Join(lines, "\n")) + "\n"
+	return m.renderBoundedDetailBlock(lines, width, maxLines)
 }
 
-func (m RunnerModel) renderBudgetLine() string {
+func (m RunnerModel) renderBudgetLine(maxLines int) string {
 	if m.ModelCalls == 0 && m.ToolCalls == 0 && m.EstimatedTokens == 0 && m.PromptTokens == 0 && m.CompletionTokens == 0 && m.MaxModelCalls == 0 && m.MaxTokenBudget == 0 {
-		return ""
+		width := m.Width - 6
+		if width < 20 {
+			width = 20
+		}
+		return m.renderBoundedDetailBlock(nil, width, maxLines)
 	}
 	modelCalls := fmt.Sprintf("%d", m.ModelCalls)
 	if m.MaxModelCalls > 0 {
@@ -853,12 +855,16 @@ func (m RunnerModel) renderBudgetLine() string {
 	if width < 20 {
 		width = 20
 	}
-	return m.Styles.DetailValue.Render(wrapText(line, width)) + "\n"
+	return m.renderBoundedDetailBlock([]string{line}, width, maxLines)
 }
 
-func (m RunnerModel) renderSummaryLine() string {
+func (m RunnerModel) renderSummaryLine(maxLines int) string {
 	if !m.Finished && m.CycleStatus != "failed" && m.CycleStatus != "cancelled" {
-		return ""
+		width := m.Width - 6
+		if width < 20 {
+			width = 20
+		}
+		return m.renderBoundedDetailBlock(nil, width, maxLines)
 	}
 	var parts []string
 	if m.CycleStatus != "" {
@@ -890,10 +896,36 @@ func (m RunnerModel) renderSummaryLine() string {
 	if width < 20 {
 		width = 20
 	}
-	for i, part := range parts {
-		parts[i] = wrapText(part, width)
+	return m.renderBoundedDetailBlock(parts, width, maxLines)
+}
+
+func (m RunnerModel) renderBoundedDetailBlock(lines []string, width int, maxLines int) string {
+	if maxLines < 1 {
+		maxLines = 1
 	}
-	return m.Styles.DetailValue.Render(strings.Join(parts, "\n")) + "\n"
+	content := renderBoundedLinesFromStart(lines, width, maxLines, "")
+	return m.Styles.DetailValue.Render(content) + "\n"
+}
+
+func renderedLineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+func padRenderedText(s string, targetLines int) string {
+	if targetLines <= 0 {
+		return s
+	}
+	currentLines := renderedLineCount(s)
+	for currentLines < targetLines {
+		if s != "" {
+			s += "\n"
+		}
+		currentLines++
+	}
+	return s
 }
 
 func valueOrDash(value string) string {

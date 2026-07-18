@@ -403,20 +403,25 @@ func (m CreateMilestoneModel) View() string {
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATING MILESTONE %s USING %s", m.NextID, strings.ToUpper(m.RunnerType))) + "\n\n")
 		sb.WriteString(fmt.Sprintf("%s %s\n\n", m.Spinner.View(), m.Styles.DetailValue.Render("Generating milestone specification, please wait...")))
 
-		// Show the last 10 lines of logs
-		logStart := len(m.Logs) - 10
-		if logStart < 0 {
-			logStart = 0
-		}
-		for i := logStart; i < len(m.Logs); i++ {
-			sb.WriteString(m.Logs[i] + "\n")
-		}
-
 		var rootOverhead = 3
 		boxHeight := m.Height - rootOverhead - 2
 		if boxHeight < 10 {
 			boxHeight = 10
 		}
+		contentHeight := boxHeight - 2
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
+		contentWidth := m.Width - 6
+		if contentWidth < 10 {
+			contentWidth = 10
+		}
+		headerHeight := strings.Count(sb.String(), "\n")
+		logHeight := contentHeight - headerHeight
+		if logHeight < 1 {
+			logHeight = 1
+		}
+		sb.WriteString(renderBoundedLines(m.Logs, contentWidth, logHeight, "Preparing milestone generator..."))
 
 		return m.Styles.ActiveBorder.
 			Width(m.Width - 4).

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -384,5 +385,43 @@ func TestCreateMilestoneModelAgentInstructionsUpdateSelectsRunner(t *testing.T) 
 	}
 	if req.Workflow != WorkflowAgentInstructionsRepository || req.RunnerLLM != "agy" || req.Note != "repository guidance" || !req.NoBranchChange {
 		t.Fatalf("unexpected AGENTS update request: %#v", req)
+	}
+}
+
+func TestCreateMilestoneLoadingViewBoundsLiveOutput(t *testing.T) {
+	m := NewCreateMilestoneModel(DefaultStyles(true, true))
+	m.Loading = true
+	m.Width = 82
+	m.Height = 22
+	m.NextID = "0007"
+	m.RunnerType = "codex"
+
+	emptyView := stripANSI(m.View())
+	emptyWidth, emptyHeight := renderedSize(emptyView)
+	for _, want := range []string{"CREATING MILESTONE 0007 USING CODEX", "Generating milestone specification"} {
+		if !strings.Contains(emptyView, want) {
+			t.Fatalf("expected empty loading view to contain %q\n%s", want, emptyView)
+		}
+	}
+
+	m.Logs = []string{"short log one", "short log two"}
+	shortView := stripANSI(m.View())
+	shortWidth, shortHeight := renderedSize(shortView)
+	if shortWidth != emptyWidth || shortHeight != emptyHeight {
+		t.Fatalf("short logs changed loading dimensions from %dx%d to %dx%d", emptyWidth, emptyHeight, shortWidth, shortHeight)
+	}
+
+	for i := 0; i < 40; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("overflow-log-entry ", 12)+fmt.Sprintf("%02d", i))
+	}
+	overflowView := stripANSI(m.View())
+	overflowWidth, overflowHeight := renderedSize(overflowView)
+	if overflowWidth != emptyWidth || overflowHeight != emptyHeight {
+		t.Fatalf("overflow logs changed loading dimensions from %dx%d to %dx%d", emptyWidth, emptyHeight, overflowWidth, overflowHeight)
+	}
+	for _, want := range []string{"CREATING MILESTONE 0007 USING CODEX", "Generating milestone specification", "39"} {
+		if !strings.Contains(overflowView, want) {
+			t.Fatalf("expected overflow loading view to contain %q\n%s", want, overflowView)
+		}
 	}
 }

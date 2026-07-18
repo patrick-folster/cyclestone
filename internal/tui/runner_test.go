@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -328,6 +329,294 @@ func TestRunnerAgentInstructionsProposalReviewActions(t *testing.T) {
 	}
 }
 
+func TestRunnerStandardViewKeepsLiveLogFrameStable(t *testing.T) {
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Milestone = config.Milestone{ID: "0007", Title: "Stabilize Live Output"}
+	m.Pipeline = []config.Agent{{ID: "pm", Name: "PM"}, {ID: "developer", Name: "Developer"}, {ID: "qa", Name: "QA"}}
+	m.Width = 104
+	m.Height = 32
+	m.CycleStatus = "failed"
+	m.ActivePhase = "developer"
+	m.ActiveAgentID = "developer"
+	m.Runner = "codex"
+	m.Model = "gpt-5"
+	m.Mode = "sandbox"
+	m.ReportFile = ".cyclestone/reports/report.md"
+	m.OutputFile = ".cyclestone/reports/output.log"
+	m.LatestCommand = "codex run"
+	m.LatestToolCall = "exec_command"
+	m.ModelCalls = 1
+	m.ToolCalls = 1
+	m.EstimatedTokens = 10
+	m.LastError = "failed"
+	m.NextSuggestedAction = "retry"
+	m.Logs = []string{"baseline log"}
+
+	baseView := stripANSI(m.View())
+	baseWidth, baseHeight := renderedSize(baseView)
+	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+
+	m.ReportFile = ".cyclestone/reports/" + strings.Repeat("very-long-report-path-", 8) + "report.md"
+	m.OutputFile = ".cyclestone/reports/" + strings.Repeat("very-long-output-path-", 8) + "output.log"
+	m.LatestCommand = strings.Repeat("codex exec with many arguments ", 8)
+	m.LatestToolCall = strings.Repeat("execute_document_command ", 6)
+	m.ModelCalls = 123
+	m.ToolCalls = 456
+	m.EstimatedTokens = 789012
+	m.PromptTokens = 345678
+	m.CompletionTokens = 901234
+	m.MaxModelCalls = 999
+	m.MaxTokenBudget = 2000000
+	m.StopOrDoneReason = strings.Repeat("budget-check ", 8)
+	m.LastError = strings.Repeat("long failure reason ", 10)
+	m.NextSuggestedAction = strings.Repeat("review logs and retry ", 8)
+	for i := 0; i < 80; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("live output line ", 12)+fmt.Sprintf("%02d", i))
+	}
+
+	grownView := stripANSI(m.View())
+	grownWidth, grownHeight := renderedSize(grownView)
+	grownLogWidth, grownLogHeight := logFrameSize(t, grownView)
+	if grownWidth != baseWidth || grownHeight != baseHeight {
+		t.Fatalf("runner view dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, grownWidth, grownHeight)
+	}
+	if grownLogWidth != baseLogWidth || grownLogHeight != baseLogHeight {
+		t.Fatalf("runner log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, grownLogWidth, grownLogHeight)
+	}
+	for _, want := range []string{"Status:", "Logs Output (Live Tail):", "Esc", "Cancel"} {
+		if !strings.Contains(grownView, want) {
+			t.Fatalf("expected grown runner view to keep %q visible\n%s", want, grownView)
+		}
+	}
+}
+
+func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t *testing.T) {
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Milestone = config.Milestone{ID: "0007", Title: "Stabilize Live Output"}
+	m.Pipeline = []config.Agent{{ID: "pm", Name: "PM"}, {ID: "developer", Name: "Developer"}, {ID: "qa", Name: "QA"}}
+	m.Width = 112
+	m.Height = 34
+
+	baseView := stripANSI(m.View())
+	baseWidth, baseHeight := renderedSize(baseView)
+	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+
+	m, _ = m.Update(executor.RunnerStatusMsg{
+		CycleNumber:         2,
+		CycleStatus:         "running",
+		Phase:               "developer",
+		AgentID:             "developer",
+		Runner:              "codex",
+		Model:               "gpt-5",
+		Mode:                "workspace-write",
+		ReportFile:          ".cyclestone/reports/" + strings.Repeat("long-report-path-", 8) + "report.md",
+		OutputFile:          ".cyclestone/reports/" + strings.Repeat("long-output-path-", 8) + "developer-output.log",
+		LatestCommand:       strings.Repeat("codex exec --json with wrapped command text ", 5),
+		LatestToolCall:      strings.Repeat("execute_document_command ", 5),
+		ModelCalls:          12,
+		ToolCalls:           34,
+		EstimatedTokens:     56789,
+		PromptTokens:        12345,
+		CompletionTokens:    6789,
+		MaxModelCalls:       50,
+		MaxTokenBudget:      1000000,
+		StopOrDoneReason:    strings.Repeat("budget ", 10),
+		NextSuggestedAction: strings.Repeat("continue after reviewing the generated report ", 4),
+	})
+	m, _ = m.Update(executor.CycleFinishedMsg{
+		MilestoneID: "0007",
+		CycleNumber: 2,
+		Status:      "passed",
+		ReportFile:  ".cyclestone/reports/" + strings.Repeat("finished-report-path-", 8) + "report.md",
+	})
+	m.LastError = strings.Repeat("historical failure summary ", 8)
+	for i := 0; i < 90; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("live lifecycle log line ", 9)+fmt.Sprintf("%02d", i))
+	}
+
+	grownView := stripANSI(m.View())
+	grownWidth, grownHeight := renderedSize(grownView)
+	grownLogWidth, grownLogHeight := logFrameSize(t, grownView)
+	if grownWidth != baseWidth || grownHeight != baseHeight {
+		t.Fatalf("runner absent-to-present dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, grownWidth, grownHeight)
+	}
+	if grownLogWidth != baseLogWidth || grownLogHeight != baseLogHeight {
+		t.Fatalf("runner absent-to-present log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, grownLogWidth, grownLogHeight)
+	}
+	for _, want := range []string{"Status:", "Logs Output (Live Tail):", "Esc", "Backspace", "q", "Quit"} {
+		if !strings.Contains(grownView, want) {
+			t.Fatalf("expected completed runner view to keep %q visible\n%s", want, grownView)
+		}
+	}
+}
+
+func TestRunnerSmallLogTabKeepsLiveLogFrameStable(t *testing.T) {
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Milestone = config.Milestone{ID: "0007", Title: "Small Runner"}
+	m.Pipeline = []config.Agent{{ID: "developer", Name: "Developer"}}
+	m.Width = 76
+	m.Height = 16
+	m.ActiveTab = RunnerTabLog
+	m.AgentStates["developer"] = "running"
+	m.ActiveAgentID = "developer"
+	m.ActivePhase = "developer"
+	m.Logs = []string{"short log"}
+
+	baseView := stripANSI(m.View())
+	baseWidth, baseHeight := renderedSize(baseView)
+	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+
+	m.Status = strings.Repeat("very long status ", 12)
+	for i := 0; i < 50; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("overflow small log ", 8)+fmt.Sprintf("%02d", i))
+	}
+	grownView := stripANSI(m.View())
+	grownWidth, grownHeight := renderedSize(grownView)
+	grownLogWidth, grownLogHeight := logFrameSize(t, grownView)
+	if grownWidth != baseWidth || grownHeight != baseHeight {
+		t.Fatalf("small runner dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, grownWidth, grownHeight)
+	}
+	if grownLogWidth != baseLogWidth || grownLogHeight != baseLogHeight {
+		t.Fatalf("small runner log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, grownLogWidth, grownLogHeight)
+	}
+	for _, want := range []string{"Active Agent: Developer", "Logs Output (Live Tail):", "Tab", "Switch Tab"} {
+		if !strings.Contains(grownView, want) {
+			t.Fatalf("expected small runner LOG tab to keep %q visible\n%s", want, grownView)
+		}
+	}
+}
+
+func TestRunnerAgentInstructionsProposalViewKeepsLiveLogFrameStable(t *testing.T) {
+	tmp := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "temp"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentInstructionsDraftPath(), []byte("short proposal\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Width = 104
+	m.Height = 34
+	m.Finished = true
+	m.Workflow = WorkflowAgentInstructionsRepository
+	m.Milestone = config.Milestone{ID: "AGENTS.md", Title: "Repository update"}
+	m.Pipeline = []config.Agent{{ID: "updater", Name: "Updater"}}
+	m.CycleStatus = "finished"
+	m.FinalVerdict = "passed"
+	m.Logs = []string{"proposal generated"}
+
+	baseView := stripANSI(m.View())
+	baseWidth, baseHeight := renderedSize(baseView)
+	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+
+	longProposal := strings.Repeat("## Section\nLong proposed AGENTS.md guidance with enough words to wrap across the proposal preview budget.\n", 80)
+	if err := os.WriteFile(agentInstructionsDraftPath(), []byte(longProposal), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m.Status = strings.Repeat("Saved editable AGENTS.md draft status ", 8)
+	m.NextSuggestedAction = strings.Repeat("Review git diff before committing ", 6)
+	for i := 0; i < 40; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("agents update live log ", 10)+fmt.Sprintf("%02d", i))
+	}
+
+	grownView := stripANSI(m.View())
+	grownWidth, grownHeight := renderedSize(grownView)
+	grownLogWidth, grownLogHeight := logFrameSize(t, grownView)
+	if grownWidth != baseWidth || grownHeight != baseHeight {
+		t.Fatalf("AGENTS proposal view dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, grownWidth, grownHeight)
+	}
+	if grownLogWidth != baseLogWidth || grownLogHeight != baseLogHeight {
+		t.Fatalf("AGENTS proposal log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, grownLogWidth, grownLogHeight)
+	}
+	for _, want := range []string{"Proposal Draft: .cyclestone/temp/AGENTS.md.proposed", "Apply-AGENTS", "Save-Draft", "Logs Output (Live Tail):"} {
+		if !strings.Contains(grownView, want) {
+			t.Fatalf("expected AGENTS proposal view to keep %q visible\n%s", want, grownView)
+		}
+	}
+}
+
+func TestRunnerAgentInstructionsTransitionKeepsLiveLogFrameStable(t *testing.T) {
+	tmp := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	if err := os.MkdirAll(filepath.Join(".cyclestone", "temp"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewRunnerModel(DefaultStyles(true, true))
+	m.Width = 108
+	m.Height = 35
+	m.Workflow = WorkflowAgentInstructionsRepository
+	m.Milestone = config.Milestone{ID: "AGENTS.md", Title: "Repository update"}
+	m.Pipeline = []config.Agent{{ID: "updater", Name: "Updater"}}
+	m.Logs = []string{"starting AGENTS.md update"}
+
+	baseView := stripANSI(m.View())
+	baseWidth, baseHeight := renderedSize(baseView)
+	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+
+	longProposal := strings.Repeat("# Guidance\nUse bounded runner output sections with enough text to wrap through the proposal preview.\n", 80)
+	if err := os.WriteFile(agentInstructionsDraftPath(), []byte(longProposal), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = m.Update(executor.RunnerStatusMsg{
+		CycleStatus:         "running",
+		Phase:               "updater",
+		AgentID:             "updater",
+		Runner:              "codex",
+		Model:               "gpt-5",
+		Mode:                "workspace-write",
+		ReportFile:          ".cyclestone/reports/" + strings.Repeat("agents-report-", 7) + "report.md",
+		OutputFile:          ".cyclestone/reports/" + strings.Repeat("agents-output-", 7) + "output.log",
+		LatestCommand:       strings.Repeat("codex run update agent instructions ", 5),
+		ModelCalls:          3,
+		ToolCalls:           7,
+		EstimatedTokens:     22222,
+		MaxModelCalls:       10,
+		MaxTokenBudget:      100000,
+		NextSuggestedAction: strings.Repeat("review and apply the AGENTS.md proposal ", 5),
+	})
+	m.Finished = true
+	m.CycleStatus = "finished"
+	m.FinalVerdict = "passed"
+	m.Status = strings.Repeat("AGENTS.md proposal generated and ready for review ", 4)
+	for i := 0; i < 70; i++ {
+		m.Logs = append(m.Logs, strings.Repeat("agents proposal live log ", 9)+fmt.Sprintf("%02d", i))
+	}
+
+	finishedView := stripANSI(m.View())
+	finishedWidth, finishedHeight := renderedSize(finishedView)
+	finishedLogWidth, finishedLogHeight := logFrameSize(t, finishedView)
+	if finishedWidth != baseWidth || finishedHeight != baseHeight {
+		t.Fatalf("AGENTS absent-to-proposal dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, finishedWidth, finishedHeight)
+	}
+	if finishedLogWidth != baseLogWidth || finishedLogHeight != baseLogHeight {
+		t.Fatalf("AGENTS absent-to-proposal log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, finishedLogWidth, finishedLogHeight)
+	}
+	for _, want := range []string{"Proposal Draft: .cyclestone/temp/AGENTS.md.proposed", "Apply-AGENTS", "Save-Draft", "Logs Output (Live Tail):"} {
+		if !strings.Contains(finishedView, want) {
+			t.Fatalf("expected finished AGENTS view to keep %q visible\n%s", want, finishedView)
+		}
+	}
+}
+
 func TestRunnerFailureSummaryRendering(t *testing.T) {
 	styles := DefaultStyles(true, true)
 	m := NewRunnerModel(styles)
@@ -452,4 +741,45 @@ var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func stripANSI(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
+}
+
+func renderedSize(s string) (int, int) {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		if len([]rune(line)) > maxWidth {
+			maxWidth = len([]rune(line))
+		}
+	}
+	return maxWidth, len(lines)
+}
+
+func logFrameSize(t *testing.T, view string) (int, int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Logs Output (Live Tail):") {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 || start >= len(lines) {
+		t.Fatalf("log frame not found in view:\n%s", view)
+	}
+	end := start
+	for end < len(lines) {
+		if strings.Contains(lines[end], "┘") || strings.Contains(lines[end], "+") {
+			end++
+			break
+		}
+		end++
+	}
+	maxWidth := 0
+	for _, line := range lines[start:end] {
+		if len([]rune(line)) > maxWidth {
+			maxWidth = len([]rune(line))
+		}
+	}
+	return maxWidth, end - start
 }
