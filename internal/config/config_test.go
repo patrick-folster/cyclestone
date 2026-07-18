@@ -616,9 +616,13 @@ func TestDeleteMilestone(t *testing.T) {
 	_ = os.WriteFile(spec1, []byte("goal 1"), 0644)
 	_ = os.WriteFile(spec2, []byte("goal 2"), 0644)
 
-	report1 := filepath.Join(tmpDir, "reports", "MS-1.md")
-	report1Cycle := filepath.Join(tmpDir, "reports", "MS-1-cycle-001.yaml")
-	report2 := filepath.Join(tmpDir, "reports", "MS-2.md")
+	report1Dir := filepath.Join(tmpDir, "reports", "MS-1")
+	report2Dir := filepath.Join(tmpDir, "reports", "MS-2")
+	report1 := filepath.Join(report1Dir, "summary.md")
+	report1Cycle := filepath.Join(report1Dir, "cycle-001", "report.yaml")
+	report2 := filepath.Join(report2Dir, "summary.md")
+	_ = os.MkdirAll(filepath.Dir(report1Cycle), 0755)
+	_ = os.MkdirAll(report2Dir, 0755)
 	_ = os.WriteFile(report1, []byte("report 1"), 0644)
 	_ = os.WriteFile(report1Cycle, []byte("report 1 cycle 1"), 0644)
 	_ = os.WriteFile(report2, []byte("report 2"), 0644)
@@ -659,11 +663,8 @@ func TestDeleteMilestone(t *testing.T) {
 	if _, err := os.Stat(spec2); os.IsNotExist(err) {
 		t.Error("expected spec2 to be preserved")
 	}
-	if _, err := os.Stat(report1); !os.IsNotExist(err) {
-		t.Error("expected report1 to be deleted")
-	}
-	if _, err := os.Stat(report1Cycle); !os.IsNotExist(err) {
-		t.Error("expected report1Cycle to be deleted")
+	if _, err := os.Stat(report1Dir); !os.IsNotExist(err) {
+		t.Error("expected MS-1 report directory to be deleted")
 	}
 	if _, err := os.Stat(report2); os.IsNotExist(err) {
 		t.Error("expected report2 to be preserved")
@@ -674,29 +675,46 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
 	statePath := filepath.Join(tmpDir, "state.json")
+	reportsDir := filepath.Join(tmpDir, "reports")
 
 	state := &State{
 		History: map[string][]MilestoneCycleLog{
 			"MS-1": {
 				{CycleNumber: 1},
 				{CycleNumber: 2},
-				{CycleNumber: 3},
+				{
+					CycleNumber: 3,
+					Actions: []AgentActionLog{
+						{
+							AgentID:    "developer",
+							InputFile:  filepath.Join(".cyclestone", "reports", "MS-1", "cycle-003", "02-developer", "input.md"),
+							OutputFile: filepath.Join(".cyclestone", "reports", "MS-1", "cycle-003", "02-developer", "output.log"),
+						},
+						{
+							AgentID:    "qa",
+							InputFile:  filepath.Join(reportsDir, "MS-1", "cycle-003", "03-qa", "input.md"),
+							OutputFile: filepath.Join(reportsDir, "MS-1", "cycle-003", "03-qa", "output.log"),
+						},
+					},
+				},
 			},
 		},
 		MilestoneCycles: map[string]int{"MS-1": 3},
 	}
 	_ = SaveState(statePath, state)
 
-	reportsDir := filepath.Join(tmpDir, "reports")
 	_ = os.MkdirAll(reportsDir, 0755)
 
-	c1File := filepath.Join(reportsDir, "MS-1-cycle-001.yaml")
-	c2File := filepath.Join(reportsDir, "MS-1-cycle-002.yaml")
-	c3File := filepath.Join(reportsDir, "MS-1-cycle-003.yaml")
-	c3Meta := filepath.Join(reportsDir, "MS-1-cycle-003-metadata.json")
-	c3Handoff := filepath.Join(reportsDir, "MS-1-cycle-003-03-qa-handoff.yaml")
-	summaryFile := filepath.Join(reportsDir, "MS-1.md")
+	c1File := filepath.Join(reportsDir, "MS-1", "cycle-001", "report.yaml")
+	c2File := filepath.Join(reportsDir, "MS-1", "cycle-002", "report.yaml")
+	c3File := filepath.Join(reportsDir, "MS-1", "cycle-003", "report.yaml")
+	c3Meta := filepath.Join(reportsDir, "MS-1", "cycle-003", "metadata.json")
+	c3Handoff := filepath.Join(reportsDir, "MS-1", "cycle-003", "03-qa", "handoff.yaml")
+	summaryFile := filepath.Join(reportsDir, "MS-1", "summary.md")
 
+	_ = os.MkdirAll(filepath.Dir(c1File), 0755)
+	_ = os.MkdirAll(filepath.Dir(c2File), 0755)
+	_ = os.MkdirAll(filepath.Dir(c3Handoff), 0755)
 	_ = os.WriteFile(c1File, []byte("started: \"2026-07-02 09:00:00 -0500\"\ndetails: |-\n  c1\n"), 0644)
 	_ = os.WriteFile(c2File, []byte("started: \"2026-07-02 10:00:00 -0500\"\ndetails: |-\n  c2\n"), 0644)
 	_ = os.WriteFile(c3File, []byte("started: \"2026-07-02 11:00:00 -0500\"\ndetails: |-\n  verdict: approved\n"), 0644)
@@ -717,6 +735,19 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	if logs[0].CycleNumber != 1 || logs[1].CycleNumber != 2 {
 		t.Errorf("expected cycle numbers 1 and 2, got %d and %d", logs[0].CycleNumber, logs[1].CycleNumber)
 	}
+	if len(logs[1].Actions) != 2 {
+		t.Fatalf("expected renamed cycle actions to be preserved, got %d", len(logs[1].Actions))
+	}
+	expectedRelativeInput := filepath.Join(".cyclestone", "reports", "MS-1", "cycle-002", "02-developer", "input.md")
+	expectedRelativeOutput := filepath.Join(".cyclestone", "reports", "MS-1", "cycle-002", "02-developer", "output.log")
+	if logs[1].Actions[0].InputFile != expectedRelativeInput || logs[1].Actions[0].OutputFile != expectedRelativeOutput {
+		t.Errorf("expected relative action paths to be renumbered, got input %q output %q", logs[1].Actions[0].InputFile, logs[1].Actions[0].OutputFile)
+	}
+	expectedAbsoluteInput := filepath.Join(reportsDir, "MS-1", "cycle-002", "03-qa", "input.md")
+	expectedAbsoluteOutput := filepath.Join(reportsDir, "MS-1", "cycle-002", "03-qa", "output.log")
+	if logs[1].Actions[1].InputFile != expectedAbsoluteInput || logs[1].Actions[1].OutputFile != expectedAbsoluteOutput {
+		t.Errorf("expected absolute action paths to be renumbered, got input %q output %q", logs[1].Actions[1].InputFile, logs[1].Actions[1].OutputFile)
+	}
 	if newState.MilestoneCycles["MS-1"] != 2 {
 		t.Errorf("expected milestone cycles count to be 2, got %d", newState.MilestoneCycles["MS-1"])
 	}
@@ -734,9 +765,9 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 		t.Errorf("expected cycle 2 report path to contain renamed cycle 3 content, got %q", string(c2Bytes))
 	}
 
-	c3RenamedFile := filepath.Join(reportsDir, "MS-1-cycle-002.yaml")
-	c3RenamedMeta := filepath.Join(reportsDir, "MS-1-cycle-002-metadata.json")
-	c3RenamedHandoff := filepath.Join(reportsDir, "MS-1-cycle-002-03-qa-handoff.yaml")
+	c3RenamedFile := filepath.Join(reportsDir, "MS-1", "cycle-002", "report.yaml")
+	c3RenamedMeta := filepath.Join(reportsDir, "MS-1", "cycle-002", "metadata.json")
+	c3RenamedHandoff := filepath.Join(reportsDir, "MS-1", "cycle-002", "03-qa", "handoff.yaml")
 	if _, err := os.Stat(c3RenamedFile); os.IsNotExist(err) {
 		t.Error("expected cycle 3 report to be renamed to cycle 2")
 	}
@@ -746,7 +777,7 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	if _, err := os.Stat(c3RenamedHandoff); os.IsNotExist(err) {
 		t.Error("expected cycle 3 handoff to be renamed to cycle 2")
 	}
-	if _, err := os.Stat(c3File); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(reportsDir, "MS-1", "cycle-003")); !os.IsNotExist(err) {
 		t.Error("expected old cycle 3 file to not exist anymore")
 	}
 
@@ -755,7 +786,7 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected summary report to exist, got error: %v", err)
 	} else if !strings.Contains(string(summaryBytes), "Latest cycle: 002") ||
-		!strings.Contains(string(summaryBytes), "MS-1-cycle-002.yaml") ||
+		!strings.Contains(string(summaryBytes), filepath.Join(reportsDir, "MS-1", "cycle-002", "report.yaml")) ||
 		!strings.Contains(string(summaryBytes), "verdict: approved") ||
 		strings.Contains(string(summaryBytes), "handoff.yaml") {
 		t.Errorf("expected summary report to list YAML cycle reports with parsed verdict, got %q", string(summaryBytes))

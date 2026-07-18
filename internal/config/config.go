@@ -569,19 +569,8 @@ func DeleteMilestone(configPath, statePath, milestoneID string) error {
 		_ = os.Remove(filepath.Join(filepath.Dir(configPath), "milestones", milestoneID+".md"))
 	}
 
-	// Remove matching reports
-	reportsDir := filepath.Join(filepath.Dir(configPath), "reports")
-	files, err := os.ReadDir(reportsDir)
-	if err == nil {
-		for _, f := range files {
-			if !f.IsDir() {
-				name := f.Name()
-				if name == milestoneID+".md" || strings.HasPrefix(name, milestoneID+"-cycle-") {
-					_ = os.Remove(filepath.Join(reportsDir, name))
-				}
-			}
-		}
-	}
+	// Remove milestone-owned report artifacts.
+	_ = os.RemoveAll(filepath.Join(filepath.Dir(configPath), "reports", milestoneID))
 
 	return nil
 }

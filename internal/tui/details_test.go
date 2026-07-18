@@ -319,8 +319,12 @@ func TestHistoryRichDetailsAndDeletion(t *testing.T) {
 
 func TestHistoryRendersStructuredContractMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	outputPath := filepath.Join(tmpDir, "MS-cycle-001-03-qa-output.log")
-	handoffPath := filepath.Join(tmpDir, "MS-cycle-001-03-qa-handoff.yaml")
+	phaseDir := filepath.Join(tmpDir, ".cyclestone", "reports", "MS", "cycle-001", "03-qa")
+	outputPath := filepath.Join(phaseDir, "output.log")
+	handoffPath := filepath.Join(phaseDir, "handoff.yaml")
+	if err := os.MkdirAll(phaseDir, 0755); err != nil {
+		t.Fatalf("failed to create phase dir: %v", err)
+	}
 	if err := os.WriteFile(outputPath, []byte("qa output"), 0644); err != nil {
 		t.Fatalf("failed to write output: %v", err)
 	}
@@ -373,8 +377,12 @@ validation_status: valid
 
 func TestHistoryRendersRecommenderScoresSeparately(t *testing.T) {
 	tmpDir := t.TempDir()
-	outputPath := filepath.Join(tmpDir, "MS-cycle-001-04-recommender-output.log")
-	handoffPath := filepath.Join(tmpDir, "MS-cycle-001-04-recommender-handoff.yaml")
+	phaseDir := filepath.Join(tmpDir, ".cyclestone", "reports", "MS", "cycle-001", "04-recommender")
+	outputPath := filepath.Join(phaseDir, "output.log")
+	handoffPath := filepath.Join(phaseDir, "handoff.yaml")
+	if err := os.MkdirAll(phaseDir, 0755); err != nil {
+		t.Fatalf("failed to create phase dir: %v", err)
+	}
 	if err := os.WriteFile(outputPath, []byte("recommender output"), 0644); err != nil {
 		t.Fatalf("failed to write output: %v", err)
 	}
@@ -425,8 +433,12 @@ func TestHistoryInstructionUpdateReviewActions(t *testing.T) {
 	}
 	defer func() { _ = os.Chdir(oldWd) }()
 
-	outputPath := filepath.Join(root, "MS-cycle-001-02-developer-output.log")
-	handoffPath := filepath.Join(root, "MS-cycle-001-02-developer-handoff.yaml")
+	phaseDir := filepath.Join(root, ".cyclestone", "reports", "MS", "cycle-001", "02-developer")
+	outputPath := filepath.Join(phaseDir, "output.log")
+	handoffPath := filepath.Join(phaseDir, "handoff.yaml")
+	if err := os.MkdirAll(phaseDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(outputPath, []byte("developer output"), 0644); err != nil {
 		t.Fatal(err)
 	}

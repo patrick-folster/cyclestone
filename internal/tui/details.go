@@ -1031,11 +1031,7 @@ func loadDetailsPhaseHandoff(outputPath string) (detailsPhaseHandoff, bool) {
 	if outputPath == "" {
 		return handoff, false
 	}
-	handoffPath := strings.TrimSuffix(outputPath, "-output.log") + "-handoff.yaml"
-	if handoffPath == outputPath {
-		base := strings.TrimSuffix(outputPath, filepath.Ext(outputPath))
-		handoffPath = base + "-handoff.yaml"
-	}
+	handoffPath := filepath.Join(filepath.Dir(outputPath), "handoff.yaml")
 	data, err := os.ReadFile(handoffPath)
 	if err != nil {
 		return handoff, false

@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -431,8 +430,8 @@ func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []co
 
 	var cycleStatus = "approved"
 	codexThreadID := ""
-	cyclePadded := fmt.Sprintf("%03d", cycleNum)
-	codexThreadMetadataPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-codex-thread.json", milestone.ID, cyclePadded))
+	artifacts := cycleArtifacts(reportsDir, milestone.ID, cycleNum)
+	codexThreadMetadataPath := artifacts.CodexThread
 	settings := config.LoadMergedSettings()
 	if ch != nil {
 		sendExecutorMsg(ctx, ch, RunnerStatusMsg{
@@ -476,7 +475,7 @@ func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []co
 	// Human review steps
 	writeReportDetailf(reportFile, "\n## Human Review Steps\n\n")
 	writeReportDetailf(reportFile, "1. Review `%s`.\n", reportPath)
-	writeReportDetailf(reportFile, "2. Review the cycle summary in `.cyclestone/reports/%s.md`.\n", milestone.ID)
+	writeReportDetailf(reportFile, "2. Review the cycle summary in `%s`.\n", artifacts.Summary)
 	writeReportDetailf(reportFile, "3. Inspect changed files in each tracked repository listed in the git context with git status and git diff.\n")
 	if opts.NoBranchChange {
 		writeReportDetailf(reportFile, "4. Confirm repositories remained on their original branches.\n")
@@ -736,7 +735,7 @@ func parseCodexThreadID(text string) string {
 }
 
 func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string) error {
-	summaryPath := filepath.Join(reportsDir, fmt.Sprintf("%s.md", milestoneID))
+	summaryPath := cycleArtifacts(reportsDir, milestoneID, latest).Summary
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Milestone Cycle Summary: %s\n\n", milestoneID))
@@ -745,16 +744,10 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 	sb.WriteString(fmt.Sprintf("- Updated: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700")))
 	sb.WriteString("\n## Cycle History\n\n")
 
-	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.yaml", milestoneID)))
+	files, err := cycleReportPaths(reportsDir, milestoneID)
 	if err == nil {
-		sort.Strings(files)
 		for _, file := range files {
-			baseName := filepath.Base(file)
-			if !isPrimaryCycleReportFile(milestoneID, baseName) {
-				continue
-			}
-			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
-			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
+			cyclePart := strings.TrimPrefix(filepath.Base(filepath.Dir(file)), "cycle-")
 
 			report, _ := readCycleReportYAML(file)
 			started := strings.TrimSpace(report.Started)
@@ -763,7 +756,7 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 				verdict = report.ParseError
 			}
 
-			sb.WriteString(fmt.Sprintf("- Cycle %s: .cyclestone/reports/%s", cyclePart, baseName))
+			sb.WriteString(fmt.Sprintf("- Cycle %s: %s", cyclePart, file))
 			if started != "" {
 				sb.WriteString(fmt.Sprintf(" (%s)", started))
 			}
@@ -781,17 +774,23 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
 }
 
-func isPrimaryCycleReportFile(milestoneID, baseName string) bool {
-	prefix := milestoneID + "-cycle-"
-	if !strings.HasPrefix(baseName, prefix) || !strings.HasSuffix(baseName, ".yaml") {
-		return false
+func cycleReportPaths(reportsDir, milestoneID string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(reportsDir, milestoneID))
+	if err != nil {
+		return nil, err
 	}
-	cyclePart := strings.TrimSuffix(strings.TrimPrefix(baseName, prefix), ".yaml")
-	if len(cyclePart) != 3 {
-		return false
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, ok := parseCycleDirName(entry.Name()); !ok {
+			continue
+		}
+		files = append(files, filepath.Join(reportsDir, milestoneID, entry.Name(), "report.yaml"))
 	}
-	_, err := strconv.Atoi(cyclePart)
-	return err == nil
+	sort.Strings(files)
+	return files, nil
 }
 
 type cycleReportYAML struct {
@@ -1722,7 +1721,6 @@ func runCodex(ctx context.Context, runner string, agentID string, inputContent s
 }
 func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone config.Milestone, reportsDir string) (cycleNum int, branchName string, previousReportPath string, reportPath string, metadataPath string, repos []git.RepoInfo, informationalWarnings []string, gitError error, err error) {
 	cycleNum = state.GetMilestoneCycles(milestone.ID) + 1
-	cyclePadded := fmt.Sprintf("%03d", cycleNum)
 	settings := config.LoadMergedSettings()
 	prefix := settings.DefaultGitBranchPrefix
 	if prefix == "" {
@@ -1739,15 +1737,18 @@ func prepareCycleEnvironment(opts RunOptions, state *config.State, milestone con
 
 	// Determine previous report path
 	if cycleNum > 1 {
-		prevPadded := fmt.Sprintf("%03d", cycleNum-1)
-		prevPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, prevPadded))
+		prevPath := cycleArtifacts(reportsDir, milestone.ID, cycleNum-1).Report
 		if _, err := os.Stat(prevPath); err == nil {
 			previousReportPath = prevPath
 		}
 	}
 
-	reportPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
-	metadataPath = filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-metadata.json", milestone.ID, cyclePadded))
+	artifacts := cycleArtifacts(reportsDir, milestone.ID, cycleNum)
+	if err := os.MkdirAll(artifacts.CycleDir, 0755); err != nil {
+		return 0, "", "", "", "", nil, nil, nil, err
+	}
+	reportPath = artifacts.Report
+	metadataPath = artifacts.Metadata
 	repos = git.GetTrackedRepos()
 	informationalWarnings = embeddedRepoInformationalWarnings(git.DiscoverUntrackedEmbeddedRepos(repos))
 
@@ -1834,7 +1835,7 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 	fmt.Fprintf(reportFile, "cycle: %s\n", yamlQuote(cyclePadded))
 	fmt.Fprintf(reportFile, "cycle_mode: %s\n", yamlQuote(cycleMode))
 	fmt.Fprintf(reportFile, "milestone_file: %s\n", yamlQuote(fmt.Sprintf(".cyclestone/milestones/%s.md", milestoneID)))
-	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(fmt.Sprintf(".cyclestone/reports/%s.md", milestoneID)))
+	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(cycleArtifacts(filepath.Join(".cyclestone", "reports"), milestoneID, cycleNum).Summary))
 	if previousReportPath != "" {
 		fmt.Fprintf(reportFile, "previous_cycle_report: %s\n", yamlQuote(previousReportPath))
 	}
@@ -1950,11 +1951,12 @@ func writeAgentInstructionsUpdateReport(reportPath string, milestone config.Mile
 func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone config.Milestone, opts RunOptions, state *config.State, ch chan tea.Msg, reportsDir string, cycleNum int, previousReportPath string, metadataPath string, settings config.Settings, reportFile *os.File, codexThreadMetadataPath string, codexThreadID *string) (cycleStatus string, interrupted bool) {
 	cycleStatus = "approved"
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
+	cycleArtifact := cycleArtifacts(reportsDir, milestone.ID, cycleNum)
 
 	for _, agent := range pipeline {
 		select {
 		case <-ctx.Done():
-			reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
+			reportPath := cycleArtifact.Report
 			sendExecutorMsg(ctx, ch, RunnerStatusMsg{
 				MilestoneID:         milestone.ID,
 				CycleNumber:         cycleNum,
@@ -1992,8 +1994,10 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		}
 
 		agentFileID := getAgentFileID(agent.ID, pipeline)
-		inputPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-input.md", milestone.ID, cyclePadded, agentFileID))
-		outputPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-output.log", milestone.ID, cyclePadded, agentFileID))
+		phaseArtifact := phaseArtifacts(reportsDir, milestone.ID, cycleNum, agentFileID)
+		_ = os.MkdirAll(phaseArtifact.Dir, 0755)
+		inputPath := phaseArtifact.Input
+		outputPath := phaseArtifact.Output
 
 		// Dedicated temp file for the agent's structured YAML handoff. The
 		// prompt instructs the agent to write its handoff YAML here (via the
@@ -2023,7 +2027,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 				Runner:          runner,
 				Model:           configuredModelForRunner(runner, settings),
 				Mode:            runnerModeLabel(opts),
-				ReportFile:      filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
+				ReportFile:      cycleArtifact.Report,
 				OutputFile:      outputPath,
 				LatestCommand:   describeRunnerCommand(runner, opts),
 				MaxModelCalls:   normalizedMaxModelCalls(settings),
@@ -2040,7 +2044,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 		if *codexThreadID != "" {
 			_ = writeCodexThreadMetadata(codexThreadMetadataPath, *codexThreadID)
 		}
-		handoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, agentFileID)
+		handoffPath := phaseArtifact.Handoff
 		writeHandoff := shouldWritePhaseHandoff(settings, agent.OutputContract)
 		if instructionInterception.Path != "" {
 			writeHandoff = true
@@ -2132,7 +2136,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 					AgentID:             agent.ID,
 					Runner:              runner,
 					Model:               configuredModelForRunner(runner, settings),
-					ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
+					ReportFile:          cycleArtifact.Report,
 					OutputFile:          outputPath,
 					LastError:           lastError,
 					NextSuggestedAction: "Review the output log and rerun the cycle after fixing the failure.",
@@ -2159,7 +2163,7 @@ func runAgentPipeline(ctx context.Context, pipeline []config.Agent, milestone co
 						AgentID:             agent.ID,
 						Runner:              runner,
 						Model:               configuredModelForRunner(runner, settings),
-						ReportFile:          filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded)),
+						ReportFile:          cycleArtifact.Report,
 						OutputFile:          outputPath,
 						LastError:           strings.Join(errors, "; "),
 						NextSuggestedAction: "Review the output contract validation errors before approving this cycle.",
@@ -2272,7 +2276,9 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		promptText = strings.ReplaceAll(promptText, "{{LATEST_CYCLE_REPORT}}", latestCycleReportText)
 
 		recommenderFileID := getAgentFileID("recommender", pipeline)
-		recommenderLogPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-output.log", milestone.ID, cyclePadded, recommenderFileID))
+		recommenderArtifacts := phaseArtifacts(reportsDir, milestone.ID, cycleNum, recommenderFileID)
+		_ = os.MkdirAll(recommenderArtifacts.Dir, 0755)
+		recommenderLogPath := recommenderArtifacts.Output
 
 		recommenderTempDir := filepath.Join(".cyclestone", "temp")
 		_ = os.MkdirAll(recommenderTempDir, 0755)
@@ -2312,7 +2318,7 @@ func runRecommenderPhase(ctx context.Context, pipeline []config.Agent, milestone
 		if ch != nil {
 			sendExecutorMsg(ctx, ch, AgentCompletedMsg{AgentID: "recommender", ExitCode: exitCode, Timestamp: time.Now(), OutputFile: recommenderLogPath})
 		}
-		recommenderHandoffPath := phaseHandoffPath(reportsDir, milestone.ID, cyclePadded, recommenderFileID)
+		recommenderHandoffPath := recommenderArtifacts.Handoff
 		writeHandoff := shouldWritePhaseHandoff(settings, "recommender")
 		if instructionInterception.Path != "" {
 			writeHandoff = true

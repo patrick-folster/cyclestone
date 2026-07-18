@@ -24,9 +24,8 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 	}
 
 	if agent.ID == "recommender" {
-		cyclePadded := fmt.Sprintf("%03d", cycleNum)
 		reportsDir := filepath.Join(".cyclestone", "reports")
-		reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
+		reportPath := cycleArtifacts(reportsDir, milestone.ID, cycleNum).Report
 
 		latestCycleReportText := summarizeCycleReport(reportPath)
 
@@ -240,7 +239,7 @@ func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Ag
 	reportsDir := filepath.Join(".cyclestone", "reports")
 	qaHandoff := readHandoffOrFallback(milestone.ID, cyclePadded, "qa", maxRecommenderReportOutputChars, pipeline)
 	if qaHandoff == "" {
-		reportPath := filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s.yaml", milestone.ID, cyclePadded))
+		reportPath := cycleArtifacts(reportsDir, milestone.ID, cycleNum).Report
 		qaHandoff = summarizeCycleReport(reportPath)
 	}
 	qaHandoff = stripEmbeddedRepoInformationalWarningContext(qaHandoff)
@@ -737,14 +736,20 @@ func appendMilestoneScopedAgentInstructionsContext(sb *strings.Builder, mileston
 	for _, agentID := range []string{"pm", "developer", "qa", "recommender"} {
 		appendHandoffToBuilder(sb, strings.ToUpper(agentID)+" Handoff", milestone.ID, cyclePadded, agentID, maxPromptFileChars, nil)
 	}
-	if files, err := filepath.Glob(filepath.Join(".cyclestone", "reports", milestone.ID+"-cycle-*.yaml")); err == nil {
-		sort.Strings(files)
-		for _, file := range files {
-			base := filepath.Base(file)
-			if strings.Contains(base, "-metadata") || strings.Contains(base, "-codex-thread") || strings.Contains(base, "-handoff") {
+	if entries, err := os.ReadDir(filepath.Join(".cyclestone", "reports", milestone.ID)); err == nil {
+		var reports []string
+		for _, entry := range entries {
+			if !entry.IsDir() {
 				continue
 			}
-			appendFileContentToBuilder(sb, "Milestone Report "+base, file)
+			if _, ok := parseCycleDirName(entry.Name()); !ok {
+				continue
+			}
+			reports = append(reports, filepath.Join(".cyclestone", "reports", milestone.ID, entry.Name(), "report.yaml"))
+		}
+		sort.Strings(reports)
+		for _, report := range reports {
+			appendFileContentToBuilder(sb, "Milestone Report "+filepath.Dir(report), report)
 		}
 	}
 	appendCurrentGitStatusToBuilder(sb)

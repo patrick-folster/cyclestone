@@ -247,8 +247,8 @@ func TestRunnerStatusRenderingAndElapsed(t *testing.T) {
 		Runner:           "ollama",
 		Model:            "qwen3-coder:480b-cloud",
 		Mode:             "sandbox",
-		ReportFile:       ".cyclestone/reports/0017-cycle-002.md",
-		OutputFile:       ".cyclestone/reports/0017-cycle-002-developer-output.log",
+		ReportFile:       ".cyclestone/reports/0017/cycle-002/report.yaml",
+		OutputFile:       ".cyclestone/reports/0017/cycle-002/02-developer/output.log",
 		LatestCommand:    "aider --model ollama_chat/qwen3-coder:480b-cloud",
 		ModelCalls:       3,
 		ToolCalls:        2,
@@ -264,7 +264,7 @@ func TestRunnerStatusRenderingAndElapsed(t *testing.T) {
 	for _, want := range []string{
 		"running | cycle 002 | phase developer",
 		"Runner: ollama | Model: qwen3-coder:480b-cloud | Mode: sandbox",
-		"Report: .cyclestone/reports/0017-cycle-002.md",
+		"Report: .cyclestone/reports/0017/cycle-002/report.yaml",
 		"Latest command: aider --model ollama_chat/qwen3-coder:480b-cloud",
 		"Latest tool call: exec_command",
 		"Budget: model calls 3/50 | tool calls 2 | est tokens 1200/1000000 | actual tokens prompt 700",
@@ -341,8 +341,8 @@ func TestRunnerStandardViewKeepsLiveLogFrameStable(t *testing.T) {
 	m.Runner = "codex"
 	m.Model = "gpt-5"
 	m.Mode = "sandbox"
-	m.ReportFile = ".cyclestone/reports/report.md"
-	m.OutputFile = ".cyclestone/reports/output.log"
+	m.ReportFile = ".cyclestone/reports/0017/cycle-001/report.yaml"
+	m.OutputFile = ".cyclestone/reports/0017/cycle-001/02-developer/output.log"
 	m.LatestCommand = "codex run"
 	m.LatestToolCall = "exec_command"
 	m.ModelCalls = 1
@@ -359,8 +359,8 @@ func TestRunnerStandardViewKeepsLiveLogFrameStable(t *testing.T) {
 		t.Fatalf("expected runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
 	}
 
-	m.ReportFile = ".cyclestone/reports/" + strings.Repeat("very-long-report-path-", 8) + "report.md"
-	m.OutputFile = ".cyclestone/reports/" + strings.Repeat("very-long-output-path-", 8) + "output.log"
+	m.ReportFile = ".cyclestone/reports/" + strings.Repeat("very-long-milestone-", 8) + "/cycle-001/report.yaml"
+	m.OutputFile = ".cyclestone/reports/" + strings.Repeat("very-long-milestone-", 8) + "/cycle-001/02-developer/output.log"
 	m.LatestCommand = strings.Repeat("codex exec with many arguments ", 8)
 	m.LatestToolCall = strings.Repeat("execute_document_command ", 6)
 	m.ModelCalls = 123
@@ -418,8 +418,8 @@ func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t 
 		Runner:              "codex",
 		Model:               "gpt-5",
 		Mode:                "workspace-write",
-		ReportFile:          ".cyclestone/reports/" + strings.Repeat("long-report-path-", 8) + "report.md",
-		OutputFile:          ".cyclestone/reports/" + strings.Repeat("long-output-path-", 8) + "developer-output.log",
+		ReportFile:          ".cyclestone/reports/" + strings.Repeat("long-milestone-", 8) + "/cycle-002/report.yaml",
+		OutputFile:          ".cyclestone/reports/" + strings.Repeat("long-milestone-", 8) + "/cycle-002/02-developer/output.log",
 		LatestCommand:       strings.Repeat("codex exec --json with wrapped command text ", 5),
 		LatestToolCall:      strings.Repeat("execute_document_command ", 5),
 		ModelCalls:          12,
@@ -436,7 +436,7 @@ func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t 
 		MilestoneID: "0007",
 		CycleNumber: 2,
 		Status:      "passed",
-		ReportFile:  ".cyclestone/reports/" + strings.Repeat("finished-report-path-", 8) + "report.md",
+		ReportFile:  ".cyclestone/reports/" + strings.Repeat("finished-milestone-", 8) + "/cycle-002/report.yaml",
 	})
 	m.LastError = strings.Repeat("historical failure summary ", 8)
 	for i := 0; i < 90; i++ {
@@ -607,7 +607,7 @@ func TestRunnerAgentInstructionsTransitionKeepsLiveLogFrameStable(t *testing.T) 
 		Runner:              "codex",
 		Model:               "gpt-5",
 		Mode:                "workspace-write",
-		ReportFile:          ".cyclestone/reports/" + strings.Repeat("agents-report-", 7) + "report.md",
+		ReportFile:          ".cyclestone/reports/" + strings.Repeat("agents-report-", 7) + "report.yaml",
 		OutputFile:          ".cyclestone/reports/" + strings.Repeat("agents-output-", 7) + "output.log",
 		LatestCommand:       strings.Repeat("codex run update agent instructions ", 5),
 		ModelCalls:          3,
@@ -661,8 +661,8 @@ func TestRunnerFailureSummaryRendering(t *testing.T) {
 		CycleStatus:         "failed",
 		Phase:               "qa",
 		AgentID:             "qa",
-		OutputFile:          ".cyclestone/reports/0017-cycle-001-qa-output.log",
-		ReportFile:          ".cyclestone/reports/0017-cycle-001.md",
+		OutputFile:          ".cyclestone/reports/0017/cycle-001/03-qa/output.log",
+		ReportFile:          ".cyclestone/reports/0017/cycle-001/report.yaml",
 		LastError:           "agent QA failed with exit code 1",
 		NextSuggestedAction: "Review the output log and rerun the cycle after fixing the failure.",
 	})
@@ -673,7 +673,7 @@ func TestRunnerFailureSummaryRendering(t *testing.T) {
 		"Agent: qa",
 		"Duration:",
 		"Reason: agent QA failed with exit code 1",
-		"Output: .cyclestone/reports/0017-cycle-001-qa-output.log",
+		"Output: .cyclestone/reports/0017/cycle-001/03-qa/output.log",
 		"Next: Review the output log and rerun the cycle after fixing the failure.",
 	} {
 		if !strings.Contains(plainView, want) {
@@ -727,7 +727,7 @@ func TestRunnerFinishedSummaryRendering(t *testing.T) {
 		MilestoneID: "0017",
 		CycleNumber: 2,
 		Status:      "passed",
-		ReportFile:  ".cyclestone/reports/0017-cycle-002.md",
+		ReportFile:  ".cyclestone/reports/0017/cycle-002/report.yaml",
 	})
 
 	plainView := stripANSI(m.View())
@@ -735,7 +735,7 @@ func TestRunnerFinishedSummaryRendering(t *testing.T) {
 		"Summary: finished",
 		"Verdict: passed",
 		"Duration:",
-		"Report: .cyclestone/reports/0017-cycle-002.md",
+		"Report: .cyclestone/reports/0017/cycle-002/report.yaml",
 		"Next: Review the report and continue from milestone details.",
 	} {
 		if !strings.Contains(plainView, want) {

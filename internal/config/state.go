@@ -332,7 +332,8 @@ func (s *State) SetMilestoneAgentInstructionsUpdateScore(id string, score int) {
 	s.MilestoneAgentInstructionUpdateScores[id] = score
 }
 
-// DeleteMilestoneCycle removes a specific cycle, renumbers the remaining cycles sequentially, and renames report files to prevent collisions.
+// DeleteMilestoneCycle removes a specific cycle directory and renumbers later
+// cycle directories and state entries sequentially.
 func DeleteMilestoneCycle(configPath, statePath, milestoneID string, cycleNum int) error {
 	state, err := LoadState(statePath)
 	if err != nil {
@@ -359,37 +360,19 @@ func DeleteMilestoneCycle(configPath, statePath, milestoneID string, cycleNum in
 	}
 
 	reportsDir := filepath.Join(filepath.Dir(configPath), "reports")
+	milestoneReportsDir := filepath.Join(reportsDir, milestoneID)
+	_ = os.RemoveAll(filepath.Join(milestoneReportsDir, fmt.Sprintf("cycle-%03d", cycleNum)))
 
-	// Delete target cycle files
-	targetPrefix := fmt.Sprintf("%s-cycle-%03d", milestoneID, cycleNum)
-	files, err := os.ReadDir(reportsDir)
-	if err == nil {
-		for _, f := range files {
-			if !f.IsDir() && strings.HasPrefix(f.Name(), targetPrefix) {
-				_ = os.Remove(filepath.Join(reportsDir, f.Name()))
-			}
-		}
-	}
-
-	// Read reports directory again to get the updated list of files after deletion
-	dirFiles, readErr := os.ReadDir(reportsDir)
-
-	// Renumber remaining cycles in ascending order and rename files sequentially on disk to avoid collisions
+	// Renumber remaining cycles in ascending order; each new directory name has
+	// just been vacated by the previous delete or rename.
 	for i := foundIdx + 1; i < len(logs); i++ {
 		oldNum := logs[i].CycleNumber
 		newNum := oldNum - 1
-		oldPrefix := fmt.Sprintf("%s-cycle-%03d", milestoneID, oldNum)
-		newPrefix := fmt.Sprintf("%s-cycle-%03d", milestoneID, newNum)
-
-		if readErr == nil {
-			for _, f := range dirFiles {
-				if !f.IsDir() && strings.HasPrefix(f.Name(), oldPrefix) {
-					newName := strings.Replace(f.Name(), oldPrefix, newPrefix, 1)
-					_ = os.Rename(filepath.Join(reportsDir, f.Name()), filepath.Join(reportsDir, newName))
-				}
-			}
-		}
+		oldCyclePath := filepath.Join(milestoneReportsDir, fmt.Sprintf("cycle-%03d", oldNum))
+		newCyclePath := filepath.Join(milestoneReportsDir, fmt.Sprintf("cycle-%03d", newNum))
+		_ = os.Rename(oldCyclePath, newCyclePath)
 		logs[i].CycleNumber = newNum
+		renumberCycleActionPaths(&logs[i], reportsDir, milestoneID, oldNum, newNum)
 	}
 
 	// Remove from history slice
@@ -408,7 +391,7 @@ func DeleteMilestoneCycle(configPath, statePath, milestoneID string, cycleNum in
 }
 
 func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remainingCycles int) error {
-	summaryPath := filepath.Join(reportsDir, fmt.Sprintf("%s.md", milestoneID))
+	summaryPath := filepath.Join(reportsDir, milestoneID, "summary.md")
 	if remainingCycles == 0 {
 		_ = os.Remove(summaryPath)
 		return nil
@@ -421,20 +404,14 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 	sb.WriteString(fmt.Sprintf("- Updated: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700")))
 	sb.WriteString("\n## Cycle History\n\n")
 
-	files, err := filepath.Glob(filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-*.yaml", milestoneID)))
+	files, err := hierarchicalCycleReportPaths(reportsDir, milestoneID)
 	if err == nil {
-		sort.Strings(files)
 		for _, file := range files {
-			baseName := filepath.Base(file)
-			if !isPrimaryCycleReportFile(milestoneID, baseName) {
-				continue
-			}
-			cyclePart := strings.TrimPrefix(baseName, milestoneID+"-cycle-")
-			cyclePart = strings.TrimSuffix(cyclePart, ".yaml")
+			cyclePart := strings.TrimPrefix(filepath.Base(filepath.Dir(file)), "cycle-")
 
 			started, verdict := cycleReportSummaryFields(file)
 
-			sb.WriteString(fmt.Sprintf("- Cycle %s: .cyclestone/reports/%s", cyclePart, baseName))
+			sb.WriteString(fmt.Sprintf("- Cycle %s: %s", cyclePart, file))
 			if started != "" {
 				sb.WriteString(fmt.Sprintf(" (%s)", started))
 			}
@@ -452,16 +429,44 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 	return os.WriteFile(summaryPath, []byte(sb.String()), 0644)
 }
 
-func isPrimaryCycleReportFile(milestoneID, baseName string) bool {
-	prefix := milestoneID + "-cycle-"
-	if !strings.HasPrefix(baseName, prefix) || !strings.HasSuffix(baseName, ".yaml") {
+func renumberCycleActionPaths(log *MilestoneCycleLog, reportsDir, milestoneID string, oldNum, newNum int) {
+	oldSegment := filepath.Join(".cyclestone", "reports", milestoneID, fmt.Sprintf("cycle-%03d", oldNum))
+	newSegment := filepath.Join(".cyclestone", "reports", milestoneID, fmt.Sprintf("cycle-%03d", newNum))
+	oldAbsSegment := filepath.Join(reportsDir, milestoneID, fmt.Sprintf("cycle-%03d", oldNum))
+	newAbsSegment := filepath.Join(reportsDir, milestoneID, fmt.Sprintf("cycle-%03d", newNum))
+	for i := range log.Actions {
+		log.Actions[i].InputFile = replaceCyclePathSegment(log.Actions[i].InputFile, oldSegment, newSegment, oldAbsSegment, newAbsSegment)
+		log.Actions[i].OutputFile = replaceCyclePathSegment(log.Actions[i].OutputFile, oldSegment, newSegment, oldAbsSegment, newAbsSegment)
+	}
+}
+
+func replaceCyclePathSegment(path, oldSegment, newSegment, oldAbsSegment, newAbsSegment string) string {
+	path = strings.Replace(path, oldSegment, newSegment, 1)
+	return strings.Replace(path, oldAbsSegment, newAbsSegment, 1)
+}
+
+func hierarchicalCycleReportPaths(reportsDir, milestoneID string) ([]string, error) {
+	milestoneReportsDir := filepath.Join(reportsDir, milestoneID)
+	entries, err := os.ReadDir(milestoneReportsDir)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() || !isCycleDirName(entry.Name()) {
+			continue
+		}
+		files = append(files, filepath.Join(milestoneReportsDir, entry.Name(), "report.yaml"))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func isCycleDirName(name string) bool {
+	if len(name) != len("cycle-001") || !strings.HasPrefix(name, "cycle-") {
 		return false
 	}
-	cyclePart := strings.TrimSuffix(strings.TrimPrefix(baseName, prefix), ".yaml")
-	if len(cyclePart) != 3 {
-		return false
-	}
-	for _, r := range cyclePart {
+	for _, r := range strings.TrimPrefix(name, "cycle-") {
 		if r < '0' || r > '9' {
 			return false
 		}

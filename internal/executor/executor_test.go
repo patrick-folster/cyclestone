@@ -42,7 +42,11 @@ func TestRunAgentPipelineCancellationDoesNotBlockWithoutListener(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(".cyclestone", "reports"), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
-	reportFile, err := os.Create(filepath.Join(".cyclestone", "reports", "MS-CANCEL-cycle-001.yaml"))
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-CANCEL", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
+	reportFile, err := os.Create(reportPath)
 	if err != nil {
 		t.Fatalf("failed to create report file: %v", err)
 	}
@@ -116,7 +120,10 @@ echo '{"msg":"thread.started","thread_id":"thread-recommender-pipeline"}'
 			"MS-PIPE": {{CycleNumber: 1, Branch: "develop", Status: "approved"}},
 		},
 	}
-	reportPath := filepath.Join(".cyclestone", "reports", "MS-PIPE-cycle-001.yaml")
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-PIPE", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	reportFile, err := os.Create(reportPath)
 	if err != nil {
 		t.Fatalf("failed to create report: %v", err)
@@ -173,6 +180,45 @@ echo '{"msg":"thread.started","thread_id":"thread-recommender-pipeline"}'
 	}
 }
 
+func TestCycleAndPhaseArtifactPathsUseHierarchicalLayout(t *testing.T) {
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	cycle := cycleArtifacts(reportsDir, "MS-PATH", 1)
+	if cycle.Summary != filepath.Join(reportsDir, "MS-PATH", "summary.md") {
+		t.Fatalf("unexpected summary path: %q", cycle.Summary)
+	}
+	if cycle.Report != filepath.Join(reportsDir, "MS-PATH", "cycle-001", "report.yaml") {
+		t.Fatalf("unexpected report path: %q", cycle.Report)
+	}
+	if cycle.Metadata != filepath.Join(reportsDir, "MS-PATH", "cycle-001", "metadata.json") {
+		t.Fatalf("unexpected metadata path: %q", cycle.Metadata)
+	}
+	if cycle.CodexThread != filepath.Join(reportsDir, "MS-PATH", "cycle-001", "codex-thread.json") {
+		t.Fatalf("unexpected codex thread metadata path: %q", cycle.CodexThread)
+	}
+
+	pipeline := []config.Agent{{ID: "pm"}, {ID: "developer"}, {ID: "qa"}, {ID: "recommender"}}
+	for _, tc := range []struct {
+		agentID string
+		fileID  string
+	}{
+		{"pm", "01-pm"},
+		{"developer", "02-developer"},
+		{"qa", "03-qa"},
+		{"recommender", "04-recommender"},
+	} {
+		if got := getAgentFileID(tc.agentID, pipeline); got != tc.fileID {
+			t.Fatalf("expected %s file ID %q, got %q", tc.agentID, tc.fileID, got)
+		}
+		phase := phaseArtifacts(reportsDir, "MS-PATH", 1, tc.fileID)
+		base := filepath.Join(reportsDir, "MS-PATH", "cycle-001", tc.fileID)
+		if phase.Input != filepath.Join(base, "input.md") ||
+			phase.Output != filepath.Join(base, "output.log") ||
+			phase.Handoff != filepath.Join(base, "handoff.yaml") {
+			t.Fatalf("unexpected paths for %s: %#v", tc.agentID, phase)
+		}
+	}
+}
+
 func TestAssembleAgentInstructionsUpdateInputScopesContextAndHumanMessage(t *testing.T) {
 	tmp := t.TempDir()
 	t.Chdir(tmp)
@@ -197,10 +243,18 @@ func TestAssembleAgentInstructionsUpdateInputScopesContextAndHumanMessage(t *tes
 	if err := os.WriteFile(filepath.Join(".cyclestone", "milestones", "MS-B.md"), []byte("UNRELATED SPEC\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-A-cycle-001.yaml"), []byte("ACTIVE REPORT\n"), 0644); err != nil {
+	activeReport := filepath.Join(".cyclestone", "reports", "MS-A", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(activeReport), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-B-cycle-001.yaml"), []byte("UNRELATED REPORT\n"), 0644); err != nil {
+	if err := os.WriteFile(activeReport, []byte("ACTIVE REPORT\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedReport := filepath.Join(".cyclestone", "reports", "MS-B", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(unrelatedReport), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unrelatedReport, []byte("UNRELATED REPORT\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(".cyclestone", "state.json")
@@ -894,7 +948,7 @@ func TestAssembleInputLimitsPreviousCycleReport(t *testing.T) {
 		t.Fatalf("failed to write milestone spec: %v", err)
 	}
 
-	previousReportPath := filepath.Join(".cyclestone", "reports", "MS-LIMIT-cycle-001.yaml")
+	previousReportPath := filepath.Join(".cyclestone", "reports", "MS-LIMIT", "cycle-001", "report.yaml")
 	if err := os.MkdirAll(filepath.Dir(previousReportPath), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
@@ -978,28 +1032,28 @@ func TestAssembleInputSummarizesCycleReportForRecommender(t *testing.T) {
 		_ = os.Chdir(origWd)
 	}()
 
-	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-cycle-002.yaml")
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC", "cycle-002", "report.yaml")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
 	report := strings.Join([]string{
-		"# Milestone Cycle Report: MS-REC",
-		"- Started: 2026-06-23 18:26:57 -0600",
-		"- Cycle: 002",
-		"- Cycle mode: continuation",
+		`milestone_id: "MS-REC"`,
+		`started: "2026-06-23 18:26:57 -0600"`,
+		`cycle: "002"`,
+		`cycle_mode: "continuation"`,
+		`details: |-`,
+		"  ## Developer Phase",
 		"",
-		"## Developer Phase",
-		"```text",
-		strings.Repeat("DEVELOPER-LOG-NOISE\n", 30000),
-		"Exit status: 0",
-		"```",
+		"  ```text",
+		"  " + strings.ReplaceAll(strings.Repeat("DEVELOPER-LOG-NOISE\n", 30000), "\n", "\n  "),
+		"  Exit status: 0",
+		"  ```",
 		"",
-		"## Quality Manager Phase",
-		"```text",
-		"R final QA blocker",
-		"O blocked",
-		"Exit status: 0",
-		"```",
+		"  ## Quality Manager Phase",
+		"",
+		"  R final QA blocker",
+		"  O blocked",
+		"  Exit status: 0",
 	}, "\n")
 	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
 		t.Fatalf("failed to write report: %v", err)
@@ -1919,13 +1973,25 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 	if err := os.WriteFile("AGENTS.md", []byte("AGENTS-SHOULD-BE-LOADED\n"), 0644); err != nil {
 		t.Fatalf("failed to write AGENTS.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"), []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
+	priorReport := filepath.Join(".cyclestone", "reports", "MS-P", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(priorReport), 0755); err != nil {
+		t.Fatalf("failed to create prior report dir: %v", err)
+	}
+	if err := os.WriteFile(priorReport, []byte("RAW-PRIOR-LOG\n"+strings.Repeat("noise\n", 100)), 0644); err != nil {
 		t.Fatalf("failed to write prior report: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-01-pm-handoff.yaml"), []byte("summary:\n  scope:\n    - pm scope\n  target_paths:\n    - internal/executor\n"), 0644); err != nil {
+	pmHandoff := filepath.Join(".cyclestone", "reports", "MS-P", "cycle-002", "01-pm", "handoff.yaml")
+	if err := os.MkdirAll(filepath.Dir(pmHandoff), 0755); err != nil {
+		t.Fatalf("failed to create pm handoff dir: %v", err)
+	}
+	if err := os.WriteFile(pmHandoff, []byte("summary:\n  scope:\n    - pm scope\n  target_paths:\n    - internal/executor\n"), 0644); err != nil {
 		t.Fatalf("failed to write pm handoff: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(".cyclestone", "reports", "MS-P-cycle-002-02-developer-handoff.yaml"), []byte("summary:\n  changed_files:\n    - internal/executor/executor.go\n  checks_run:\n    - PASS\n"), 0644); err != nil {
+	devHandoff := filepath.Join(".cyclestone", "reports", "MS-P", "cycle-002", "02-developer", "handoff.yaml")
+	if err := os.MkdirAll(filepath.Dir(devHandoff), 0755); err != nil {
+		t.Fatalf("failed to create dev handoff dir: %v", err)
+	}
+	if err := os.WriteFile(devHandoff, []byte("summary:\n  changed_files:\n    - internal/executor/executor.go\n  checks_run:\n    - PASS\n"), 0644); err != nil {
 		t.Fatalf("failed to write dev handoff: %v", err)
 	}
 
@@ -1941,7 +2007,7 @@ func TestCompactPhaseInputUsesRoleSpecificHandoffsAndSkipsRawPriorLogs(t *testin
 		config.Agent{ID: "developer", Name: "Developer", PromptBody: "dev role"},
 		2,
 		RunOptions{NoBranchChange: true},
-		filepath.Join(".cyclestone", "reports", "MS-P-cycle-001.yaml"),
+		priorReport,
 		"",
 		settings,
 		pipeline,
@@ -1992,7 +2058,10 @@ func TestReadHandoffOrFallbackUsesBoundedOutputLogForMissingOrMalformedHandoff(t
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
-	outputPath := filepath.Join(reportsDir, "MS-F-cycle-001-01-pm-output.log")
+	outputPath := filepath.Join(reportsDir, "MS-F", "cycle-001", "01-pm", "output.log")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		t.Fatalf("failed to create phase dir: %v", err)
+	}
 	if err := os.WriteFile(outputPath, []byte("PM-FALLBACK-HEAD\n"+strings.Repeat("noise\n", 100)+"PM-FALLBACK-TAIL\n"), 0644); err != nil {
 		t.Fatalf("failed to write output log: %v", err)
 	}
@@ -2002,7 +2071,7 @@ func TestReadHandoffOrFallbackUsesBoundedOutputLogForMissingOrMalformedHandoff(t
 		t.Fatalf("expected missing handoff to use bounded output log fallback, got:\n%s", missing)
 	}
 
-	handoffPath := filepath.Join(reportsDir, "MS-F-cycle-001-01-pm-handoff.yaml")
+	handoffPath := filepath.Join(reportsDir, "MS-F", "cycle-001", "01-pm", "handoff.yaml")
 	if err := os.WriteFile(handoffPath, []byte("not: [valid"), 0644); err != nil {
 		t.Fatalf("failed to write malformed handoff: %v", err)
 	}
@@ -2302,7 +2371,7 @@ func TestCycleReportHeaderAndDetailsAreValidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create report: %v", err)
 	}
-	writeReportHeader(reportFile, "MS-YAML", "develop", 1, "", ".cyclestone/reports/MS-YAML-cycle-001-metadata.json", RunOptions{NoBranchChange: true, CycleNote: "human note"}, nil, nil)
+	writeReportHeader(reportFile, "MS-YAML", "develop", 1, "", ".cyclestone/reports/MS-YAML/cycle-001/metadata.json", RunOptions{NoBranchChange: true, CycleNote: "human note"}, nil, nil)
 	writeReportDetailf(reportFile, "\n## Developer Phase\n\n- Output log: `%s`\n", "developer.log")
 	if err := reportFile.Close(); err != nil {
 		t.Fatalf("failed to close report: %v", err)
@@ -2327,13 +2396,16 @@ func TestCycleReportHeaderAndDetailsAreValidYAML(t *testing.T) {
 
 func TestCycleReportInformationalWarningsAreYAMLAndExcludedFromSummary(t *testing.T) {
 	tmpDir := t.TempDir()
-	reportPath := filepath.Join(tmpDir, "MS-WARN-cycle-001.yaml")
+	reportPath := filepath.Join(tmpDir, "MS-WARN", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	reportFile, err := os.Create(reportPath)
 	if err != nil {
 		t.Fatalf("failed to create report: %v", err)
 	}
 	warnings := []string{"Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately."}
-	writeReportHeader(reportFile, "MS-WARN", "develop", 1, "", ".cyclestone/reports/MS-WARN-cycle-001-metadata.json", RunOptions{}, warnings, nil)
+	writeReportHeader(reportFile, "MS-WARN", "develop", 1, "", ".cyclestone/reports/MS-WARN/cycle-001/metadata.json", RunOptions{}, warnings, nil)
 	writeReportDetailf(reportFile, "\n## QA Phase\n\nverdict: approved\n")
 	if err := reportFile.Close(); err != nil {
 		t.Fatalf("failed to close report: %v", err)
@@ -2365,7 +2437,10 @@ func TestCycleReportInformationalWarningsAreYAMLAndExcludedFromSummary(t *testin
 
 func TestCycleReportSummaryIgnoresEmbeddedRepoOnlyBlockedQAExcerpt(t *testing.T) {
 	tmpDir := t.TempDir()
-	reportPath := filepath.Join(tmpDir, "MS-WARN-QA-cycle-001.yaml")
+	reportPath := filepath.Join(tmpDir, "MS-WARN-QA", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	report := strings.Join([]string{
 		`milestone_id: "MS-WARN-QA"`,
 		`cycle: "001"`,
@@ -2412,7 +2487,7 @@ func TestCycleReportSummaryIgnoresEmbeddedRepoOnlyBlockedQAExcerpt(t *testing.T)
 func TestRecommenderInputExcludesCycleReportInformationalWarnings(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
-	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-WARN-cycle-001.yaml")
+	reportPath := filepath.Join(".cyclestone", "reports", "MS-REC-WARN", "cycle-001", "report.yaml")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
@@ -2421,7 +2496,7 @@ func TestRecommenderInputExcludesCycleReportInformationalWarnings(t *testing.T) 
 		t.Fatalf("failed to create report: %v", err)
 	}
 	warnings := []string{"Embedded Git repository detected at tools/nested without Cyclestone tracking. This is informational only and is excluded from recommender scoring; add it to repositories or .gitmodules if Cyclestone should manage it separately."}
-	writeReportHeader(reportFile, "MS-REC-WARN", "develop", 1, "", ".cyclestone/reports/MS-REC-WARN-cycle-001-metadata.json", RunOptions{}, warnings, nil)
+	writeReportHeader(reportFile, "MS-REC-WARN", "develop", 1, "", ".cyclestone/reports/MS-REC-WARN/cycle-001/metadata.json", RunOptions{}, warnings, nil)
 	writeReportDetailf(reportFile, "\n## QA Phase\n\nverdict: approved\n")
 	if err := reportFile.Close(); err != nil {
 		t.Fatalf("failed to close report: %v", err)
@@ -2469,6 +2544,9 @@ func TestCompactRecommenderInputStripsQAEmbeddedRepoInformationalWarnings(t *tes
 		{ID: "recommender", Name: "Cycle Recommender"},
 	}
 	qaHandoffPath := phaseHandoffPath(reportsDir, "MS-REC-HANDOFF", "001", getAgentFileID("qa", pipeline))
+	if err := os.MkdirAll(filepath.Dir(qaHandoffPath), 0755); err != nil {
+		t.Fatalf("failed to create QA handoff dir: %v", err)
+	}
 	handoff := strings.Join([]string{
 		"milestone_id: MS-REC-HANDOFF",
 		"cycle: 1",
@@ -2631,7 +2709,11 @@ func TestPrepareCycleEnvironmentUsesYAMLReportPaths(t *testing.T) {
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(reportsDir, "MS-YAML-cycle-001.yaml"), []byte("milestone_id: MS-YAML\n"), 0644); err != nil {
+	previousReport := filepath.Join(reportsDir, "MS-YAML", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(previousReport), 0755); err != nil {
+		t.Fatalf("failed to create previous report dir: %v", err)
+	}
+	if err := os.WriteFile(previousReport, []byte("milestone_id: MS-YAML\n"), 0644); err != nil {
 		t.Fatalf("failed to write previous report: %v", err)
 	}
 
@@ -2641,10 +2723,10 @@ func TestPrepareCycleEnvironmentUsesYAMLReportPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCycleEnvironment failed: %v", err)
 	}
-	if !strings.HasSuffix(previousReportPath, "MS-YAML-cycle-001.yaml") {
+	if previousReportPath != previousReport {
 		t.Fatalf("expected previous YAML report path, got %q", previousReportPath)
 	}
-	if !strings.HasSuffix(reportPath, "MS-YAML-cycle-002.yaml") {
+	if reportPath != filepath.Join(reportsDir, "MS-YAML", "cycle-002", "report.yaml") {
 		t.Fatalf("expected current YAML report path, got %q", reportPath)
 	}
 }
@@ -2689,7 +2771,10 @@ func TestPrepareCycleEnvironmentWritesEmbeddedRepoWarningsToMetadata(t *testing.
 
 func TestSummarizeCycleReportParsesYAMLEnvelope(t *testing.T) {
 	tmpDir := t.TempDir()
-	reportPath := filepath.Join(tmpDir, "MS-YAML-cycle-001.yaml")
+	reportPath := filepath.Join(tmpDir, "MS-YAML", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	report := strings.Join([]string{
 		`milestone_id: "MS-YAML"`,
 		`started: "2026-07-02 10:00:00 -0500"`,
@@ -2734,7 +2819,7 @@ func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
 	if err := os.MkdirAll(reportsDir, 0755); err != nil {
 		t.Fatalf("failed to create reports dir: %v", err)
 	}
-	reportPath := filepath.Join(reportsDir, "MS-YAML-cycle-001.yaml")
+	reportPath := filepath.Join(reportsDir, "MS-YAML", "cycle-001", "report.yaml")
 	report := strings.Join([]string{
 		`milestone_id: "MS-YAML"`,
 		`started: "2026-07-02 10:00:00 -0500"`,
@@ -2744,22 +2829,29 @@ func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
 		`  verdict: approved`,
 		``,
 	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
 		t.Fatalf("failed to write report: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(reportsDir, "MS-YAML-cycle-001-01-pm-handoff.yaml"), []byte("summary:\n  scope: []\n"), 0644); err != nil {
+	handoffPath := filepath.Join(reportsDir, "MS-YAML", "cycle-001", "01-pm", "handoff.yaml")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0755); err != nil {
+		t.Fatalf("failed to create handoff dir: %v", err)
+	}
+	if err := os.WriteFile(handoffPath, []byte("summary:\n  scope: []\n"), 0644); err != nil {
 		t.Fatalf("failed to write handoff: %v", err)
 	}
 
 	if err := updateCycleSummaryReport("MS-YAML", 1, reportsDir); err != nil {
 		t.Fatalf("updateCycleSummaryReport failed: %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(reportsDir, "MS-YAML.md"))
+	content, err := os.ReadFile(filepath.Join(reportsDir, "MS-YAML", "summary.md"))
 	if err != nil {
 		t.Fatalf("failed to read summary report: %v", err)
 	}
 	summary := string(content)
-	if !strings.Contains(summary, ".cyclestone/reports/MS-YAML-cycle-001.yaml (2026-07-02 10:00:00 -0500) - verdict: approved") {
+	if !strings.Contains(summary, filepath.Join(reportsDir, "MS-YAML", "cycle-001", "report.yaml")+" (2026-07-02 10:00:00 -0500) - verdict: approved") {
 		t.Fatalf("expected YAML metadata and details verdict in cycle summary, got:\n%s", summary)
 	}
 	if strings.Contains(summary, "handoff.yaml") {
@@ -2769,7 +2861,10 @@ func TestUpdateCycleSummaryReportReadsYAMLReports(t *testing.T) {
 
 func TestSummarizeCycleReportMalformedYAMLFallsBack(t *testing.T) {
 	tmpDir := t.TempDir()
-	reportPath := filepath.Join(tmpDir, "MS-YAML-cycle-001.yaml")
+	reportPath := filepath.Join(tmpDir, "MS-YAML", "cycle-001", "report.yaml")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0755); err != nil {
+		t.Fatalf("failed to create report dir: %v", err)
+	}
 	report := strings.Join([]string{
 		`milestone_id: [`,
 		`details: |-`,

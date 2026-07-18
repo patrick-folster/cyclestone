@@ -428,8 +428,9 @@ func (m PreflightModel) content() string {
 	sb.WriteString(fmt.Sprintf("Branch changes: %s\n", branchSetting))
 	sb.WriteString(fmt.Sprintf("Expected branch: %s\n", expectedBranch))
 	if m.Request.Workflow == WorkflowCycle {
-		sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s.yaml", m.Milestone.ID, cyclePadded))))
-		sb.WriteString(fmt.Sprintf("Metadata: %s\n", filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-metadata.json", m.Milestone.ID, cyclePadded))))
+		cycleDir := filepath.Join(".cyclestone", "reports", m.Milestone.ID, "cycle-"+cyclePadded)
+		sb.WriteString(fmt.Sprintf("Reports: %s\n", filepath.Join(cycleDir, "report.yaml")))
+		sb.WriteString(fmt.Sprintf("Metadata: %s\n", filepath.Join(cycleDir, "metadata.json")))
 	} else {
 		sb.WriteString(fmt.Sprintf("Proposal draft: %s\n", filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")))
 	}

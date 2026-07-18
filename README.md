@@ -238,6 +238,12 @@ Generated runtime files usually should stay out of your application repository:
 
 - `.cyclestone/state.json`
 - `.cyclestone/reports/`
+  - `<milestone-id>/summary.md`
+  - `<milestone-id>/cycle-NNN/report.yaml`
+  - `<milestone-id>/cycle-NNN/metadata.json`
+  - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/input.md`
+  - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/output.log`
+  - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/handoff.yaml`
 - `.cyclestone/settings.yml` when it contains local preferences, hosts, or runner choices
 
 Commit milestone specs only when you want the team to share them:

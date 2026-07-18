@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/patrick-folster/cyclestone/internal/config"
@@ -1731,7 +1732,8 @@ func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars in
 		}
 	}
 
-	outputPath := filepath.Join(".cyclestone", "reports", fmt.Sprintf("%s-cycle-%s-%s-output.log", milestoneID, cyclePadded, agentFileID))
+	cycleNum, _ := strconv.Atoi(cyclePadded)
+	outputPath := phaseArtifacts(filepath.Join(".cyclestone", "reports"), milestoneID, cycleNum, agentFileID).Output
 	output, outputErr := os.ReadFile(outputPath)
 	if outputErr != nil {
 		return ""
@@ -1759,7 +1761,8 @@ func handoffContentValid(content []byte) bool {
 }
 
 func phaseHandoffPath(reportsDir, milestoneID, cyclePadded, agentFileID string) string {
-	return filepath.Join(reportsDir, fmt.Sprintf("%s-cycle-%s-%s-handoff.yaml", milestoneID, cyclePadded, agentFileID))
+	cycleNum, _ := strconv.Atoi(cyclePadded)
+	return phaseArtifacts(reportsDir, milestoneID, cycleNum, agentFileID).Handoff
 }
 
 func getAgentFileID(agentID string, pipeline []config.Agent) string {
