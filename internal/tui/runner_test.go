@@ -406,6 +406,9 @@ func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t 
 	if baseHeight != m.Height {
 		t.Fatalf("expected runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
 	}
+	if baseLogHeight < m.Height/2 {
+		t.Fatalf("expected sparse runner log frame to use most available height, got %d rows in %d-row terminal\n%s", baseLogHeight, m.Height, baseView)
+	}
 
 	m, _ = m.Update(executor.RunnerStatusMsg{
 		CycleNumber:         2,
@@ -446,8 +449,14 @@ func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t 
 	if grownWidth != baseWidth || grownHeight != baseHeight {
 		t.Fatalf("runner absent-to-present dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, grownWidth, grownHeight)
 	}
-	if grownLogWidth != baseLogWidth || grownLogHeight != baseLogHeight {
-		t.Fatalf("runner absent-to-present log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, grownLogWidth, grownLogHeight)
+	if grownLogWidth != baseLogWidth {
+		t.Fatalf("runner absent-to-present log frame width changed from %d to %d", baseLogWidth, grownLogWidth)
+	}
+	if grownLogHeight >= baseLogHeight {
+		t.Fatalf("expected visible status sections to consume bounded rows after sparse state, log frame stayed %d -> %d", baseLogHeight, grownLogHeight)
+	}
+	if grownLogHeight <= 3 {
+		t.Fatalf("expected runner log frame with visible status sections to remain usable, got %d rows\n%s", grownLogHeight, grownView)
 	}
 	for _, want := range []string{"Status:", "Logs Output (Live Tail):", "Esc", "Backspace", "q", "Quit"} {
 		if !strings.Contains(grownView, want) {
@@ -622,8 +631,14 @@ func TestRunnerAgentInstructionsTransitionKeepsLiveLogFrameStable(t *testing.T) 
 	if finishedWidth != baseWidth || finishedHeight != baseHeight {
 		t.Fatalf("AGENTS absent-to-proposal dimensions changed from %dx%d to %dx%d", baseWidth, baseHeight, finishedWidth, finishedHeight)
 	}
-	if finishedLogWidth != baseLogWidth || finishedLogHeight != baseLogHeight {
-		t.Fatalf("AGENTS absent-to-proposal log frame changed from %dx%d to %dx%d", baseLogWidth, baseLogHeight, finishedLogWidth, finishedLogHeight)
+	if finishedLogWidth != baseLogWidth {
+		t.Fatalf("AGENTS absent-to-proposal log frame width changed from %d to %d", baseLogWidth, finishedLogWidth)
+	}
+	if finishedLogHeight >= baseLogHeight {
+		t.Fatalf("expected proposal/status content to consume bounded rows after sparse AGENTS state, log frame stayed %d -> %d", baseLogHeight, finishedLogHeight)
+	}
+	if finishedLogHeight <= 3 {
+		t.Fatalf("expected finished AGENTS log frame to remain usable, got %d rows\n%s", finishedLogHeight, finishedView)
 	}
 	for _, want := range []string{"Proposal Draft: .cyclestone/temp/AGENTS.md.proposed", "Apply-AGENTS", "Save-Draft", "Logs Output (Live Tail):"} {
 		if !strings.Contains(finishedView, want) {

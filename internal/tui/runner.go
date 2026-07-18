@@ -881,6 +881,9 @@ func (m RunnerModel) renderSummaryLine(maxLines int) string {
 }
 
 func (m RunnerModel) renderBoundedDetailBlock(lines []string, width int, maxLines int) string {
+	if len(lines) == 0 {
+		return ""
+	}
 	if maxLines < 1 {
 		maxLines = 1
 	}
