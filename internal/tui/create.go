@@ -408,7 +408,11 @@ func (m CreateMilestoneModel) View() string {
 		if boxHeight < 10 {
 			boxHeight = 10
 		}
-		contentHeight := boxHeight - 2
+		styleHeight := boxHeight - 2
+		if styleHeight < 1 {
+			styleHeight = 1
+		}
+		contentHeight := styleHeight
 		if contentHeight < 1 {
 			contentHeight = 1
 		}
@@ -425,8 +429,8 @@ func (m CreateMilestoneModel) View() string {
 
 		return m.Styles.ActiveBorder.
 			Width(m.Width - 4).
-			Height(boxHeight).
-			Render(truncateLines(sb.String(), boxHeight))
+			Height(styleHeight).
+			Render(truncateLines(sb.String(), contentHeight))
 	}
 
 	if m.Mode == ModeCycleNote {

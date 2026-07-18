@@ -503,17 +503,9 @@ func (m RunnerModel) View() string {
 			sb.WriteString(activeAgentStr)
 
 			sb.WriteString(m.Styles.DetailLabel.Render("Logs Output (Live Tail):") + "\n")
+			logBoxHeight := remainingRunnerLogBoxHeight(m.Height, sb.String(), helpLines)
 
-			extOverhead := 5
-			if m.Width <= 52 {
-				extOverhead = 6
-			}
-			logBoxHeight := m.Height - extOverhead - 8 - helpLines
-			if logBoxHeight < 3 {
-				logBoxHeight = 3
-			}
-
-			logContentHeight := logBoxHeight - 2
+			logContentHeight := logBoxHeight
 			if logContentHeight < 1 {
 				logContentHeight = 1
 			}
@@ -595,135 +587,17 @@ func (m RunnerModel) View() string {
 		}
 		sb.WriteString("\n")
 
-		var rootOverhead = 3
-		availHeight := m.Height - rootOverhead
-
-		useCompactPipeline := m.Height < 20
-		var tailHeight int
-
-		if !useCompactPipeline {
-			tailHeight = availHeight - (len(m.Pipeline) + 8 + helpLines)
-			if tailHeight < 3 {
-				useCompactPipeline = true
-			}
-		}
-
-		if useCompactPipeline {
-			tailHeight = availHeight - (6 + helpLines)
-		}
-
-		if tailHeight < 3 {
-			tailHeight = 3
-		}
-
-		logBoxHeight := tailHeight - 2
-		if logBoxHeight < 1 {
-			logBoxHeight = 1
-		}
-
-		var pipelineStr string
-		if useCompactPipeline {
-			var states []string
-			for _, agent := range m.Pipeline {
-				state := m.AgentStates[agent.ID]
-				if state == "" {
-					state = "pending"
-				}
-				var statusShort string
-				switch state {
-				case "pending":
-					statusShort = "pending"
-				case "running":
-					statusShort = "running"
-				case "success":
-					statusShort = "success"
-				case "failed":
-					statusShort = "failed"
-				}
-				states = append(states, fmt.Sprintf("%s: %s %s", agent.Name, statusShort, formatRunnerDuration(m.agentElapsed(agent.ID))))
-			}
-			hasRecommenderInPipeline := false
-			for _, agent := range m.Pipeline {
-				if agent.ID == "recommender" {
-					hasRecommenderInPipeline = true
-					break
-				}
-			}
-			if !hasRecommenderInPipeline {
-				recState := m.AgentStates["recommender"]
-				if recState == "" {
-					recState = "pending"
-				}
-				var recShort string
-				switch recState {
-				case "pending":
-					recShort = "pending"
-				case "running":
-					recShort = "running"
-				case "success":
-					recShort = "success"
-				case "failed":
-					recShort = "failed"
-				}
-				states = append(states, fmt.Sprintf("Recommender: %s %s", recShort, formatRunnerDuration(m.agentElapsed("recommender"))))
-			}
-			pipelineStr = "Pipeline: " + strings.Join(states, " | ") + "\n"
-		} else {
-			var pipelineBuilder strings.Builder
-			pipelineBuilder.WriteString(m.Styles.DetailLabel.Render("Agent Workflow Pipeline:") + "\n")
-			for _, agent := range m.Pipeline {
-				state := m.AgentStates[agent.ID]
-				if state == "" {
-					state = "pending"
-				}
-
-				var icon string
-				switch state {
-				case "pending":
-					icon = m.Styles.HelpStyle.Render("○ Pending")
-				case "running":
-					icon = m.Spinner.View() + " " + m.Styles.WarningText.Render("Running")
-				case "success":
-					icon = m.Styles.SuccessText.Render(m.Styles.GlyphCheck + " Success")
-				case "failed":
-					icon = m.Styles.ErrorText.Render(m.Styles.GlyphCross + " Failed")
-				}
-
-				pipelineBuilder.WriteString(fmt.Sprintf("  %s %-15s %s %s\n", m.Styles.AccentText.Render("│"), agent.Name, icon, formatRunnerDuration(m.agentElapsed(agent.ID))))
-			}
-			hasRecommenderInPipeline := false
-			for _, agent := range m.Pipeline {
-				if agent.ID == "recommender" {
-					hasRecommenderInPipeline = true
-					break
-				}
-			}
-			if !hasRecommenderInPipeline {
-				recState := m.AgentStates["recommender"]
-				if recState == "" {
-					recState = "pending"
-				}
-				var recIcon string
-				switch recState {
-				case "pending":
-					recIcon = m.Styles.HelpStyle.Render("○ Pending")
-				case "running":
-					recIcon = m.Spinner.View() + " " + m.Styles.WarningText.Render("Running")
-				case "success":
-					recIcon = m.Styles.SuccessText.Render(m.Styles.GlyphCheck + " Success")
-				case "failed":
-					recIcon = m.Styles.ErrorText.Render(m.Styles.GlyphCross + " Failed")
-				}
-				pipelineBuilder.WriteString(fmt.Sprintf("  %s %-15s %s %s\n", m.Styles.AccentText.Render("│"), "Recommender", recIcon, formatRunnerDuration(m.agentElapsed("recommender"))))
-			}
-			pipelineBuilder.WriteString("\n")
-			pipelineStr = pipelineBuilder.String()
+		pipelineStr := m.renderStandardPipeline(false)
+		candidatePrefix := sb.String() + pipelineStr + m.Styles.DetailLabel.Render("Logs Output (Live Tail):") + "\n"
+		if m.Height < 25 && remainingRunnerLogBoxHeight(m.Height, candidatePrefix, helpLines) <= 1 {
+			pipelineStr = m.renderStandardPipeline(true)
 		}
 		sb.WriteString(pipelineStr)
 
 		sb.WriteString(m.Styles.DetailLabel.Render("Logs Output (Live Tail):") + "\n")
+		logBoxHeight := remainingRunnerLogBoxHeight(m.Height, sb.String(), helpLines)
 
-		logContentHeight := logBoxHeight - 2
+		logContentHeight := logBoxHeight
 		if logContentHeight < 1 {
 			logContentHeight = 1
 		}
@@ -753,6 +627,113 @@ func (m RunnerModel) workflowNounTitle() string {
 
 func (m RunnerModel) isAgentInstructionsWorkflow() bool {
 	return m.Workflow == WorkflowAgentInstructionsRepository || m.Workflow == WorkflowAgentInstructionsMilestone
+}
+
+func (m RunnerModel) renderStandardPipeline(compact bool) string {
+	if compact {
+		var states []string
+		for _, agent := range m.Pipeline {
+			state := m.AgentStates[agent.ID]
+			if state == "" {
+				state = "pending"
+			}
+			var statusShort string
+			switch state {
+			case "pending":
+				statusShort = "pending"
+			case "running":
+				statusShort = "running"
+			case "success":
+				statusShort = "success"
+			case "failed":
+				statusShort = "failed"
+			}
+			states = append(states, fmt.Sprintf("%s: %s %s", agent.Name, statusShort, formatRunnerDuration(m.agentElapsed(agent.ID))))
+		}
+		if !m.pipelineHasRecommender() {
+			recState := m.AgentStates["recommender"]
+			if recState == "" {
+				recState = "pending"
+			}
+			var recShort string
+			switch recState {
+			case "pending":
+				recShort = "pending"
+			case "running":
+				recShort = "running"
+			case "success":
+				recShort = "success"
+			case "failed":
+				recShort = "failed"
+			}
+			states = append(states, fmt.Sprintf("Recommender: %s %s", recShort, formatRunnerDuration(m.agentElapsed("recommender"))))
+		}
+		return "Pipeline: " + strings.Join(states, " | ") + "\n"
+	}
+
+	var pipelineBuilder strings.Builder
+	pipelineBuilder.WriteString(m.Styles.DetailLabel.Render("Agent Workflow Pipeline:") + "\n")
+	for _, agent := range m.Pipeline {
+		state := m.AgentStates[agent.ID]
+		if state == "" {
+			state = "pending"
+		}
+
+		var icon string
+		switch state {
+		case "pending":
+			icon = m.Styles.HelpStyle.Render("○ Pending")
+		case "running":
+			icon = m.Spinner.View() + " " + m.Styles.WarningText.Render("Running")
+		case "success":
+			icon = m.Styles.SuccessText.Render(m.Styles.GlyphCheck + " Success")
+		case "failed":
+			icon = m.Styles.ErrorText.Render(m.Styles.GlyphCross + " Failed")
+		}
+
+		pipelineBuilder.WriteString(fmt.Sprintf("  %s %-15s %s %s\n", m.Styles.AccentText.Render("│"), agent.Name, icon, formatRunnerDuration(m.agentElapsed(agent.ID))))
+	}
+	if !m.pipelineHasRecommender() {
+		recState := m.AgentStates["recommender"]
+		if recState == "" {
+			recState = "pending"
+		}
+		var recIcon string
+		switch recState {
+		case "pending":
+			recIcon = m.Styles.HelpStyle.Render("○ Pending")
+		case "running":
+			recIcon = m.Spinner.View() + " " + m.Styles.WarningText.Render("Running")
+		case "success":
+			recIcon = m.Styles.SuccessText.Render(m.Styles.GlyphCheck + " Success")
+		case "failed":
+			recIcon = m.Styles.ErrorText.Render(m.Styles.GlyphCross + " Failed")
+		}
+		pipelineBuilder.WriteString(fmt.Sprintf("  %s %-15s %s %s\n", m.Styles.AccentText.Render("│"), "Recommender", recIcon, formatRunnerDuration(m.agentElapsed("recommender"))))
+	}
+	pipelineBuilder.WriteString("\n")
+	return pipelineBuilder.String()
+}
+
+func (m RunnerModel) pipelineHasRecommender() bool {
+	for _, agent := range m.Pipeline {
+		if agent.ID == "recommender" {
+			return true
+		}
+	}
+	return false
+}
+
+func remainingRunnerLogBoxHeight(totalHeight int, renderedBeforeLogBox string, helpLines int) int {
+	prefixLines := strings.Count(renderedBeforeLogBox, "\n")
+	if renderedBeforeLogBox != "" && !strings.HasSuffix(renderedBeforeLogBox, "\n") {
+		prefixLines++
+	}
+	height := totalHeight - prefixLines - helpLines - 2
+	if height < 1 {
+		height = 1
+	}
+	return height
 }
 
 func agentInstructionsDraftPath() string {

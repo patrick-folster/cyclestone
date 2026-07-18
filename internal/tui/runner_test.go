@@ -355,6 +355,9 @@ func TestRunnerStandardViewKeepsLiveLogFrameStable(t *testing.T) {
 	baseView := stripANSI(m.View())
 	baseWidth, baseHeight := renderedSize(baseView)
 	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+	if baseHeight != m.Height {
+		t.Fatalf("expected runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
+	}
 
 	m.ReportFile = ".cyclestone/reports/" + strings.Repeat("very-long-report-path-", 8) + "report.md"
 	m.OutputFile = ".cyclestone/reports/" + strings.Repeat("very-long-output-path-", 8) + "output.log"
@@ -400,6 +403,9 @@ func TestRunnerStandardViewKeepsLiveLogFrameStableAcrossAbsentToPresentStatus(t 
 	baseView := stripANSI(m.View())
 	baseWidth, baseHeight := renderedSize(baseView)
 	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+	if baseHeight != m.Height {
+		t.Fatalf("expected runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
+	}
 
 	m, _ = m.Update(executor.RunnerStatusMsg{
 		CycleNumber:         2,
@@ -465,6 +471,9 @@ func TestRunnerSmallLogTabKeepsLiveLogFrameStable(t *testing.T) {
 	baseView := stripANSI(m.View())
 	baseWidth, baseHeight := renderedSize(baseView)
 	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+	if baseHeight != m.Height {
+		t.Fatalf("expected small runner log tab to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
+	}
 
 	m.Status = strings.Repeat("very long status ", 12)
 	for i := 0; i < 50; i++ {
@@ -518,6 +527,9 @@ func TestRunnerAgentInstructionsProposalViewKeepsLiveLogFrameStable(t *testing.T
 	baseView := stripANSI(m.View())
 	baseWidth, baseHeight := renderedSize(baseView)
 	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+	if baseHeight != m.Height {
+		t.Fatalf("expected AGENTS proposal runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
+	}
 
 	longProposal := strings.Repeat("## Section\nLong proposed AGENTS.md guidance with enough words to wrap across the proposal preview budget.\n", 80)
 	if err := os.WriteFile(agentInstructionsDraftPath(), []byte(longProposal), 0644); err != nil {
@@ -571,6 +583,9 @@ func TestRunnerAgentInstructionsTransitionKeepsLiveLogFrameStable(t *testing.T) 
 	baseView := stripANSI(m.View())
 	baseWidth, baseHeight := renderedSize(baseView)
 	baseLogWidth, baseLogHeight := logFrameSize(t, baseView)
+	if baseHeight != m.Height {
+		t.Fatalf("expected AGENTS update runner view to fill terminal height %d, got %d\n%s", m.Height, baseHeight, baseView)
+	}
 
 	longProposal := strings.Repeat("# Guidance\nUse bounded runner output sections with enough text to wrap through the proposal preview.\n", 80)
 	if err := os.WriteFile(agentInstructionsDraftPath(), []byte(longProposal), 0644); err != nil {

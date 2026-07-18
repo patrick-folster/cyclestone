@@ -398,6 +398,13 @@ func TestCreateMilestoneLoadingViewBoundsLiveOutput(t *testing.T) {
 
 	emptyView := stripANSI(m.View())
 	emptyWidth, emptyHeight := renderedSize(emptyView)
+	expectedHeight := m.Height - 5
+	if expectedHeight < 10 {
+		expectedHeight = 10
+	}
+	if emptyHeight != expectedHeight {
+		t.Fatalf("expected loading output box to fill available height %d, got %d\n%s", expectedHeight, emptyHeight, emptyView)
+	}
 	for _, want := range []string{"CREATING MILESTONE 0007 USING CODEX", "Generating milestone specification"} {
 		if !strings.Contains(emptyView, want) {
 			t.Fatalf("expected empty loading view to contain %q\n%s", want, emptyView)
