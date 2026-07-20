@@ -14,21 +14,28 @@ import (
 
 func TestCreatePlanModelKeyboardValidationAndCancellation(t *testing.T) {
 	model := NewCreatePlanModel(DefaultStyles(true, true))
-	model, _ = model.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
-	if !strings.Contains(model.View(), "Plan ID (required)") || !strings.Contains(model.View(), "Objective (required)") {
-		t.Fatalf("required inputs are not discoverable:\n%s", model.View())
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if !strings.Contains(model.View(), "Objective") {
+		t.Fatalf("Objective input is not discoverable:\n%s", model.View())
 	}
 
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if model.FocusIndex != 1 {
 		t.Fatalf("Tab did not advance focus: %d", model.FocusIndex)
 	}
+	if !strings.Contains(model.View(), "Plan ID") {
+		t.Fatalf("Plan ID input is not discoverable:\n%s", model.View())
+	}
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	if model.FocusIndex != 0 {
 		t.Fatalf("Shift+Tab did not reverse focus: %d", model.FocusIndex)
 	}
+	model.ObjectiveInput.SetValue("Test Objective")
 	model.FocusIndex = 3
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command")
+	}
 	if _, ok := cmd().(CreatePlanMsg); !ok {
 		t.Fatalf("submit did not emit CreatePlanMsg: %#v", cmd())
 	}
@@ -38,18 +45,107 @@ func TestCreatePlanModelKeyboardValidationAndCancellation(t *testing.T) {
 	}
 }
 
+func TestCreatePlanModelMultiLineObjective(t *testing.T) {
+	model := NewCreatePlanModel(DefaultStyles(true, true))
+	model.IDInput.SetValue("multiline-plan")
+	model.TitleInput.SetValue("Multi-line Plan")
+	model.ObjectiveInput.SetValue("First line of objective.\nSecond line of objective.")
+
+	model.FocusIndex = 3 // Submit button
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submit command")
+	}
+
+	msg := cmd()
+	createMsg, ok := msg.(CreatePlanMsg)
+	if !ok {
+		t.Fatalf("expected CreatePlanMsg, got %T", msg)
+	}
+	if createMsg.ID != "multiline-plan" {
+		t.Errorf("expected ID 'multiline-plan', got %q", createMsg.ID)
+	}
+	if createMsg.Title != "Multi-line Plan" {
+		t.Errorf("expected Title 'Multi-line Plan', got %q", createMsg.Title)
+	}
+	expectedObj := "First line of objective.\nSecond line of objective."
+	if createMsg.Objective != expectedObj {
+		t.Errorf("expected multi-line objective %q, got %q", expectedObj, createMsg.Objective)
+	}
+}
+
+func TestCreatePlanModelArrowKeysOverriddenOnTextArea(t *testing.T) {
+	model := NewCreatePlanModel(DefaultStyles(true, true))
+
+	// FocusIndex 0 (Objective textarea): Down arrow moves cursor within textarea and does NOT advance FocusIndex
+	model.FocusIndex = 0
+	model.ObjectiveInput.SetValue("Line 1\nLine 2\nLine 3")
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if model.FocusIndex != 0 {
+		t.Fatalf("expected Down on FocusIndex 0 (textarea) to keep FocusIndex 0, got %d", model.FocusIndex)
+	}
+
+	// FocusIndex 1 (Title textinput): Down arrow advances focus to 2 (ID textinput)
+	model.FocusIndex = 1
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if model.FocusIndex != 2 {
+		t.Fatalf("expected Down on FocusIndex 1 to advance to 2, got %d", model.FocusIndex)
+	}
+
+	// FocusIndex 2 (ID textinput): Down arrow advances focus to 3 (Submit button)
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if model.FocusIndex != 3 {
+		t.Fatalf("expected Down on FocusIndex 2 to advance to 3, got %d", model.FocusIndex)
+	}
+}
+
+func TestCreatePlanModelPageKeysAndMouseOnObjective(t *testing.T) {
+	model := NewCreatePlanModel(DefaultStyles(true, true))
+	model.FocusIndex = 0 // Objective textarea
+	model.ObjectiveInput.SetHeight(2)
+	model.ObjectiveInput.SetValue("L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8")
+
+	// PgDn on textarea
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if model.FocusIndex != 0 {
+		t.Fatalf("expected PgDn to retain FocusIndex 0, got %d", model.FocusIndex)
+	}
+
+	// PgUp on textarea
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if model.FocusIndex != 0 {
+		t.Fatalf("expected PgUp to retain FocusIndex 0, got %d", model.FocusIndex)
+	}
+
+	// Mouse wheel on textarea
+	model, _ = model.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	if model.FocusIndex != 0 {
+		t.Fatalf("expected MouseWheelDown to retain FocusIndex 0, got %d", model.FocusIndex)
+	}
+}
+
+func TestCreatePlanModelValidationErrorRendering(t *testing.T) {
+	model := NewCreatePlanModel(DefaultStyles(true, true))
+	model.ErrorMsg = "Invalid plan configuration error"
+
+	viewStr := model.View()
+	if !strings.Contains(viewStr, "Invalid plan configuration error") {
+		t.Fatalf("expected view to display validation error, got:\n%s", viewStr)
+	}
+}
+
 func TestRootDoesNotTreatPlanFormTextAsQuit(t *testing.T) {
 	root := NewRootModel(&config.Config{}, &config.State{}, "", "", true, false, true, true)
 	root.ActiveScreen = ScreenCreatePlan
 	updated, _ := root.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	got := updated.(RootModel)
-	if got.CreatePlan.IDInput.Value() != "q" {
-		t.Fatalf("create form did not receive q as text: %q", got.CreatePlan.IDInput.Value())
+	if got.CreatePlan.ObjectiveInput.Value() != "q" {
+		t.Fatalf("create form did not receive q as text: %q", got.CreatePlan.ObjectiveInput.Value())
 	}
 	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	got = updated.(RootModel)
-	if got.CreatePlan.IDInput.Value() != "" {
-		t.Fatalf("Backspace did not edit create input: %q", got.CreatePlan.IDInput.Value())
+	if got.CreatePlan.ObjectiveInput.Value() != "" {
+		t.Fatalf("Backspace did not edit create input: %q", got.CreatePlan.ObjectiveInput.Value())
 	}
 
 	got.ActiveScreen = ScreenDeletePlan
@@ -355,6 +451,32 @@ func TestPlanListAndDetailsExposeCreateDeleteKeys(t *testing.T) {
 	_, cmd = details.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	if msg := cmd().(ShowDeletePlanMsg); msg.ReturnScreen != ScreenPlanDetails {
 		t.Fatalf("detail d emitted %#v", msg)
+	}
+}
+
+func TestCreatePlanModelLayoutAndHeader(t *testing.T) {
+	styles := DefaultStyles(true, true)
+	model := NewCreatePlanModel(styles)
+	model.Width = 80
+	model.Height = 24
+
+	viewStr := model.View()
+	if !strings.Contains(viewStr, "CREATE NEW PLAN") {
+		t.Fatalf("expected header 'CREATE NEW PLAN' in view:\n%s", viewStr)
+	}
+
+	// Update ID field and verify header updates dynamically
+	model.IDInput.SetValue("my-awesome-plan")
+	viewStr = model.View()
+	if !strings.Contains(viewStr, "CREATE NEW PLAN (ID: my-awesome-plan)") {
+		t.Fatalf("expected dynamic header with ID in view:\n%s", viewStr)
+	}
+
+	// Test field focus updates and submit/cancel button layout
+	model.FocusIndex = 3 // Create button
+	viewStr = model.View()
+	if !strings.Contains(viewStr, "[ Submit ]") || !strings.Contains(viewStr, "[ Cancel ]") {
+		t.Fatalf("expected styled action buttons in view:\n%s", viewStr)
 	}
 }
 

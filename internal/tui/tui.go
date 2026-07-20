@@ -562,7 +562,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else if msg.Screen == ScreenCreatePlan {
 			m.CreatePlan = NewCreatePlanModel(m.Styles)
+			m.CreatePlan.NextID = generateNextPlanID(m.Plans.Planning)
 			m.CreatePlan.Width, m.CreatePlan.Height = m.Width, m.Height
+			m.CreatePlan.recalcHeights()
 			return m, m.CreatePlan.Init()
 		}
 		return m, nil
@@ -1786,6 +1788,27 @@ func generateNextID(cfg *config.Config) string {
 		}
 	}
 	return fmt.Sprintf("%04d", maxVal+1)
+}
+
+func generateNextPlanID(planning *config.PlanningState) string {
+	maxVal := 0
+	if planning != nil {
+		for _, p := range planning.Plans {
+			id := p.ID
+			id = strings.TrimPrefix(id, "p")
+			parts := strings.Split(id, "-")
+			if len(parts) > 0 {
+				var val int
+				_, err := fmt.Sscanf(parts[0], "%d", &val)
+				if err == nil {
+					if val > maxVal {
+						maxVal = val
+					}
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("p%03d", maxVal+1)
 }
 
 func resolveStartCyclePipeline(agents []config.Agent, group config.AgentGroup, singleAgentID string) ([]config.Agent, []string) {

@@ -55,6 +55,7 @@ type CreateMilestoneModel struct {
 	Height        int
 	Styles        Styles
 	ErrorMsg      string
+	Form          FormModel
 }
 
 // NewCreateMilestoneModel instantiates the creation form model.
@@ -90,16 +91,28 @@ func NewCreateMilestoneModel(styles Styles) CreateMilestoneModel {
 	}
 	s.Style = styles.Spinner
 
-	return CreateMilestoneModel{
+	form := NewFormModel(styles)
+	form.FocusOrder = []int{0, 1, 2, 3, 4, 5}
+	form.BindTextArea(0)
+	form.BindTextInput(1)
+	form.BindCustom(2)
+	form.BindCustom(3)
+	form.BindButton(4)
+	form.BindButton(5)
+
+	m := CreateMilestoneModel{
 		TitleInput:   titleInput,
 		GoalInput:    goalInput,
 		Spinner:      s,
 		RunnerType:   normalizeMilestoneRunner(""),
 		DefaultLLM:   "",
 		CreateBranch: false,
+		Form:         form,
 		FocusIndex:   0,
 		Styles:       styles,
 	}
+
+	return m
 }
 
 // Init triggers cursor blink.
@@ -114,11 +127,12 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if msg.Width <= 0 || msg.Height <= 0 {
+		m.Form.HandleWindowSize(msg)
+		if m.Form.Width <= 0 || m.Form.Height <= 0 {
 			return m, nil
 		}
-		m.Width = msg.Width
-		m.Height = msg.Height
+		m.Width = m.Form.Width
+		m.Height = m.Form.Height
 		m.recalcHeights()
 		return m, nil
 
@@ -129,13 +143,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 
 	case tea.MouseMsg:
 		if m.FocusIndex == 0 {
-			if msg.Type == tea.MouseWheelUp {
-				m.GoalInput.CursorUp()
-				m.GoalInput, cmd = m.GoalInput.Update(nil)
-				return m, cmd
-			} else if msg.Type == tea.MouseWheelDown {
-				m.GoalInput.CursorDown()
-				m.GoalInput, cmd = m.GoalInput.Update(nil)
+			if cmd, handled := m.Form.HandleMouseMsg(msg, &m.GoalInput); handled {
 				return m, cmd
 			}
 		}
@@ -144,6 +152,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 		switch msg.String() {
 		case "esc":
 			m.ErrorMsg = ""
+			m.Form.ErrorMsg = ""
 			return m, func() tea.Msg {
 				if m.Mode == ModeCycleNote {
 					if m.RunWorkflow == WorkflowAgentInstructionsRepository {
@@ -161,42 +170,41 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 
 		case "tab":
 			if m.Mode == ModeCycleNote {
-				m.FocusIndex = nextCycleNoteFocus(m.FocusIndex, m.hasCycleNoteRunnerSelection())
+				order := []int{0, 4, 5}
+				if m.hasCycleNoteRunnerSelection() {
+					order = []int{0, 2, 4, 5}
+				}
+				m.Form.NextFocusForOrder(order)
 			} else {
-				m.FocusIndex = (m.FocusIndex + 1) % 6 // Goal (0), Title (1), Runner (2), Git Branch (3), Submit (4), Cancel (5)
+				m.Form.NextFocusForOrder([]int{0, 1, 2, 3, 4, 5})
 			}
+			m.FocusIndex = m.Form.FocusIndex
 			return m, m.updateFocus()
 
 		case "shift+tab":
 			if m.Mode == ModeCycleNote {
-				m.FocusIndex = previousCycleNoteFocus(m.FocusIndex, m.hasCycleNoteRunnerSelection())
+				order := []int{0, 4, 5}
+				if m.hasCycleNoteRunnerSelection() {
+					order = []int{0, 2, 4, 5}
+				}
+				m.Form.PreviousFocusForOrder(order)
 			} else {
-				m.FocusIndex = (m.FocusIndex - 1 + 6) % 6
+				m.Form.PreviousFocusForOrder([]int{0, 1, 2, 3, 4, 5})
 			}
+			m.FocusIndex = m.Form.FocusIndex
 			return m, m.updateFocus()
 
 		case "pgdn", "ctrl+d":
 			if m.FocusIndex == 0 {
-				h := m.GoalInput.Height()
-				for i := 0; i < h; i++ {
-					m.GoalInput.CursorDown()
-				}
-				m.GoalInput, cmd = m.GoalInput.Update(nil)
-				return m, cmd
+				return m, m.Form.ScrollTextAreaDown(&m.GoalInput)
 			}
 
 		case "pgup", "ctrl+u":
 			if m.FocusIndex == 0 {
-				h := m.GoalInput.Height()
-				for i := 0; i < h; i++ {
-					m.GoalInput.CursorUp()
-				}
-				m.GoalInput, cmd = m.GoalInput.Update(nil)
-				return m, cmd
+				return m, m.Form.ScrollTextAreaUp(&m.GoalInput)
 			}
 
 		case "down":
-			// Navigate to next field using Down arrow, EXCEPT when inside the textarea (where Down moves cursor)
 			if m.FocusIndex != 0 {
 				if m.Mode == ModeCycleNote {
 					if m.hasCycleNoteRunnerSelection() {
@@ -211,7 +219,6 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 			}
 
 		case "up":
-			// Navigate to previous field using Up arrow, EXCEPT when inside the textarea (where Up moves cursor)
 			if m.FocusIndex != 0 {
 				if m.Mode == ModeCycleNote {
 					if m.hasCycleNoteRunnerSelection() {
@@ -272,6 +279,7 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				return m.handleSubmit()
 			} else if m.FocusIndex == 5 {
 				m.ErrorMsg = ""
+				m.Form.ErrorMsg = ""
 				return m, func() tea.Msg {
 					if m.Mode == ModeCycleNote {
 						if m.RunWorkflow == WorkflowAgentInstructionsRepository {
@@ -300,11 +308,9 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 				m.FocusIndex = 4
 				return m, m.updateFocus()
 			}
-			// Let enter pass to textarea when focused on it (FocusIndex == 0)
 		}
 	}
 
-	// Update the active input if it's an input field
 	if m.FocusIndex == 0 {
 		m.GoalInput, cmd = m.GoalInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -314,28 +320,23 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 	}
 
 	m.recalcHeights()
+	m.Form.ErrorMsg = m.ErrorMsg
 	return m, tea.Batch(cmds...)
 }
 
 func (m *CreateMilestoneModel) updateFocus() tea.Cmd {
-	var cmds []tea.Cmd
-	if m.FocusIndex == 0 {
-		cmds = append(cmds, m.GoalInput.Focus())
-		m.TitleInput.Blur()
-	} else if m.FocusIndex == 1 {
-		m.GoalInput.Blur()
-		cmds = append(cmds, m.TitleInput.Focus())
-	} else {
-		m.TitleInput.Blur()
-		m.GoalInput.Blur()
-	}
-	return tea.Batch(cmds...)
+	m.Form.FocusIndex = m.FocusIndex
+	return m.Form.SyncFocus(
+		[]*textinput.Model{&m.TitleInput},
+		[]*textarea.Model{&m.GoalInput},
+	)
 }
 
 func (m CreateMilestoneModel) handleSubmit() (CreateMilestoneModel, tea.Cmd) {
 	if m.Mode == ModeCycleNote {
 		note := m.GoalInput.Value()
 		m.ErrorMsg = ""
+		m.Form.ErrorMsg = ""
 		return m, func() tea.Msg {
 			return ChangeScreenMsg{
 				Screen: ScreenPreflight,
@@ -358,11 +359,11 @@ func (m CreateMilestoneModel) handleSubmit() (CreateMilestoneModel, tea.Cmd) {
 
 	if goal == "" {
 		m.ErrorMsg = "Goal/Description cannot be empty."
+		m.Form.ErrorMsg = m.ErrorMsg
 		m.recalcHeights()
 		return m, nil
 	}
 
-	// Auto-generate title if not set
 	if title == "" {
 		firstLine := strings.Split(goal, "\n")[0]
 		firstLine = cleanAutoTitle(firstLine)
@@ -382,6 +383,7 @@ func (m CreateMilestoneModel) handleSubmit() (CreateMilestoneModel, tea.Cmd) {
 	}
 
 	m.ErrorMsg = ""
+	m.Form.ErrorMsg = ""
 	return m, func() tea.Msg {
 		return CreateMilestoneMsg{
 			ID:                 finalID,
@@ -435,10 +437,6 @@ func (m CreateMilestoneModel) View() string {
 
 	if m.Mode == ModeCycleNote {
 		var sb strings.Builder
-		helpWidth := m.Width - 4
-		if helpWidth < 10 {
-			helpWidth = 10
-		}
 		var spacing = "\n\n"
 		if m.Height < 22 {
 			spacing = "\n"
@@ -456,10 +454,10 @@ func (m CreateMilestoneModel) View() string {
 		sb.WriteString(m.Styles.DetailHeader.Render(title) + "\n" + spacing)
 
 		if m.ErrorMsg != "" {
-			sb.WriteString(m.Styles.RenderError(m.ErrorMsg) + "\n" + spacing)
+			m.Form.ErrorMsg = m.ErrorMsg
+			sb.WriteString(m.Form.RenderError() + "\n" + spacing)
 		}
 
-		// Textarea block.
 		var labelStyle lipgloss.Style
 		if m.FocusIndex == 0 {
 			labelStyle = m.Styles.DetailLabel.Underline(true)
@@ -480,22 +478,11 @@ func (m CreateMilestoneModel) View() string {
 			sb.WriteString(renderRunnerOptions(m.Styles, m.selectedRunner()) + spacing)
 		}
 
-		// Confirm buttons block.
-		var submitBtn, cancelBtn string
-		if m.FocusIndex == 4 {
-			submitBtn = m.Styles.TableSelectedRow.Render(" [ Submit ] ")
-		} else {
-			submitBtn = m.Styles.SuccessText.Render(" [ Submit ] ")
-		}
-
-		if m.FocusIndex == 5 {
-			cancelBtn = m.Styles.TableSelectedRow.Render(" [ Cancel ] ")
-		} else {
-			cancelBtn = m.Styles.HelpStyle.Render(" [ Cancel ] ")
-		}
+		submitBtn := m.Form.RenderButtonWithStyles(4, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
+		cancelBtn := m.Form.RenderButtonWithStyles(5, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 		sb.WriteString(fmt.Sprintf("%s    %s\n\n", submitBtn, cancelBtn))
 
-		helpText := renderCommandHelp(m.Styles, []string{"Tab Focus", "Shift+Tab Back", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth)
+		helpText := m.Form.RenderHelp([]string{"Tab Focus", "Shift+Tab Back", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"})
 		sb.WriteString(helpText)
 
 		var rootOverhead = 3
@@ -514,11 +501,6 @@ func (m CreateMilestoneModel) View() string {
 
 	var sb strings.Builder
 
-	helpWidth := m.Width - 4
-	if helpWidth < 10 {
-		helpWidth = 10
-	}
-
 	var spacing = "\n\n"
 	if m.Height < 22 {
 		spacing = "\n"
@@ -534,31 +516,28 @@ func (m CreateMilestoneModel) View() string {
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATE MILESTONE %s (Step %d/5)", m.NextID, stepNum)) + "\n" + spacing)
 
 		if m.ErrorMsg != "" {
-			sb.WriteString(m.Styles.RenderError(m.ErrorMsg) + "\n" + spacing)
+			m.Form.ErrorMsg = m.ErrorMsg
+			sb.WriteString(m.Form.RenderError() + "\n" + spacing)
 		}
 
 		switch m.FocusIndex {
 		case 0:
-			// Step 1: Goal
 			sb.WriteString(m.Styles.DetailLabel.Render("Goal / Description *:") + "\n")
 			sb.WriteString(m.GoalInput.View() + "\n")
-			sb.WriteString(renderCommandHelp(m.Styles, []string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}, helpWidth))
+			sb.WriteString(m.Form.RenderHelp([]string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}))
 
 		case 1:
-			// Step 2: Title
 			sb.WriteString(m.Styles.DetailLabel.Render("Title (optional):") + "\n")
 			m.TitleInput.TextStyle = m.Styles.FocusedInput
 			sb.WriteString(m.TitleInput.View() + "\n")
-			sb.WriteString(renderCommandHelp(m.Styles, []string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}, helpWidth))
+			sb.WriteString(m.Form.RenderHelp([]string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}))
 
 		case 2:
-			// Step 3: Runner
 			sb.WriteString(m.Styles.DetailLabel.Render("Runner Selection:") + "\n")
 			sb.WriteString(renderRunnerOptions(m.Styles, m.RunnerType) + "\n")
-			sb.WriteString(renderCommandHelp(m.Styles, []string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth))
+			sb.WriteString(m.Form.RenderHelp([]string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
 
 		case 3:
-			// Step 4: Create Git Branch
 			sb.WriteString(m.Styles.DetailLabel.Render("Create new Git branch for milestone?") + "\n")
 			settings := config.LoadMergedSettings()
 			prefix := settings.DefaultGitBranchPrefix
@@ -574,31 +553,21 @@ func (m CreateMilestoneModel) View() string {
 				noOpt = m.Styles.SuccessText.Render("(•) No (stay on current branch)")
 			}
 			sb.WriteString(fmt.Sprintf("%s    %s\n", yesOpt, noOpt))
-			sb.WriteString(renderCommandHelp(m.Styles, []string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth))
+			sb.WriteString(m.Form.RenderHelp([]string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
 
 		case 4, 5:
-			// Step 5: Confirm (Submit / Cancel)
 			sb.WriteString(m.Styles.DetailValue.Render("Ready to create milestone?") + "\n\n")
-			var submitBtn, cancelBtn string
-			if m.FocusIndex == 4 {
-				submitBtn = m.Styles.TableSelectedRow.Render(" [ Submit ] ")
-			} else {
-				submitBtn = m.Styles.SuccessText.Render(" [ Submit ] ")
-			}
-
-			if m.FocusIndex == 5 {
-				cancelBtn = m.Styles.TableSelectedRow.Render(" [ Cancel ] ")
-			} else {
-				cancelBtn = m.Styles.HelpStyle.Render(" [ Cancel ] ")
-			}
+			submitBtn := m.Form.RenderButtonWithStyles(4, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
+			cancelBtn := m.Form.RenderButtonWithStyles(5, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 			sb.WriteString(fmt.Sprintf("%s    %s\n", submitBtn, cancelBtn))
-			sb.WriteString(renderCommandHelp(m.Styles, []string{"Tab Toggle", "Enter Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth))
+			sb.WriteString(m.Form.RenderHelp([]string{"Tab Toggle", "Enter Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
 		}
 	} else {
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATE NEW MILESTONE (ID: %s)", m.NextID)) + "\n" + spacing)
 
 		if m.ErrorMsg != "" {
-			sb.WriteString(m.Styles.RenderError(m.ErrorMsg) + "\n" + spacing)
+			m.Form.ErrorMsg = m.ErrorMsg
+			sb.WriteString(m.Form.RenderError() + "\n" + spacing)
 		}
 
 		type blockItem struct {
@@ -711,18 +680,8 @@ func (m CreateMilestoneModel) View() string {
 		// Block 4: Confirm Buttons
 		{
 			var blockSb strings.Builder
-			var submitBtn, cancelBtn string
-			if m.FocusIndex == 4 {
-				submitBtn = m.Styles.TableSelectedRow.Render(" [ Submit ] ")
-			} else {
-				submitBtn = m.Styles.SuccessText.Render(" [ Submit ] ")
-			}
-
-			if m.FocusIndex == 5 {
-				cancelBtn = m.Styles.TableSelectedRow.Render(" [ Cancel ] ")
-			} else {
-				cancelBtn = m.Styles.HelpStyle.Render(" [ Cancel ] ")
-			}
+			submitBtn := m.Form.RenderButtonWithStyles(4, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
+			cancelBtn := m.Form.RenderButtonWithStyles(5, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 			blockSb.WriteString(fmt.Sprintf("%s    %s", submitBtn, cancelBtn))
 			allBlocks = append(allBlocks, blockItem{focusIndices: []int{4, 5}, content: blockSb.String()})
 		}
@@ -743,20 +702,21 @@ func (m CreateMilestoneModel) View() string {
 			boxHeight = 2
 		}
 
-		var helpText string
+		var helpKeys []string
 		if m.Height < 20 {
-			helpText = renderCommandHelp(m.Styles, []string{"Tab Focus", "h/l Change", "Enter Submit", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth)
+			helpKeys = []string{"Tab Focus", "h/l Change", "Enter Submit", "Esc Cancel", "q Quit", "Ctrl+C Quit"}
 		} else {
-			helpText = renderCommandHelp(m.Styles, []string{"Tab Focus", "Shift+Tab Back", "Left/Right Change", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth)
+			helpKeys = []string{"Tab Focus", "Shift+Tab Back", "Left/Right Change", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}
 		}
+		helpText := m.Form.RenderHelp(helpKeys)
 		helpLines := strings.Count(helpText, "\n") + 1
 
 		spacingLen := len(spacing)
-		nonBlockLines := 2 + spacingLen // Header + spacing
+		nonBlockLines := 2 + spacingLen
 		if m.ErrorMsg != "" {
 			nonBlockLines += 1 + spacingLen
 		}
-		nonBlockLines += 1 + helpLines // newline + helpText height
+		nonBlockLines += 1 + helpLines
 
 		blocksCapacity := boxHeight - nonBlockLines
 		if blocksCapacity < 1 {
@@ -822,7 +782,6 @@ func cleanAutoTitle(s string) string {
 		return s
 	}
 
-	// Repeatedly strip leading politeness / filler phrases.
 	fillerPrefixes := []string{
 		"please", "kindly", "could you", "would you",
 		"can you", "will you", "i need", "i want", "we need",
@@ -836,9 +795,6 @@ func cleanAutoTitle(s string) string {
 				continue
 			}
 			rest := s[len(prefix):]
-			// Require a word boundary: the character immediately after the
-			// prefix must be a separator or the end of the string, otherwise
-			// the prefix is part of a longer word (e.g. "to" in "token").
 			if len(rest) > 0 {
 				c := rest[0]
 				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
@@ -857,8 +813,6 @@ func cleanAutoTitle(s string) string {
 		}
 	}
 
-	// Trim trailing filler so titles like "create test milestone without any changes"
-	// do not end with noise.
 	trailingFiller := []string{
 		"without any changes", "without changes", "if possible",
 		"when you can", "thanks", "thank you",
@@ -871,7 +825,6 @@ func cleanAutoTitle(s string) string {
 		}
 	}
 
-	// Capitalise the first letter.
 	if r := []rune(s); len(r) > 0 && r[0] >= 'a' && r[0] <= 'z' {
 		r[0] = r[0] - 32
 		s = string(r)
@@ -882,30 +835,21 @@ func cleanAutoTitle(s string) string {
 
 func slugifyTitle(title string) string {
 	stopWords := map[string]bool{
-		// Articles
 		"a": true, "an": true, "the": true,
-		// Conjunctions
 		"and": true, "or": true, "but": true,
-		// Prepositions
 		"for": true, "to": true, "in": true, "on": true, "at": true, "by": true,
 		"of": true, "with": true, "without": true, "as": true, "from": true, "into": true,
 		"about": true, "than": true,
-		// Be-verbs / auxiliaries
 		"is": true, "are": true, "be": true, "been": true,
-		// Do-verbs
 		"do": true, "does": true, "did": true,
-		// Pronouns
 		"it": true, "its": true, "that": true, "this": true,
 		"these": true, "those": true,
 		"i": true, "you": true, "we": true, "they": true,
 		"me": true, "my": true, "our": true, "your": true,
 		"their": true, "us": true, "them": true,
-		// Politeness / filler words
 		"please": true, "kindly": true,
-		// Modal verbs
 		"could": true, "would": true, "should": true, "will": true,
 		"shall": true, "may": true, "might": true, "must": true, "can": true,
-		// Filler / qualifiers
 		"just": true, "also": true, "then": true, "some": true, "any": true,
 		"too": true, "very": true,
 	}
@@ -990,24 +934,6 @@ func cycleNoteButtonToggleFocus(current int) int {
 	return 4
 }
 
-func nextFocusInOrder(current int, order []int) int {
-	for i, focus := range order {
-		if focus == current {
-			return order[(i+1)%len(order)]
-		}
-	}
-	return order[0]
-}
-
-func previousFocusInOrder(current int, order []int) int {
-	for i, focus := range order {
-		if focus == current {
-			return order[(i-1+len(order))%len(order)]
-		}
-	}
-	return order[len(order)-1]
-}
-
 func renderRunnerOptions(styles Styles, selected string) string {
 	opts := getMilestoneRunnerOptions()
 	var renderedOpts []string
@@ -1036,14 +962,15 @@ func (m *CreateMilestoneModel) recalcHeights() {
 		helpWidth = 10
 	}
 
-	var helpText string
-	if m.Height < 18 { // useWizard
-		helpText = renderCommandHelp(m.Styles, []string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}, helpWidth)
+	var helpKeys []string
+	if m.Height < 18 {
+		helpKeys = []string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}
 	} else if m.Height < 20 {
-		helpText = renderCommandHelp(m.Styles, []string{"Tab Focus", "h/l Change", "Enter Submit", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth)
+		helpKeys = []string{"Tab Focus", "h/l Change", "Enter Submit", "Esc Cancel", "q Quit", "Ctrl+C Quit"}
 	} else {
-		helpText = renderCommandHelp(m.Styles, []string{"Tab Focus", "Shift+Tab Back", "Left/Right Change", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}, helpWidth)
+		helpKeys = []string{"Tab Focus", "Shift+Tab Back", "Left/Right Change", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}
 	}
+	helpText := m.Form.RenderHelp(helpKeys)
 	helpLines := strings.Count(helpText, "\n") + 1
 
 	var rootOverhead = 3
@@ -1070,7 +997,7 @@ func (m *CreateMilestoneModel) recalcHeights() {
 			h = 2
 		}
 		m.GoalInput.SetHeight(h)
-	} else if m.Height < 18 { // useWizard
+	} else if m.Height < 18 {
 		nonTextAreaLines := 3 + spacingLen + helpLines
 		if m.ErrorMsg != "" {
 			nonTextAreaLines += 1 + spacingLen
@@ -1081,11 +1008,11 @@ func (m *CreateMilestoneModel) recalcHeights() {
 		}
 		m.GoalInput.SetHeight(h)
 	} else {
-		nonBlockLines := 2 + spacingLen // Header + spacing
+		nonBlockLines := 2 + spacingLen
 		if m.ErrorMsg != "" {
 			nonBlockLines += 1 + spacingLen
 		}
-		nonBlockLines += 1 + helpLines // newline + helpText height
+		nonBlockLines += 1 + helpLines
 
 		blocksCapacity := boxHeight - nonBlockLines
 		h := blocksCapacity
@@ -1095,7 +1022,6 @@ func (m *CreateMilestoneModel) recalcHeights() {
 		m.GoalInput.SetHeight(h)
 	}
 
-	// Dynamically adjust input widths to prevent overflow
 	inputWidth := m.Width - 8
 	if inputWidth < 15 {
 		inputWidth = 15
