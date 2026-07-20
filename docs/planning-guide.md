@@ -351,11 +351,16 @@ TUI planning navigation is a multi-level flat-table and detail hierarchy. It reu
 
 ```text
 Dashboard (p) -> ScreenPlans -> ScreenPlanDetails -> ScreenBriefingDetails
+                         |-> Create Plan / Delete Plan
 ```
 
-- **ScreenPlans** (`internal/tui/plans.go`): flat table of Plans with ID, Title, Status, Briefings progress (`completed/total`), and Execution state. `Enter` opens Plan details; `Esc`/`Backspace`/`p` returns to the dashboard.
-- **ScreenPlanDetails** (`internal/tui/plans.go`): Plan metadata plus a flat Briefings table with ID, Title, Status, Dependencies, and Milestone Link (`[unlinked]`, `[linked: <id>]`, or `[missing: <id>]`). `Enter` opens Briefing details; `Esc`/`Backspace` steps back to the Plans list.
+- **ScreenPlans** (`internal/tui/plans.go`): flat table of Plans with ID, Title, Status, Briefings progress (`completed/total`), and Execution state. `c` opens Plan creation, `d` deletes the selected Plan after confirmation, `Enter` opens Plan details, and `Esc`/`Backspace`/`p` returns to the dashboard.
+- **ScreenPlanDetails** (`internal/tui/plans.go`): Plan metadata plus a flat Briefings table with ID, Title, Status, Dependencies, and Milestone Link (`[unlinked]`, `[linked: <id>]`, or `[missing: <id>]`). `d` opens deletion confirmation for this Plan, `Enter` opens Briefing details, and `Esc`/`Backspace` steps back to the Plans list.
 - **ScreenBriefingDetails** (`internal/tui/plans.go`): Briefing details styled to match Milestone details, showing Objective, Intent, Completion Signal, Constraints, and linked Milestone status with recent cycle logs. `Esc`/`Backspace` steps back to Plan details. `↑/↓`/`j`/`k`/`pgup`/`pgdn` scroll.
+
+Plan creation prompts for the required lowercase-hyphenated Plan ID, title, and objective. Cyclestone supplies active status, timestamps, the local `tui` actor, and empty Briefing collections, validates all existing Plan files, and saves only `.cyclestone/plans/<plan-id>.yml`. `Tab`/`Shift+Tab` move between fields and actions; `Esc` or Cancel returns without writing.
+
+Plan deletion visibly identifies the selected ID and title and requires entering the exact Plan ID. Cancelling changes nothing. A confirmed deletion removes only that Plan YAML record and never deletes or changes linked Milestone specs, compact index entries, runtime state, reports, cycles, temp artifacts, branches, or snapshots. The Plans list is reloaded and remains usable when the last Plan is removed.
 
 Multi-level `Esc`/`Backspace` step-back navigation is strictly enforced: Briefing Details -> Plan Details -> Plans -> Dashboard.
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,43 @@ func TestLoadPlanningStateEmpty(t *testing.T) {
 	state, result = LoadPlanningState(plansDir)
 	if result.HasErrors() || len(state.Plans) != 0 {
 		t.Fatalf("expected empty state for no *.yml files, state=%+v result=%+v", state, result)
+	}
+}
+
+func TestDeletePlanRemovesOnlyExactPlanningRecord(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	first := representativePlan()
+	second := representativePlan()
+	second.ID = "second-plan"
+	second.Title = "Second Plan"
+	if _, err := SavePlan(plansDir, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SavePlan(plansDir, second); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(filepath.Dir(plansDir), "state.json")
+	if err := os.WriteFile(unrelated, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeletePlan(plansDir, first.ID); err != nil {
+		t.Fatalf("DeletePlan failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(plansDir, first.ID+".yml")); !os.IsNotExist(err) {
+		t.Fatalf("deleted Plan still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(plansDir, second.ID+".yml")); err != nil {
+		t.Fatalf("unselected Plan changed: %v", err)
+	}
+	if data, err := os.ReadFile(unrelated); err != nil || string(data) != "keep" {
+		t.Fatalf("unrelated artifact changed: %q %v", data, err)
+	}
+	if err := DeletePlan(plansDir, "../state"); err == nil {
+		t.Fatal("expected unsafe Plan ID to be rejected")
+	}
+	if err := DeletePlan(plansDir, "missing-plan"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing-file error, got %v", err)
 	}
 }
 

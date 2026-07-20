@@ -805,7 +805,7 @@ func runPlanDelete(args []string, configPath string, stdout, stderr io.Writer) i
 		fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
 		return 1
 	}
-	if err := os.Remove(planFilePath(ctx.plansDir, planID)); err != nil {
+	if err := config.DeletePlan(ctx.plansDir, planID); err != nil {
 		fmt.Fprintf(stderr, "Error: deleting Plan %q: %v\n", planID, err)
 		return 1
 	}

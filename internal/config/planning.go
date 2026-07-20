@@ -205,6 +205,21 @@ func SavePlan(plansDir string, plan Plan, options ...PlanningValidationOption) (
 	return result, nil
 }
 
+// DeletePlan removes exactly one persisted Plan record. Planning IDs are
+// validated before constructing the path so callers cannot escape plansDir.
+func DeletePlan(plansDir, planID string) error {
+	var result PlanningValidationResult
+	validatePlanningID(planID, "", "id", "Plan ID", &result)
+	if result.HasErrors() {
+		return errors.New("invalid Plan ID")
+	}
+	path := filepath.Join(plansDir, planID+".yml")
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to delete Plan %q: %w", planID, err)
+	}
+	return nil
+}
+
 // ValidatePlan validates one in-memory Plan without writing it.
 func ValidatePlan(plan Plan, file string, options ...PlanningValidationOption) PlanningValidationResult {
 	opts := collectPlanningOptions(options)

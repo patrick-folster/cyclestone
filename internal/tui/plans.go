@@ -113,6 +113,19 @@ func (m *PlansModel) UpdateTableRows() {
 	}
 }
 
+// SelectPlan moves the table cursor to planID when that Plan is visible.
+func (m *PlansModel) SelectPlan(planID string) {
+	for index, row := range m.Table.Rows() {
+		if len(row) > 0 && row[0] == planID {
+			m.Table.SetCursor(index)
+			return
+		}
+	}
+	if len(m.Table.Rows()) > 0 {
+		m.Table.SetCursor(0)
+	}
+}
+
 func (m PlansModel) Init() tea.Cmd {
 	return nil
 }
@@ -130,6 +143,8 @@ func (m PlansModel) Update(msg tea.Msg) (PlansModel, tea.Cmd) {
 		helpCmds := []string{
 			"↑/↓ Navigate",
 			"Enter Details",
+			"c Create",
+			"d Delete",
 			"Esc Dashboard",
 			"q Quit",
 			"Ctrl+C Quit",
@@ -186,6 +201,17 @@ func (m PlansModel) Update(msg tea.Msg) (PlansModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "c":
+			return m, changeScreenCmd(ScreenCreatePlan, nil)
+		case "d":
+			selectedRow := m.Table.SelectedRow()
+			if len(selectedRow) > 0 && m.Planning != nil {
+				for _, plan := range m.Planning.Plans {
+					if plan.ID == selectedRow[0] {
+						return m, func() tea.Msg { return ShowDeletePlanMsg{Plan: plan, ReturnScreen: ScreenPlans} }
+					}
+				}
+			}
 		case "enter":
 			selectedRow := m.Table.SelectedRow()
 			if len(selectedRow) > 0 && m.Planning != nil {
@@ -219,6 +245,8 @@ func (m PlansModel) View() string {
 	helpCmds := []string{
 		"↑/↓ Navigate",
 		"Enter Details",
+		"c Create",
+		"d Delete",
 		"Esc Dashboard",
 		"q Quit",
 		"Ctrl+C Quit",
@@ -365,6 +393,7 @@ func (m PlanDetailsModel) Update(msg tea.Msg) (PlanDetailsModel, tea.Cmd) {
 		helpCmds := []string{
 			"↑/↓ Navigate",
 			"Enter Briefing Details",
+			"d Delete Plan",
 			"Esc Plans List",
 			"q Quit",
 			"Ctrl+C Quit",
@@ -430,6 +459,8 @@ func (m PlanDetailsModel) Update(msg tea.Msg) (PlanDetailsModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "d":
+			return m, func() tea.Msg { return ShowDeletePlanMsg{Plan: m.Plan, ReturnScreen: ScreenPlanDetails} }
 		case "enter":
 			selectedRow := m.Table.SelectedRow()
 			if len(selectedRow) > 0 {
@@ -466,6 +497,7 @@ func (m PlanDetailsModel) View() string {
 	helpCmds := []string{
 		"↑/↓ Navigate",
 		"Enter Briefing Details",
+		"d Delete Plan",
 		"Esc Plans List",
 		"q Quit",
 		"Ctrl+C Quit",

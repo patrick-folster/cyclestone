@@ -28,6 +28,9 @@ var terminalSize = func() (int, int, error) {
 }
 
 var executeCycle = executor.ExecuteCycle
+var loadPlanningState = config.LoadPlanningState
+var savePlanningPlan = config.SavePlan
+var deletePlanningPlan = config.DeletePlan
 
 // Screen identifies the currently active UI view.
 type Screen int
@@ -44,6 +47,8 @@ const (
 	ScreenPlans
 	ScreenPlanDetails
 	ScreenBriefingDetails
+	ScreenCreatePlan
+	ScreenDeletePlan
 )
 
 // ChangeScreenMsg is sent to switch views.
@@ -94,6 +99,8 @@ type RootModel struct {
 	Plans             PlansModel
 	PlanDetails       PlanDetailsModel
 	BriefingDetails   BriefingDetailsModel
+	CreatePlan        CreatePlanModel
+	DeletePlan        DeletePlanModel
 	Width             int
 	Height            int
 	Config            *config.Config
@@ -168,6 +175,7 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 	plansModel := NewPlansModel(cfg, state, planning, styles)
 	planDetailsModel := NewPlanDetailsModel(cfg, state, styles)
 	briefingDetailsModel := NewBriefingDetailsModel(styles)
+	createPlanModel := NewCreatePlanModel(styles)
 
 	return RootModel{
 		ActiveScreen:    ScreenDashboard,
@@ -182,6 +190,7 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 		Plans:           plansModel,
 		PlanDetails:     planDetailsModel,
 		BriefingDetails: briefingDetailsModel,
+		CreatePlan:      createPlanModel,
 		Config:          cfg,
 		State:           state,
 		ConfigPath:      configPath,
@@ -231,6 +240,7 @@ func (m RootModel) Init() tea.Cmd {
 		m.Plans.Init(),
 		m.PlanDetails.Init(),
 		m.BriefingDetails.Init(),
+		m.CreatePlan.Init(),
 	}
 	if m.PendingCycle != nil {
 		req := *m.PendingCycle
@@ -346,6 +356,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.ActiveScreen == ScreenAgentGroups && m.AgentGroups.FocusCol == 3 {
 				break
 			}
+			if m.ActiveScreen == ScreenCreatePlan || m.ActiveScreen == ScreenDeletePlan {
+				break
+			}
 			return m, tea.Quit
 		}
 
@@ -386,6 +399,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		m.BriefingDetails, cmd = m.BriefingDetails.Update(msg)
 		cmds = append(cmds, cmd)
+		m.CreatePlan, cmd = m.CreatePlan.Update(msg)
+		cmds = append(cmds, cmd)
+		m.DeletePlan, cmd = m.DeletePlan.Update(msg)
+		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 
 	case ShowDeleteMilestoneMsg:
@@ -393,6 +410,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.initDetailsScreen(msg.Milestone)
 		m.Details.ConfirmDeleteMilestone = true
 		return m, nil
+
+	case ShowDeletePlanMsg:
+		m.DeletePlan = NewDeletePlanModel(msg.Plan, msg.ReturnScreen, m.Styles)
+		m.DeletePlan.Width, m.DeletePlan.Height = m.Width, m.Height
+		m.ActiveScreen = ScreenDeletePlan
+		return m, m.DeletePlan.Init()
 
 	case ChangeScreenMsg:
 		if (m.ActiveScreen == ScreenPreflight || m.ActiveScreen == ScreenRunner) && msg.Screen != ScreenRunner && msg.Screen != ScreenPreflight {
@@ -537,7 +560,101 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		} else if msg.Screen == ScreenCreatePlan {
+			m.CreatePlan = NewCreatePlanModel(m.Styles)
+			m.CreatePlan.Width, m.CreatePlan.Height = m.Width, m.Height
+			return m, m.CreatePlan.Init()
 		}
+		return m, nil
+
+	case CreatePlanMsg:
+		plansDir, ok := m.plansDirectory()
+		if !ok {
+			m.CreatePlan.ErrorMsg = "Cannot create a Plan without a project configuration path."
+			return m, nil
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		plan := config.Plan{
+			SchemaVersion: config.PlanningSchemaVersion,
+			ID:            msg.ID, Title: msg.Title, Objective: msg.Objective,
+			Status: "active", CreatedAt: now, CreatedBy: "tui", UpdatedAt: now, UpdatedBy: "tui",
+			BriefingOrder: []string{}, Briefings: []config.Briefing{},
+		}
+		formValidation := config.ValidatePlan(plan, "")
+		if formValidation.HasErrors() {
+			m.CreatePlan.ErrorMsg = firstPlanningError(formValidation)
+			return m, nil
+		}
+		_, existingValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if existingValidation.HasErrors() {
+			m.CreatePlan.ErrorMsg = "Fix existing Plan files before creating another Plan: " + firstPlanningError(existingValidation)
+			return m, nil
+		}
+		planPath := filepath.Join(plansDir, msg.ID+".yml")
+		if _, err := os.Stat(planPath); err == nil {
+			m.CreatePlan.ErrorMsg = fmt.Sprintf("Plan ID %q already exists.", msg.ID)
+			return m, nil
+		} else if !os.IsNotExist(err) {
+			m.CreatePlan.ErrorMsg = fmt.Sprintf("Cannot inspect Plan target: %v", err)
+			return m, nil
+		}
+		validation, err := savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if err != nil {
+			if validation.HasErrors() {
+				m.CreatePlan.ErrorMsg = firstPlanningError(validation)
+			} else {
+				m.CreatePlan.ErrorMsg = fmt.Sprintf("Failed to save Plan: %v", err)
+			}
+			return m, nil
+		}
+		planning, reloadValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if reloadValidation.HasErrors() {
+			m.CreatePlan.ErrorMsg = "Plan was saved, but reloading planning data failed: " + firstPlanningError(reloadValidation)
+			return m, nil
+		}
+		m.syncPlanning(planning)
+		m.Plans.SelectPlan(plan.ID)
+		m.ActiveScreen = ScreenPlans
+		m.StatusMsg = fmt.Sprintf("Created Plan %s successfully.", plan.ID)
+		m.StatusTime = time.Now()
+		return m, nil
+
+	case DeletePlanMsg:
+		plansDir, ok := m.plansDirectory()
+		if !ok {
+			m.DeletePlan.ErrorMsg = "Cannot delete a Plan without a project configuration path."
+			return m, nil
+		}
+		planningBefore, existingValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if existingValidation.HasErrors() {
+			m.DeletePlan.ErrorMsg = "Fix existing Plan files before deleting a Plan: " + firstPlanningError(existingValidation)
+			return m, nil
+		}
+		found := false
+		for _, plan := range planningBefore.Plans {
+			if plan.ID == msg.Plan.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.DeletePlan.ErrorMsg = fmt.Sprintf("Plan %q no longer exists.", msg.Plan.ID)
+			return m, nil
+		}
+		if err := deletePlanningPlan(plansDir, msg.Plan.ID); err != nil {
+			m.DeletePlan.ErrorMsg = fmt.Sprintf("Failed to delete Plan: %v", err)
+			return m, nil
+		}
+		planning, reloadValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if reloadValidation.HasErrors() {
+			m.DeletePlan.ErrorMsg = "Plan was deleted, but reloading planning data failed: " + firstPlanningError(reloadValidation)
+			return m, nil
+		}
+		m.syncPlanning(planning)
+		m.clearDeletedPlanReferences(msg.Plan.ID)
+		m.ActiveScreen = ScreenPlans
+		m.StatusMsg = fmt.Sprintf("Deleted Plan %s successfully.", msg.Plan.ID)
+		m.StatusTime = time.Now()
 		return m, nil
 
 	case CreateMilestoneMsg:
@@ -1068,6 +1185,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Settings.Styles = m.Styles
 		m.AgentGroups.Styles = m.Styles
 		m.Setup.Styles = m.Styles
+		m.CreatePlan.Styles = m.Styles
+		m.DeletePlan.Styles = m.Styles
 
 		m.StatusMsg = fmt.Sprintf("Saved %s settings successfully.", msg.Scope)
 		m.StatusTime = time.Now()
@@ -1172,6 +1291,16 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		briefingDetModel, cmd = m.BriefingDetails.Update(msg)
 		m.BriefingDetails = briefingDetModel
 		cmds = append(cmds, cmd)
+	case ScreenCreatePlan:
+		var createPlanModel CreatePlanModel
+		createPlanModel, cmd = m.CreatePlan.Update(msg)
+		m.CreatePlan = createPlanModel
+		cmds = append(cmds, cmd)
+	case ScreenDeletePlan:
+		var deletePlanModel DeletePlanModel
+		deletePlanModel, cmd = m.DeletePlan.Update(msg)
+		m.DeletePlan = deletePlanModel
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1210,6 +1339,10 @@ func (m RootModel) View() string {
 		activeView = m.PlanDetails.View()
 	case ScreenBriefingDetails:
 		activeView = m.BriefingDetails.View()
+	case ScreenCreatePlan:
+		activeView = m.CreatePlan.View()
+	case ScreenDeletePlan:
+		activeView = m.DeletePlan.View()
 	default:
 		activeView = "Unknown Screen"
 	}
@@ -1321,6 +1454,10 @@ func screenName(screen Screen) string {
 		return "PLAN DETAILS"
 	case ScreenBriefingDetails:
 		return "BRIEFING DETAILS"
+	case ScreenCreatePlan:
+		return "CREATE PLAN"
+	case ScreenDeletePlan:
+		return "DELETE PLAN"
 	default:
 		return "UNKNOWN"
 	}
@@ -1356,6 +1493,67 @@ func (m *RootModel) refreshUI(milestoneID string) {
 		m.Details.AgentInstructionsUpdateScore = m.State.GetMilestoneAgentInstructionsUpdateScore(milestoneID)
 		m.Details.clampHistorySelection()
 	}
+}
+
+func (m *RootModel) plansDirectory() (string, bool) {
+	if m.ConfigPath == "" {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(m.ConfigPath), "plans"), true
+}
+
+func (m *RootModel) planningMilestoneIDs() []string {
+	if m.Config == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(m.Config.Milestones))
+	for _, milestone := range m.Config.Milestones {
+		ids = append(ids, milestone.ID)
+	}
+	return ids
+}
+
+// syncPlanning replaces every list-level planning copy only after persistence
+// and reload have both succeeded.
+func (m *RootModel) syncPlanning(planning *config.PlanningState) {
+	m.Dashboard.Planning = planning
+	m.Plans.Planning = planning
+	m.Plans.Config = m.Config
+	m.Plans.State = m.State
+	m.Plans.UpdateTableRows()
+	m.Dashboard.updateTableRows()
+}
+
+func (m *RootModel) clearDeletedPlanReferences(planID string) {
+	if m.PlanDetails.Plan.ID == planID {
+		m.PlanDetails.Plan = config.Plan{}
+		m.PlanDetails.Table.SetRows(nil)
+	}
+	if m.BriefingDetails.Plan.ID == planID {
+		m.BriefingDetails = NewBriefingDetailsModel(m.Styles)
+	}
+	callbackRunning := m.Runner.Ctx != nil && !m.Runner.Finished
+	if !callbackRunning {
+		if m.BriefingOrigin.PlanID == planID {
+			m.BriefingOrigin = BriefingOrigin{}
+		}
+		if m.activePlanOrigin.PlanID == planID {
+			m.activePlanOrigin = BriefingOrigin{}
+		}
+	}
+}
+
+func firstPlanningError(validation config.PlanningValidationResult) string {
+	for _, message := range validation.Messages {
+		if message.Severity != "error" {
+			continue
+		}
+		if message.Field != "" {
+			return fmt.Sprintf("%s: %s", message.Field, message.Message)
+		}
+		return message.Message
+	}
+	return "planning validation failed"
 }
 
 // finishBriefingExecution maps a terminal Milestone result back to the one
