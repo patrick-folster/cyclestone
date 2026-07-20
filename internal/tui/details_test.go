@@ -587,3 +587,52 @@ func TestDetailsUpdateAgentsRoutesToMilestoneScopedWorkflow(t *testing.T) {
 		t.Fatalf("unexpected scoped update request: %#v", req)
 	}
 }
+
+func TestRenderPlanDiff(t *testing.T) {
+	diff := config.PlanDiff{
+		PlanID:     "test-plan",
+		Rationale:  "Testing diff rendering",
+		HasChanges: true,
+		BriefingDiffs: []config.BriefingDiff{
+			{
+				Kind:          config.DiffKindAdded,
+				BriefingID:    "new-b",
+				Title:         "New Briefing Title",
+				MilestoneLink: "0001-test",
+				IsLinkSuggested: true,
+			},
+			{
+				Kind:       config.DiffKindRemoved,
+				BriefingID: "old-b",
+				Title:      "Old Briefing Title",
+				Notes:      "Removed briefing",
+			},
+			{
+				Kind:       config.DiffKindModified,
+				BriefingID: "edit-b",
+				Title:      "Edited Briefing Title",
+				FieldChanges: []config.FieldChange{
+					{Field: "objective", Old: "old obj", New: "new obj"},
+				},
+			},
+		},
+		Warnings: []string{"Test warning message"},
+	}
+
+	rendered := RenderPlanDiff(diff, 80)
+	if !strings.Contains(rendered, "Plan Re-Evaluation Proposal for Plan \"test-plan\"") {
+		t.Fatalf("expected plan header in diff rendering, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "+ [ADD] new-b: New Briefing Title") {
+		t.Fatalf("expected addition line in diff rendering, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "- [REMOVE] old-b: Old Briefing Title") {
+		t.Fatalf("expected removal line in diff rendering, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "~ [UPDATE] edit-b: Edited Briefing Title") {
+		t.Fatalf("expected update line in diff rendering, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "objective: old obj -> new obj") {
+		t.Fatalf("expected field change line in diff rendering, got:\n%s", rendered)
+	}
+}

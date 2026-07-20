@@ -648,3 +648,254 @@ func (r PlanningValidationResult) hasNewErrorsSince(index int) bool {
 	}
 	return false
 }
+
+// PlanReevaluationProposal represents a structured AI Planner re-evaluation proposal.
+type PlanReevaluationProposal struct {
+	PlanID        string     `yaml:"plan_id" json:"plan_id"`
+	Rationale     string     `yaml:"rationale" json:"rationale"`
+	BriefingOrder []string   `yaml:"briefing_order" json:"briefing_order"`
+	Briefings     []Briefing `yaml:"briefings" json:"briefings"`
+}
+
+// BriefingDiffKind indicates the nature of change to a Briefing.
+type BriefingDiffKind string
+
+const (
+	DiffKindAdded     BriefingDiffKind = "added"
+	DiffKindRemoved   BriefingDiffKind = "removed"
+	DiffKindModified  BriefingDiffKind = "modified"
+	DiffKindReordered BriefingDiffKind = "reordered"
+	DiffKindBlocked   BriefingDiffKind = "blocked"
+	DiffKindSplit     BriefingDiffKind = "split"
+	DiffKindMerge     BriefingDiffKind = "merge"
+	DiffKindUnchanged BriefingDiffKind = "unchanged"
+)
+
+// FieldChange records a property edit.
+type FieldChange struct {
+	Field string `json:"field"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
+}
+
+// BriefingDiff details changes to an individual Briefing.
+type BriefingDiff struct {
+	Kind            BriefingDiffKind `json:"kind"`
+	BriefingID      string           `json:"briefing_id"`
+	Title           string           `json:"title"`
+	OldBriefing     *Briefing        `json:"old_briefing,omitempty"`
+	NewBriefing     *Briefing        `json:"new_briefing,omitempty"`
+	FieldChanges    []FieldChange    `json:"field_changes,omitempty"`
+	MilestoneLink   string           `json:"milestone_link,omitempty"`
+	IsLinkSuggested bool             `json:"is_link_suggested,omitempty"`
+	Notes           string           `json:"notes,omitempty"`
+}
+
+// PlanDiff collects structured entity-level modifications between old and proposed Plans.
+type PlanDiff struct {
+	PlanID        string         `json:"plan_id"`
+	Rationale     string         `json:"rationale,omitempty"`
+	BriefingDiffs []BriefingDiff `json:"briefing_diffs"`
+	Warnings      []string       `json:"warnings,omitempty"`
+	HasChanges    bool           `json:"has_changes"`
+}
+
+// ApplyPlanReevaluationProposal constructs an updated Plan from oldPlan and proposal.
+func ApplyPlanReevaluationProposal(oldPlan Plan, proposal PlanReevaluationProposal, actor, timestamp string) Plan {
+	newPlan := oldPlan
+	newPlan.UpdatedAt = timestamp
+	if actor != "" {
+		newPlan.UpdatedBy = actor
+	}
+	newPlan.BriefingOrder = append([]string(nil), proposal.BriefingOrder...)
+	newPlan.Briefings = append([]Briefing(nil), proposal.Briefings...)
+	return newPlan
+}
+
+// ValidatePlanReevaluationProposal validates that proposal adheres to replanning safety invariants.
+func ValidatePlanReevaluationProposal(oldPlan Plan, proposal PlanReevaluationProposal, knownMilestoneIDs []string) PlanningValidationResult {
+	var result PlanningValidationResult
+
+	if proposal.PlanID != "" && proposal.PlanID != oldPlan.ID {
+		result.addError("", "plan_id", fmt.Sprintf("proposal Plan ID %q does not match target Plan ID %q", proposal.PlanID, oldPlan.ID))
+		return result
+	}
+
+	oldBriefingsByID := make(map[string]Briefing)
+	for _, b := range oldPlan.Briefings {
+		oldBriefingsByID[b.ID] = b
+	}
+
+	knownMilestones := make(map[string]bool)
+	for _, id := range knownMilestoneIDs {
+		knownMilestones[id] = true
+	}
+
+	// Validate invariant: completed briefings in oldPlan must retain completed status and milestone_id
+	newBriefingsByID := make(map[string]Briefing)
+	for _, b := range proposal.Briefings {
+		newBriefingsByID[b.ID] = b
+		if old, exists := oldBriefingsByID[b.ID]; exists {
+			if old.Status == "completed" && b.Status != "completed" {
+				result.addError("", "briefings."+b.ID+".status", fmt.Sprintf("cannot revert completed Briefing %q to %q", b.ID, b.Status))
+			}
+			if old.MilestoneID != "" && b.MilestoneID != "" && b.MilestoneID != old.MilestoneID {
+				result.addError("", "briefings."+b.ID+".milestone_id", fmt.Sprintf("cannot change Milestone ID on Briefing %q from %q to %q", b.ID, old.MilestoneID, b.MilestoneID))
+			}
+		} else {
+			// New briefing in proposal with milestone link must be flagged or checked
+			if b.MilestoneID != "" {
+				if !knownMilestones[b.MilestoneID] {
+					result.addError("", "briefings."+b.ID+".milestone_id", fmt.Sprintf("proposed link on Briefing %q references non-existent Milestone %q", b.ID, b.MilestoneID))
+				} else {
+					result.addWarning("", "briefings."+b.ID+".milestone_id", fmt.Sprintf("proposed Milestone link %q on new Briefing %q requires explicit user approval", b.MilestoneID, b.ID))
+				}
+			}
+		}
+	}
+
+	// Check if old briefings with milestone link were removed/merged - warn that milestones remain intact on disk
+	for _, old := range oldPlan.Briefings {
+		if _, exists := newBriefingsByID[old.ID]; !exists {
+			if old.MilestoneID != "" {
+				result.addWarning("", "briefings."+old.ID, fmt.Sprintf("removing Briefing %q preserves linked Milestone %q and execution history intact on disk", old.ID, old.MilestoneID))
+			}
+		}
+	}
+
+	// Construct candidate plan and run full plan validation
+	candidate := ApplyPlanReevaluationProposal(oldPlan, proposal, "ai-planner", oldPlan.UpdatedAt)
+	candidateValidation := ValidatePlan(candidate, "", WithKnownMilestoneIDs(knownMilestoneIDs))
+	for _, msg := range candidateValidation.Messages {
+		result.Messages = append(result.Messages, msg)
+	}
+
+	return result
+}
+
+// ComputePlanDiff calculates entity-level differences between oldPlan and proposal.
+func ComputePlanDiff(oldPlan Plan, proposal PlanReevaluationProposal) PlanDiff {
+	diff := PlanDiff{
+		PlanID:    oldPlan.ID,
+		Rationale: proposal.Rationale,
+	}
+
+	oldByID := make(map[string]Briefing)
+	oldOrderIndex := make(map[string]int)
+	for idx, id := range oldPlan.BriefingOrder {
+		oldOrderIndex[id] = idx
+	}
+	for _, b := range oldPlan.Briefings {
+		oldByID[b.ID] = b
+	}
+
+	newByID := make(map[string]Briefing)
+	newOrderIndex := make(map[string]int)
+	for idx, id := range proposal.BriefingOrder {
+		newOrderIndex[id] = idx
+	}
+	for _, b := range proposal.Briefings {
+		newByID[b.ID] = b
+	}
+
+	// Process existing & removed briefings
+	for _, oldB := range oldPlan.Briefings {
+		newB, exists := newByID[oldB.ID]
+		if !exists {
+			// Briefing was removed
+			diff.BriefingDiffs = append(diff.BriefingDiffs, BriefingDiff{
+				Kind:          DiffKindRemoved,
+				BriefingID:    oldB.ID,
+				Title:         oldB.Title,
+				OldBriefing:   &oldB,
+				MilestoneLink: oldB.MilestoneID,
+				Notes:         "Briefing removed from plan; linked milestones remain intact on disk",
+			})
+			diff.HasChanges = true
+			continue
+		}
+
+		// Briefing exists in both - check field changes
+		var fieldChanges []FieldChange
+		if oldB.Title != newB.Title {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "title", Old: oldB.Title, New: newB.Title})
+		}
+		if oldB.Objective != newB.Objective {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "objective", Old: oldB.Objective, New: newB.Objective})
+		}
+		if oldB.Intent != newB.Intent {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "intent", Old: oldB.Intent, New: newB.Intent})
+		}
+		if oldB.Status != newB.Status {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "status", Old: oldB.Status, New: newB.Status})
+		}
+		if oldB.CompletionSignal != newB.CompletionSignal {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "completion_signal", Old: oldB.CompletionSignal, New: newB.CompletionSignal})
+		}
+		if !stringSlicesEqual(oldB.Constraints, newB.Constraints) {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "constraints", Old: fmt.Sprintf("%v", oldB.Constraints), New: fmt.Sprintf("%v", newB.Constraints)})
+		}
+		if !stringSlicesEqual(oldB.DependsOn, newB.DependsOn) {
+			fieldChanges = append(fieldChanges, FieldChange{Field: "depends_on", Old: fmt.Sprintf("%v", oldB.DependsOn), New: fmt.Sprintf("%v", newB.DependsOn)})
+		}
+
+		oldPos := oldOrderIndex[oldB.ID]
+		newPos := newOrderIndex[newB.ID]
+		reordered := oldPos != newPos
+
+		linkSuggested := oldB.MilestoneID == "" && newB.MilestoneID != ""
+
+		kind := DiffKindUnchanged
+		if newB.Status == "blocked" && oldB.Status != "blocked" {
+			kind = DiffKindBlocked
+		} else if len(fieldChanges) > 0 {
+			kind = DiffKindModified
+		} else if reordered {
+			kind = DiffKindReordered
+		}
+
+		if kind != DiffKindUnchanged || linkSuggested {
+			diff.BriefingDiffs = append(diff.BriefingDiffs, BriefingDiff{
+				Kind:            kind,
+				BriefingID:      newB.ID,
+				Title:           newB.Title,
+				OldBriefing:     &oldB,
+				NewBriefing:     &newB,
+				FieldChanges:    fieldChanges,
+				MilestoneLink:   newB.MilestoneID,
+				IsLinkSuggested: linkSuggested,
+			})
+			diff.HasChanges = true
+		}
+	}
+
+	// Process newly added briefings
+	for _, newB := range proposal.Briefings {
+		if _, exists := oldByID[newB.ID]; !exists {
+			linkSuggested := newB.MilestoneID != ""
+			diff.BriefingDiffs = append(diff.BriefingDiffs, BriefingDiff{
+				Kind:            DiffKindAdded,
+				BriefingID:      newB.ID,
+				Title:           newB.Title,
+				NewBriefing:     &newB,
+				MilestoneLink:   newB.MilestoneID,
+				IsLinkSuggested: linkSuggested,
+			})
+			diff.HasChanges = true
+		}
+	}
+
+	return diff
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

@@ -41,6 +41,7 @@ The CLI exposes the planning layer without mutating Milestone, state, report, te
 cyclestone plan list
 cyclestone plan show <plan-id>
 cyclestone plan generate --goal <goal> [--preview] [--actor <actor>] [--runner-command <command>] [--response-file <path>]
+cyclestone plan reevaluate <plan-id> [--goal <goal>] [--preview] [--auto-apply] [--actor <actor>] [--runner-command <command>] [--response-file <path>]
 cyclestone plan create <plan-id> --title <title> --objective <objective> [--actor <actor>]
 cyclestone plan edit <plan-id> [--title <title>] [--objective <objective>] [--actor <actor>]
 cyclestone plan approve <plan-id> [--actor <actor>]
@@ -114,6 +115,26 @@ Archiving or deleting a Plan only changes/removes its planning file. It never ca
 Generation may also run in review-only mode with `--preview`, which prints the generated Plan through the same renderer as `plan show` and writes nothing. Tests and deterministic local workflows may pass `--response-file <path>` to provide the structured response directly; this bypasses runner execution but still uses the same parser, converter, validation, collision checks, and preview/save behavior.
 
 The generation prompt is bounded and assembled from stable repository context: `AGENTS.md`, `.cyclestone/DECISIONS.md`, `docs/architecture.md`, `docs/planning-data-models.md`, and tracked repository structure when available. It does not load unrelated milestone specs, reports, state entries, or temp artifacts. Invalid JSON, missing required generated fields, dependency references that cannot be mapped to generated Briefings, dependency cycles, generated Milestone links, validation errors, or Plan ID collisions fail before any Plan file is written.
+
+## AI-Assisted Plan Re-Evaluation
+
+`cyclestone plan reevaluate <plan-id>` triggers an AI Planner re-evaluation of remaining incomplete Briefings in an active Plan. It may be run explicitly from the CLI or triggered post-execution after a Briefing's Milestone execution completes when `enable_plan_reevaluation` is enabled in configuration.
+
+The Planner agent assesses repository context, completed Milestones, cycle reports, QA findings, updated architecture, and documentation to synthesize proposed updates to remaining Briefings. Proposals may include adding new Briefings, removing obsolete Briefings, reordering, splitting, merging, updating properties (objectives, constraints, dependencies), or blocking Briefings.
+
+### Safety Invariants
+
+Replanning enforces strict safety boundaries:
+1. Replanning modifies only planning-layer entities (`.cyclestone/plans/*.yml`).
+2. Existing or completed Milestones, compact index entries, state, reports, and branch snapshots are never modified, rewritten, or deleted.
+3. Removing or merging a Briefing preserves all linked Milestones and execution history intact on disk.
+4. Standalone Milestones remain outside Plans unless explicitly linked through user-approved suggestions; silent linking is strictly prohibited.
+5. Proposed plan modifications require explicit user approval before applying changes to disk, unless `auto-apply` or `auto_apply_plan_reevaluation` is explicitly configured.
+
+### Visual Diff & Review
+
+Proposed changes are computed by `config.ComputePlanDiff` and rendered as a structured visual diff displaying additions (`+`), removals (`-`), property updates (`~`), reordering (`^`), blockages (`!`), splits (`/`), merges (`+`), link suggestions (`*`), and warnings. Invariant validation runs before presenting the diff; invalid proposals block execution and leave files unchanged.
+
 
 ## Plan Record
 

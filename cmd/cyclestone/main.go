@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
+	"github.com/patrick-folster/cyclestone/internal/executor"
 	"github.com/patrick-folster/cyclestone/internal/tui"
 )
 
@@ -25,6 +26,7 @@ const maxPlanGenerationContextChars = 120000
 const maxBriefingMilestoneContextChars = 120000
 
 var runPlanGenerationRunner = executePlanGenerationRunner
+var runPlanReevaluationRunner = executePlanGenerationRunner
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -353,6 +355,8 @@ func runPlanMutatingCommand(args []string, configPath string, stdout, stderr io.
 		return runPlanCreate(args[1:], configPath, stdout, stderr)
 	case "generate":
 		return runPlanGenerate(args[1:], configPath, stdout, stderr)
+	case "reevaluate":
+		return runPlanReevaluate(args[1:], configPath, stdout, stderr)
 	case "edit":
 		return runPlanEdit(args[1:], configPath, stdout, stderr)
 	case "archive":
@@ -550,6 +554,126 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 	fmt.Fprintf(stdout, "Plan %q generated\n", plan.ID)
 	printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}))
 	return 0
+}
+
+func runPlanReevaluate(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("plan reevaluate", stderr)
+	goal := flags.String("goal", "", "Goal / trigger note for AI Plan re-evaluation")
+	actor := flags.String("actor", "ai-planner", "Actor recorded in planning metadata")
+	preview := flags.Bool("preview", false, "Print the re-evaluation proposal diff without writing changes")
+	autoApply := flags.Bool("auto-apply", false, "Apply proposed plan changes automatically without interactive confirmation")
+	responseFile := flags.String("response-file", "", "Read structured re-evaluation proposal response from a local file")
+	runnerCommand := flags.String("runner-command", "", "Shell command used to generate structured Plan re-evaluation proposal JSON")
+	if !parsePlanningFlags(flags, args, stderr) || flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone plan reevaluate <plan-id> [--goal <goal>] [--preview] [--auto-apply] [--actor <actor>] [--runner-command <command>] [--response-file <path>]")
+		return 1
+	}
+
+	planID := flags.Arg(0)
+	ctx, ok := loadWritablePlanningContext(configPath, stderr)
+	if !ok {
+		return 1
+	}
+
+	plan, ok := findPlan(ctx.state, planID)
+	if !ok {
+		fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
+		return 1
+	}
+
+	var responseText string
+	if strings.TrimSpace(*responseFile) != "" {
+		data, err := os.ReadFile(*responseFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: reading re-evaluation response: %v\n", err)
+			return 1
+		}
+		responseText = string(data)
+	} else {
+		prompt := executor.BuildPlanReevaluationPrompt(".", plan, *goal)
+		text, err := runPlanReevaluationRunner(*runnerCommand, prompt)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: re-evaluating Plan: %v\n", err)
+			return 1
+		}
+		responseText = text
+	}
+
+	proposal, err := parsePlanReevaluationResponse(responseText)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: invalid re-evaluation response: %v\n", err)
+		return 1
+	}
+	if proposal.PlanID == "" {
+		proposal.PlanID = plan.ID
+	}
+
+	milestoneIDs := planningMilestoneIDs(ctx)
+	validation := config.ValidatePlanReevaluationProposal(plan, proposal, milestoneIDs)
+	printPlanningMessages(stderr, validation)
+	if validation.HasErrors() {
+		fmt.Fprintln(stderr, "Error: proposed Plan re-evaluation failed invariant validation; no changes were written")
+		return 1
+	}
+
+	diff := config.ComputePlanDiff(plan, proposal)
+	diffOutput := tui.RenderPlanDiff(diff, 80)
+	fmt.Fprint(stdout, diffOutput)
+
+	if !diff.HasChanges {
+		fmt.Fprintln(stdout, "No plan modifications proposed.")
+		return 0
+	}
+
+	if *preview {
+		fmt.Fprintln(stdout, "Preview mode enabled; no changes were written to disk.")
+		return 0
+	}
+
+	settings := config.LoadMergedSettings()
+	shouldApply := *autoApply || (settings.AutoApplyPlanReevaluation != nil && *settings.AutoApplyPlanReevaluation)
+
+	if !shouldApply {
+		fmt.Fprint(stdout, "Apply proposed plan modifications? [y/N]: ")
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(stdout, "Plan re-evaluation cancelled; no changes were written.")
+			return 0
+		}
+	}
+
+	updatedPlan := config.ApplyPlanReevaluationProposal(plan, proposal, strings.TrimSpace(*actor), planningTimestamp())
+	if !savePlanForCommand(ctx, updatedPlan, stderr) {
+		return 1
+	}
+	fmt.Fprintf(stdout, "Plan %q successfully updated via re-evaluation.\n", updatedPlan.ID)
+	return 0
+}
+
+func parsePlanReevaluationResponse(text string) (config.PlanReevaluationProposal, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return config.PlanReevaluationProposal{}, fmt.Errorf("response is empty")
+	}
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+			text = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end < start {
+		return config.PlanReevaluationProposal{}, fmt.Errorf("response must contain one JSON object")
+	}
+	var proposal config.PlanReevaluationProposal
+	decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
+	if err := decoder.Decode(&proposal); err != nil {
+		return config.PlanReevaluationProposal{}, err
+	}
+	return proposal, nil
 }
 
 func runPlanEdit(args []string, configPath string, stdout, stderr io.Writer) int {

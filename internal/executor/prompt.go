@@ -826,3 +826,73 @@ func handoffInstruction(runner, agentID string) string {
 	para2 := fmt.Sprintf("The YAML handoff is structured data describing %s — it is **not code**. Write your handoff by overwriting the file `{{HANDOFF_YAML_PATH}}` with the full YAML content directly. Do **not** wrap it in SEARCH/REPLACE block markers or Markdown fences, and do **not** also emit the YAML as prose. Cyclestone reads the result after you finish. %s", purpose, consequence)
 	return para1 + "\n\n" + para2
 }
+
+// BuildPlanReevaluationPrompt assembles full context for AI Plan re-evaluation prompt.
+func BuildPlanReevaluationPrompt(workspaceRoot string, plan config.Plan, extraGoal string) string {
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil || absRoot == "" {
+		absRoot = workspaceRoot
+	}
+	if absRoot == "" {
+		absRoot = "."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Repository root: %s\n\n", absRoot))
+	sb.WriteString("Plan ID: " + plan.ID + "\n")
+	sb.WriteString("Plan Title: " + plan.Title + "\n")
+	sb.WriteString("Plan Objective: " + plan.Objective + "\n")
+	if strings.TrimSpace(extraGoal) != "" {
+		sb.WriteString("Re-Evaluation Trigger / Goal: " + strings.TrimSpace(extraGoal) + "\n")
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("## Active Plan Specification\n\n")
+	sb.WriteString(fmt.Sprintf("Briefing Order: %v\n\n", plan.BriefingOrder))
+	for _, b := range plan.Briefings {
+		sb.WriteString(fmt.Sprintf("### Briefing %s\n", b.ID))
+		sb.WriteString("Title: " + b.Title + "\n")
+		sb.WriteString("Objective: " + b.Objective + "\n")
+		sb.WriteString("Status: " + b.Status + "\n")
+		if b.MilestoneID != "" {
+			sb.WriteString("Linked Milestone: " + b.MilestoneID + "\n")
+		}
+		if len(b.DependsOn) > 0 {
+			sb.WriteString(fmt.Sprintf("Depends On: %v\n", b.DependsOn))
+		}
+		if len(b.Constraints) > 0 {
+			sb.WriteString(fmt.Sprintf("Constraints: %v\n", b.Constraints))
+		}
+		sb.WriteString("\n")
+	}
+
+	reportsDir := filepath.Join(workspaceRoot, ".cyclestone", "reports")
+	if entries, err := os.ReadDir(reportsDir); err == nil && len(entries) > 0 {
+		sb.WriteString("## Milestone Execution Reports & QA Findings\n\n")
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			msID := entry.Name()
+			summaryPath := filepath.Join(reportsDir, msID, "summary.md")
+			if data, err := os.ReadFile(summaryPath); err == nil && len(data) > 0 {
+				sb.WriteString(fmt.Sprintf("### Milestone %s Summary\n", msID))
+				sb.WriteString(string(data) + "\n\n")
+			}
+		}
+	}
+
+	settings := config.LoadMergedSettings()
+	appendAgentInstructionsToBuilder(&sb, settings)
+	appendDecisionsLogToBuilder(&sb)
+
+	sb.WriteString("\n## Planner Instructions & Output Schema\n\n")
+	plannerPrompt := resources.PlannerPrompt
+	if strings.TrimSpace(plannerPrompt) == "" {
+		plannerPrompt = "Return a structured JSON proposal matching the PlanReevaluationProposal schema."
+	}
+	sb.WriteString(plannerPrompt)
+	sb.WriteString("\n")
+
+	return sb.String()
+}

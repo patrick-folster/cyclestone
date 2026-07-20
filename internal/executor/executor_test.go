@@ -5195,3 +5195,33 @@ func TestAgyRunnerDescriptionIncludesAddDir(t *testing.T) {
 		t.Fatalf("expected unrestricted agy description to include --add-dir <root>, got %q", descUnrestricted)
 	}
 }
+
+func TestBuildPlanReevaluationPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	plan := config.Plan{
+		ID:            "test-plan",
+		Title:         "Test Plan",
+		Objective:     "Test re-evaluation prompt assembly",
+		Status:        "active",
+		BriefingOrder: []string{"briefing-1"},
+		Briefings: []config.Briefing{
+			{
+				ID:        "briefing-1",
+				Title:     "First Briefing",
+				Objective: "First objective",
+				Status:    "active",
+			},
+		},
+	}
+
+	prompt := BuildPlanReevaluationPrompt(tmpDir, plan, "Assess remaining tasks")
+	if !strings.Contains(prompt, "Plan ID: test-plan") {
+		t.Fatalf("expected Plan ID in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Re-Evaluation Trigger / Goal: Assess remaining tasks") {
+		t.Fatalf("expected trigger note in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "### Briefing briefing-1") {
+		t.Fatalf("expected Briefing section in prompt, got:\n%s", prompt)
+	}
+}

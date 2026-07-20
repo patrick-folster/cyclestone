@@ -698,3 +698,38 @@ func TestDefaultPlanExecutionModeIsZeroValueSafe(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanReevaluationSettingsSerializeAndMerge(t *testing.T) {
+	withIsolatedSettingsEnvironment(t, func() {
+		s := LoadMergedSettings()
+		if s.EnablePlanReevaluation == nil || *s.EnablePlanReevaluation {
+			t.Fatalf("expected EnablePlanReevaluation default false, got %v", s.EnablePlanReevaluation)
+		}
+		if s.AutoApplyPlanReevaluation == nil || *s.AutoApplyPlanReevaluation {
+			t.Fatalf("expected AutoApplyPlanReevaluation default false, got %v", s.AutoApplyPlanReevaluation)
+		}
+		if s.PlanReevaluationRunner != "codex" {
+			t.Fatalf("expected PlanReevaluationRunner default 'codex', got %q", s.PlanReevaluationRunner)
+		}
+
+		trueVal := true
+		if err := SaveProjectSettings(Settings{
+			EnablePlanReevaluation:   &trueVal,
+			AutoApplyPlanReevaluation: &trueVal,
+			PlanReevaluationRunner:   "ollama-codex",
+		}); err != nil {
+			t.Fatalf("failed to save project settings: %v", err)
+		}
+
+		merged := LoadMergedSettings()
+		if merged.EnablePlanReevaluation == nil || !*merged.EnablePlanReevaluation {
+			t.Fatalf("expected project override EnablePlanReevaluation true, got %v", merged.EnablePlanReevaluation)
+		}
+		if merged.AutoApplyPlanReevaluation == nil || !*merged.AutoApplyPlanReevaluation {
+			t.Fatalf("expected project override AutoApplyPlanReevaluation true, got %v", merged.AutoApplyPlanReevaluation)
+		}
+		if merged.PlanReevaluationRunner != "ollama-codex" {
+			t.Fatalf("expected project override PlanReevaluationRunner 'ollama-codex', got %q", merged.PlanReevaluationRunner)
+		}
+	})
+}

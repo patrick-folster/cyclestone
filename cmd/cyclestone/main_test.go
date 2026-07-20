@@ -1533,3 +1533,85 @@ func validGeneratedPlanJSON(title string) string {
   ]
 }`
 }
+
+func TestPlanReevaluateCLI(t *testing.T) {
+	root, configPath, statePath := writePlanningCommandFixture(t)
+
+	proposalFile := filepath.Join(root, "proposal.json")
+	proposalJSON := `{
+  "plan_id": "delivery-plan",
+  "rationale": "Re-evaluating delivery plan after milestone completion.",
+  "briefing_order": ["first-delivery-item", "reevaluated-item"],
+  "briefings": [
+    {
+      "id": "first-delivery-item",
+      "title": "First delivery item",
+      "objective": "Complete the initial delivery requirement.",
+      "intent": "Ensure core functionality is present.",
+      "status": "completed",
+      "completion_signal": "The first item is approved.",
+      "created_at": "2026-07-20T10:00:00Z",
+      "created_by": "patrick",
+      "updated_at": "2026-07-20T10:00:00Z",
+      "updated_by": "patrick"
+    },
+    {
+      "id": "reevaluated-item",
+      "title": "Re-evaluated delivery item",
+      "objective": "Newly added objective from re-evaluation.",
+      "intent": "Address secondary requirement.",
+      "status": "active",
+      "completion_signal": "Re-evaluated item is verified.",
+      "created_at": "2026-07-20T11:00:00Z",
+      "created_by": "ai-planner",
+      "updated_at": "2026-07-20T11:00:00Z",
+      "updated_by": "ai-planner"
+    }
+  ]
+}`
+	if err := os.WriteFile(proposalFile, []byte(proposalJSON), 0644); err != nil {
+		t.Fatalf("failed to write proposal file: %v", err)
+	}
+
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml")
+	beforePlan := snapshotFiles(t, planPath)[planPath]
+	beforeOther := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+
+	// Test 1: Preview mode
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"plan", "reevaluate", "delivery-plan", "--response-file", proposalFile, "--preview"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan reevaluate --preview failed with code %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Plan Re-Evaluation Proposal for Plan \"delivery-plan\"") {
+		t.Fatalf("expected diff output in stdout, got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Preview mode enabled; no changes were written to disk.") {
+		t.Fatalf("expected preview message in stdout, got:\n%s", stdout.String())
+	}
+	assertFilesUnchanged(t, map[string]string{planPath: beforePlan})
+	assertFilesUnchanged(t, beforeOther)
+
+	// Test 2: Auto-apply mode
+	stdout.Reset()
+	stderr.Reset()
+	code = runPlanningCommand([]string{"plan", "reevaluate", "delivery-plan", "--response-file", proposalFile, "--auto-apply"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan reevaluate --auto-apply failed with code %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Plan \"delivery-plan\" successfully updated via re-evaluation.") {
+		t.Fatalf("expected success message in stdout, got:\n%s", stdout.String())
+	}
+	// Verify plan file was updated
+	afterPlan := snapshotFiles(t, planPath)[planPath]
+	if !strings.Contains(afterPlan, "reevaluated-item") {
+		t.Fatalf("expected updated plan file to contain reevaluated-item, got:\n%s", afterPlan)
+	}
+	// Verify existing milestones, index, state, reports remain unchanged
+	assertFilesUnchanged(t, beforeOther)
+}

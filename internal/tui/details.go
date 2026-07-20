@@ -1377,3 +1377,70 @@ func (m DetailsModel) renderDeleteCycleConfirmation() string {
 
 	return lipgloss.JoinVertical(lipgloss.Left, body)
 }
+
+// RenderPlanDiff formats a PlanDiff into a clear, structured visual diff for terminal display.
+func RenderPlanDiff(diff config.PlanDiff, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Plan Re-Evaluation Proposal for Plan %q\n", diff.PlanID))
+	if strings.TrimSpace(diff.Rationale) != "" {
+		sb.WriteString("Rationale:\n")
+		sb.WriteString(wrapTextWithIndent(diff.Rationale, width, "  ") + "\n")
+	}
+	sb.WriteString("\n")
+
+	if !diff.HasChanges && len(diff.BriefingDiffs) == 0 {
+		sb.WriteString("No changes proposed.\n")
+		return sb.String()
+	}
+
+	sb.WriteString("Proposed Modifications:\n")
+	for _, bd := range diff.BriefingDiffs {
+		var prefix string
+		switch bd.Kind {
+		case config.DiffKindAdded:
+			prefix = "+ [ADD]"
+		case config.DiffKindRemoved:
+			prefix = "- [REMOVE]"
+		case config.DiffKindModified:
+			prefix = "~ [UPDATE]"
+		case config.DiffKindReordered:
+			prefix = "^ [REORDER]"
+		case config.DiffKindBlocked:
+			prefix = "! [BLOCKED]"
+		case config.DiffKindSplit:
+			prefix = "/ [SPLIT]"
+		case config.DiffKindMerge:
+			prefix = "+ [MERGE]"
+		default:
+			prefix = "* [CHANGE]"
+		}
+
+		sb.WriteString(fmt.Sprintf("  %s %s: %s\n", prefix, bd.BriefingID, bd.Title))
+		if bd.MilestoneLink != "" {
+			if bd.IsLinkSuggested {
+				sb.WriteString(fmt.Sprintf("    Link Suggestion: %s (requires user approval)\n", bd.MilestoneLink))
+			} else {
+				sb.WriteString(fmt.Sprintf("    Linked Milestone: %s\n", bd.MilestoneLink))
+			}
+		}
+		if bd.Notes != "" {
+			sb.WriteString(wrapTextWithIndent(bd.Notes, width, "    Note: ") + "\n")
+		}
+		for _, fc := range bd.FieldChanges {
+			changeLine := fmt.Sprintf("%s: %s -> %s", fc.Field, fc.Old, fc.New)
+			sb.WriteString(wrapTextWithIndent(changeLine, width, "    - ") + "\n")
+		}
+	}
+
+	if len(diff.Warnings) > 0 {
+		sb.WriteString("\nWarnings:\n")
+		for _, w := range diff.Warnings {
+			sb.WriteString(wrapTextWithIndent(w, width, "  ! ") + "\n")
+		}
+	}
+
+	return sb.String()
+}

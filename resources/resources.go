@@ -16,3 +16,6 @@ var UpdateAgentInstructionsPrompt string
 
 //go:embed agents/recommender.md
 var RecommenderPrompt string
+
+//go:embed agents/planner.md
+var PlannerPrompt string

@@ -35,6 +35,9 @@ type Settings struct {
 	DisableRoundedBorders    *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
 	DefaultGitBranchPrefix   string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
 	DefaultPlanExecutionMode string `yaml:"default_plan_execution_mode,omitempty" json:"default_plan_execution_mode,omitempty"`
+	EnablePlanReevaluation   *bool  `yaml:"enable_plan_reevaluation,omitempty" json:"enable_plan_reevaluation,omitempty"`
+	AutoApplyPlanReevaluation *bool `yaml:"auto_apply_plan_reevaluation,omitempty" json:"auto_apply_plan_reevaluation,omitempty"`
+	PlanReevaluationRunner   string `yaml:"plan_reevaluation_runner,omitempty" json:"plan_reevaluation_runner,omitempty"`
 
 	AiderModel                      string                    `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
 	OllamaModel                     string                    `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
@@ -101,6 +104,8 @@ func LoadDefaultSettings() Settings {
 	enableCodexSessionResume := false
 	proposeInstructionUpdates := true
 	autoApplyInstructionUpdates := false
+	enablePlanReevaluation := false
+	autoApplyPlanReevaluation := false
 	return Settings{
 		DefaultLLM:                      "codex",
 		DefaultMode:                     "sandbox",
@@ -110,6 +115,9 @@ func LoadDefaultSettings() Settings {
 		DisableRoundedBorders:           &disableRoundedBorders,
 		DefaultGitBranchPrefix:          "cyclestone/milestones/",
 		DefaultPlanExecutionMode:        PlanExecutionModeOnce,
+		EnablePlanReevaluation:          &enablePlanReevaluation,
+		AutoApplyPlanReevaluation:       &autoApplyPlanReevaluation,
+		PlanReevaluationRunner:          "codex",
 		EnableContextCaching:            &enableContextCaching,
 		EnableCompactPhaseHandoffs:      &enableCompactPhaseHandoffs,
 		EnableCodexSessionResume:        &enableCodexSessionResume,
@@ -237,6 +245,17 @@ func LoadMergedSettings() Settings {
 		falseVal := false
 		s.EnableCodexSessionResume = &falseVal
 	}
+	if s.EnablePlanReevaluation == nil {
+		falseVal := false
+		s.EnablePlanReevaluation = &falseVal
+	}
+	if s.AutoApplyPlanReevaluation == nil {
+		falseVal := false
+		s.AutoApplyPlanReevaluation = &falseVal
+	}
+	if s.PlanReevaluationRunner == "" {
+		s.PlanReevaluationRunner = "codex"
+	}
 	normalizeAgentInstructionsSettings(&s)
 	if s.DefaultGitBranchPrefix == "" {
 		s.DefaultGitBranchPrefix = "cyclestone/milestones/"
@@ -309,6 +328,15 @@ func LoadMergedSettings() Settings {
 				}
 				if projectSettings.EnableCodexSessionResume != nil {
 					s.EnableCodexSessionResume = projectSettings.EnableCodexSessionResume
+				}
+				if projectSettings.EnablePlanReevaluation != nil {
+					s.EnablePlanReevaluation = projectSettings.EnablePlanReevaluation
+				}
+				if projectSettings.AutoApplyPlanReevaluation != nil {
+					s.AutoApplyPlanReevaluation = projectSettings.AutoApplyPlanReevaluation
+				}
+				if projectSettings.PlanReevaluationRunner != "" {
+					s.PlanReevaluationRunner = projectSettings.PlanReevaluationRunner
 				}
 				mergeAgentInstructionsSettings(&s, projectSettings.AgentInstructions)
 				if projectSettings.CacheTTLMinutes != 0 {
@@ -386,6 +414,17 @@ func LoadMergedSettings() Settings {
 	if s.EnableCodexSessionResume == nil {
 		falseVal := false
 		s.EnableCodexSessionResume = &falseVal
+	}
+	if s.EnablePlanReevaluation == nil {
+		falseVal := false
+		s.EnablePlanReevaluation = &falseVal
+	}
+	if s.AutoApplyPlanReevaluation == nil {
+		falseVal := false
+		s.AutoApplyPlanReevaluation = &falseVal
+	}
+	if s.PlanReevaluationRunner == "" {
+		s.PlanReevaluationRunner = "codex"
 	}
 	normalizeAgentInstructionsSettings(&s)
 	if s.DefaultGitBranchPrefix == "" {

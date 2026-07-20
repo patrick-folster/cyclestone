@@ -520,3 +520,83 @@ func planningMessagesText(result PlanningValidationResult) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+func TestPlanReevaluationProposalValidationAndDiff(t *testing.T) {
+	t.Parallel()
+
+	oldPlan := representativePlan()
+
+	// Proposal: keeps completed persist-plan-files, edits setup-copy-review objective, adds new-briefing
+	proposal := PlanReevaluationProposal{
+		PlanID:        oldPlan.ID,
+		Rationale:     "Adjusting plan based on cycle 1 completion.",
+		BriefingOrder: []string{"persist-plan-files", "new-briefing", "setup-copy-review"},
+		Briefings: []Briefing{
+			oldPlan.Briefings[1], // completed briefing persist-plan-files
+			{
+				ID:               "new-briefing",
+				Title:            "New Briefing",
+				Objective:        "Newly discovered task",
+				Intent:           "Add missing validation step",
+				Status:           "active",
+				CompletionSignal: "Validation passes",
+				CreatedAt:        "2026-07-20T10:00:00Z",
+				CreatedBy:        "ai-planner",
+				UpdatedAt:        "2026-07-20T11:00:00Z",
+				UpdatedBy:        "ai-planner",
+			},
+			{
+				ID:               "setup-copy-review",
+				Title:            "Review setup copy",
+				Objective:        "Updated objective for review",
+				Intent:           "Users should understand what files setup will create before confirmation.",
+				Status:           "active",
+				CompletionSignal: "Setup copy is reviewed and accepted in the TUI.",
+				Constraints:      []string{"Do not change runner detection behavior."},
+				CreatedAt:        "2026-07-20T10:15:00Z",
+				CreatedBy:        "patrick",
+				UpdatedAt:        "2026-07-20T11:00:00Z",
+				UpdatedBy:        "ai-planner",
+			},
+			oldPlan.Briefings[2], // archived-note
+		},
+	}
+
+	validation := ValidatePlanReevaluationProposal(oldPlan, proposal, []string{"0003-persist-planning-layer"})
+	if validation.HasErrors() {
+		t.Fatalf("expected valid proposal, got errors: %+v", validation.Messages)
+	}
+
+	diff := ComputePlanDiff(oldPlan, proposal)
+	if !diff.HasChanges {
+		t.Fatal("expected diff to have changes")
+	}
+
+	addedCount, modifiedCount := 0, 0
+	for _, bd := range diff.BriefingDiffs {
+		switch bd.Kind {
+		case DiffKindAdded:
+			addedCount++
+		case DiffKindModified:
+			modifiedCount++
+		}
+	}
+
+	if addedCount != 1 || modifiedCount != 1 {
+		t.Fatalf("expected 1 added, 1 modified; got added=%d, modified=%d", addedCount, modifiedCount)
+	}
+
+	// Test invariant violation: trying to revert completed briefing status
+	invalidProposal := proposal
+	invalidProposal.Briefings[0].Status = "active"
+	invValidation := ValidatePlanReevaluationProposal(oldPlan, invalidProposal, []string{"0003-persist-planning-layer"})
+	if !invValidation.HasErrors() {
+		t.Fatal("expected error when reverting completed briefing status")
+	}
+
+	// Test applying proposal
+	applied := ApplyPlanReevaluationProposal(oldPlan, proposal, "ai-planner", "2026-07-20T12:00:00Z")
+	if len(applied.Briefings) != 4 || applied.UpdatedBy != "ai-planner" {
+		t.Fatalf("failed to apply proposal cleanly: %+v", applied)
+	}
+}
