@@ -253,7 +253,7 @@ Flags: `--goal <goal>`, `--preview`, `--auto-apply`, `--actor <actor>` (default 
 
 ### Visual Diff Symbols
 
-Proposed changes are computed by `config.ComputePlanDiff` and rendered as a structured visual diff. Invariant validation runs before presenting the diff; invalid proposals block execution and leave files unchanged.
+Proposed changes are computed by `config.ComputePlanDiff` and rendered as a structured visual diff in `internal/tui/details.go` (`RenderPlanDiff`). Invariant validation runs before presenting the diff; invalid proposals block execution and leave files unchanged.
 
 | Symbol | Kind | Meaning |
 | --- | --- | --- |
@@ -264,7 +264,11 @@ Proposed changes are computed by `config.ComputePlanDiff` and rendered as a stru
 | `! [BLOCKED]` | blocked | Briefing blocked from execution. |
 | `/ [SPLIT]` | split | Briefing split into parts. |
 | `+ [MERGE]` | merge | Briefings merged into one. |
-| `*` | link suggestion | Standalone Milestone link suggestion requiring user approval. |
+| `* [CHANGE]` | default / other | Default or fallback change indicator. |
+
+Milestone link relationships and link suggestions are rendered as indented sub-lines under Briefing diffs rather than top-level symbols:
+- `Link Suggestion: <milestone-id> (requires user approval)` (when `IsLinkSuggested` is true)
+- `Linked Milestone: <milestone-id>` (when an existing milestone link is present)
 
 ## Hierarchy Visualization (`plan tree`)
 
