@@ -2,7 +2,7 @@
 
 ## Before Tagging
 
-- Confirm `README.md`, `SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and GitHub templates are current.
+- Confirm `README.md`, `AGENTS.md`, `SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and GitHub templates are current.
 - Confirm GitHub private vulnerability reporting is enabled or another private security intake is documented in `SECURITY.md`.
 - Confirm `go test ./...` passes.
 - Confirm `go vet ./...` passes.

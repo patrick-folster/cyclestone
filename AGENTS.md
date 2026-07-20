@@ -13,6 +13,7 @@ Use this file as the canonical project instruction source for coding agents. Kee
 - `internal/executor`: milestone cycle execution, runner orchestration, prompt assembly, reports, handoffs, and git/package checks.
 - `internal/tui`: Bubble Tea TUI, setup wizard, settings, preflight, runner views, and terminal compatibility behavior.
 - `resources/agents`: built-in PM, Developer, QA, and recommender prompts.
+- `resources/update_agent_instructions.md`: built-in prompt for human-reviewed `AGENTS.md` update proposals.
 - `docs/`: user-facing and architecture documentation.
 - `.cyclestone/milestones/`: milestone specs for this repository.
 - `.cyclestone/DECISIONS.md`: durable decision log. Read it before changing architecture, runner behavior, config semantics, or TUI compatibility rules.

@@ -8,6 +8,20 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 
 ### Added
 - `-version` / `--version` CLI flag to check the current version of the tool.
+- Root `AGENTS.md` support as the canonical current instruction source for agent prompts, replacing the older `.cyclestone/AI_CONTEXT.md` context file.
+- First-run setup can create an editable starter `AGENTS.md`, and runtime settings now support `agent_instructions.file`, `agent_instructions.propose_updates`, and `agent_instructions.auto_apply_updates`.
+- Human-reviewed `AGENTS.md` update workflow from the dashboard or milestone details. The updater runner produces a proposal draft at `.cyclestone/temp/AGENTS.md.proposed`, leaving the root file unchanged until the user applies it.
+- Separate recommender `agent_instructions_update_score` values for deciding whether a durable `AGENTS.md` update should be reviewed, independent from the normal next-cycle recommendation score.
+- Informational warnings for untracked embedded Git repositories in cycle reports and metadata.
+
+### Changed
+- Milestone runtime artifacts now use hierarchical report paths under `.cyclestone/reports/<milestone-id>/`, with `summary.md` at the milestone root and each `cycle-NNN/` directory containing `report.yaml`, `metadata.json`, `codex-thread.json` when present, and per-agent phase directories.
+- Normal milestone cycles protect root `AGENTS.md` from direct runner edits. Any attempted create, modify, or delete is restored and captured as proposed instruction content for explicit human review.
+- Agent prompts now read optional root `AGENTS.md`, keep `.cyclestone/DECISIONS.md` as the chronological decision log, and treat embedded-repository warnings as human-awareness notes unless repository topology is explicitly in scope.
+- Runner and milestone views keep live log frames stable as status text, proposal previews, and terminal dimensions change.
+
+### Removed
+- `.cyclestone/AI_CONTEXT.md` is no longer the project instruction source.
 
 ## v0.0.2 - 2026-07-03
 

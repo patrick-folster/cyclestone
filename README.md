@@ -55,6 +55,7 @@ The result is practical AI automation for real codebases: faster iteration, clea
 
 - 💻 **Interactive TUI**: View active milestones, inspect agent logs, and review run history in a beautiful terminal dashboard designed with [Lipgloss](https://github.com/charmbracelet/lipgloss).
 - 🛡️ **Git-Safe Workflows**: Automatically creates milestone branches such as `cyclestone/milestones/0001-project-setup` and captures snapshots so you can revert or audit any cycle instantly.
+- 🧭 **Reviewable Agent Instructions**: Load concise repository guidance from root `AGENTS.md`, capture proposed instruction updates from agent handoffs, and apply them only after human review.
 - 👥 **Multi-Agent Pipelines**:
   - **Milestone Creator**: Analyzes the codebase and drafts spec files.
   - **Project Manager**: Refines scope, lists acceptance criteria, and highlights risks.
@@ -179,6 +180,8 @@ agent_instructions:
 
 `AGENTS.md` is an optional concise current operating instruction file loaded into agent prompts when present. `.cyclestone/DECISIONS.md` remains the chronological decision log. Cycles may propose `AGENTS.md` updates in handoffs and reports, and the recommender records a separate `agent_instructions_update_score` for whether a human should review durable instruction changes. Applying those changes still requires an explicit human review action; `auto_apply_updates` defaults to `false`.
 
+Normal milestone cycles protect root `AGENTS.md`: if a runner creates, modifies, or deletes it, Cyclestone restores the prior filesystem state and stores the attempted replacement as a reviewable proposal. Use `u Update AGENTS` from the dashboard for a repository-wide proposal, or from milestone details for milestone-scoped context. Proposal drafts are saved at `.cyclestone/temp/AGENTS.md.proposed`; applying one writes `AGENTS.md` and should be reviewed like any other source diff.
+
 ### Sandbox and Consent
 
 Cyclestone defaults to `default_mode: sandbox`. Keep this mode for normal use. The agents can still read project context, write `.cyclestone` runtime files, and ask the selected runner to edit repository files as part of a milestone.
@@ -241,9 +244,15 @@ Generated runtime files usually should stay out of your application repository:
   - `<milestone-id>/summary.md`
   - `<milestone-id>/cycle-NNN/report.yaml`
   - `<milestone-id>/cycle-NNN/metadata.json`
+  - `<milestone-id>/cycle-NNN/codex-thread.json` when Codex thread metadata is available
   - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/input.md`
   - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/output.log`
   - `<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/handoff.yaml`
+  - `agents-update-*.yaml`
+  - `agents-update-*-input.md`
+  - `agents-update-*-output.log`
+  - `agents-update-*-handoff.yaml`
+- `.cyclestone/temp/AGENTS.md.proposed`
 - `.cyclestone/settings.yml` when it contains local preferences, hosts, or runner choices
 
 Commit milestone specs only when you want the team to share them:
