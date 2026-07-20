@@ -101,9 +101,9 @@ func describeRunnerCommand(runner string, opts RunOptions) string {
 		return "ollama launch codex --model <model> -- " + strings.Join(buildCodexArgs(opts, false, ""), " ")
 	case "agy":
 		if opts.Unrestricted {
-			return "agy --print - --print-timeout 30m --dangerously-skip-permissions"
+			return "agy --print <prompt> --print-timeout 30m --dangerously-skip-permissions"
 		}
-		return "agy --print - --print-timeout 30m --sandbox --dangerously-skip-permissions"
+		return "agy --print <prompt> --print-timeout 30m --sandbox"
 	case "aider", "ollama":
 		return "aider --message-file <prompt> --yes-always --no-auto-commits --no-dirty-commits --no-gitignore --edit-format diff"
 	default:
@@ -1114,14 +1114,13 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 	// Setup command for agy/codex/aider/ollama/ollama-codex.
 	var cmd *exec.Cmd
 	if runner == "agy" {
-		args := []string{"--print", "-", "--print-timeout", "30m"}
+		args := []string{"--print", prompt, "--print-timeout", "30m"}
 		if opts.Unrestricted {
 			args = append(args, "--dangerously-skip-permissions")
 		} else {
 			args = append(args, "--sandbox", "--dangerously-skip-permissions")
 		}
 		cmd = exec.CommandContext(ctx, "agy", args...)
-		cmd.Stdin = strings.NewReader(prompt)
 	} else if runner == "aider" || runner == "ollama" {
 		cleanupGitignore := setupTemporaryGitignore()
 		defer cleanupGitignore()
@@ -1592,14 +1591,13 @@ func runAiderOrOllama(ctx context.Context, runner string, agentID string, inputC
 }
 
 func runAgy(ctx context.Context, agentID string, inputContent string, opts RunOptions, ch chan tea.Msg, logOutFile *os.File) (int, error) {
-	args := []string{"--print", "-", "--print-timeout", "30m"}
+	args := []string{"--print", inputContent, "--print-timeout", "30m"}
 	if opts.Unrestricted {
 		args = append(args, "--dangerously-skip-permissions")
 	} else {
 		args = append(args, "--sandbox", "--dangerously-skip-permissions")
 	}
 	cmd := exec.CommandContext(ctx, "agy", args...)
-	cmd.Stdin = strings.NewReader(inputContent)
 
 	r, w := io.Pipe()
 	cmd.Stdout = w
