@@ -200,9 +200,9 @@ Rules:
 - Dependency graphs must be acyclic.
 - A missing dependency ID is a validation error for active or completed Briefings.
 - A missing dependency ID on an archived Briefing is a recoverable warning because archived records remain historical.
-- An active Briefing is not ready while any required active dependency is not completed.
-- Completed dependencies satisfy readiness.
-- Archived dependencies do not block readiness, but future validators should warn when active work depends on archived work.
+- An active Briefing is ready only when every dependency has `completed` status.
+- Completed dependencies satisfy readiness; dependencies in any other status block readiness.
+- An archived dependency is not completed, blocks Plan execution, and requires explicit Plan repair before its dependent Briefing can run. Validators warn when active work depends on archived work.
 - Ordering and dependencies are separate. `briefing_order` controls presentation; `depends_on` controls readiness.
 - If order places a dependent Briefing before an incomplete dependency, the data remains parseable but future validators should warn because the display order conflicts with readiness.
 
