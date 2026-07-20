@@ -6,7 +6,7 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/cmd/cyclestone/main.go",
+            "program": "${workspaceFolder}/cmd/cyclestone",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "args": []

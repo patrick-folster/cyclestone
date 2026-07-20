@@ -9,7 +9,7 @@
                 "build",
                 "-o",
                 "${workspaceFolder}/cyclestone",
-                "${workspaceFolder}/cmd/cyclestone/main.go"
+                "${workspaceFolder}/cmd/cyclestone"
             ],
             "group": {
                 "kind": "build",
