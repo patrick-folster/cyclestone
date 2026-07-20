@@ -5184,3 +5184,14 @@ func TestNormalizeMergedKeysPreservesValidSingleKeyLines(t *testing.T) {
 		t.Fatalf("normalized YAML failed to parse: %v", err)
 	}
 }
+
+func TestAgyRunnerDescriptionIncludesAddDir(t *testing.T) {
+	descSandbox := describeRunnerCommand("agy", RunOptions{Unrestricted: false})
+	if !strings.Contains(descSandbox, "agy --add-dir <root>") {
+		t.Fatalf("expected sandbox agy description to include --add-dir <root>, got %q", descSandbox)
+	}
+	descUnrestricted := describeRunnerCommand("agy", RunOptions{Unrestricted: true})
+	if !strings.Contains(descUnrestricted, "agy --add-dir <root>") {
+		t.Fatalf("expected unrestricted agy description to include --add-dir <root>, got %q", descUnrestricted)
+	}
+}

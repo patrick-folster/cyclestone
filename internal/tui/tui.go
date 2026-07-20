@@ -855,12 +855,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			finalID = fmt.Sprintf("%s-%s", m.CreateMilestone.NextID, slug)
 		}
 
-		// Try to scan for optimized slug and title from the generated file
+		var matchedFile string
 		milestonesDir := filepath.Join(".cyclestone", "milestones")
 		files, err := os.ReadDir(milestonesDir)
 		if err == nil {
 			prefix := m.CreateMilestone.NextID + "-"
-			var matchedFile string
 			for _, f := range files {
 				if !f.IsDir() && strings.HasPrefix(f.Name(), prefix) && strings.HasSuffix(f.Name(), ".md") {
 					matchedFile = f.Name()
@@ -900,6 +899,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		}
+
+		if matchedFile == "" {
+			m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error creating milestone: generator runner %s did not create milestone specification file in %s", m.CreateMilestone.RunnerType, milestonesDir)
+			return m, nil
 		}
 
 		// On success, add to config
