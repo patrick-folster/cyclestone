@@ -7,6 +7,10 @@ This project follows tagged releases in the form `vMAJOR.MINOR.PATCH`.
 ## Unreleased
 
 ### Added
+- Optional planning layer documentation: new `docs/planning-guide.md` covering the conceptual overview, terminology table, one-way dependency architecture diagram, CLI/TUI reference, step-by-step workflows, hierarchy visualization, archiving/deletion behavior, migration guidance, backward-compatibility guarantees, and troubleshooting for the Milestone Planner/Plan/Briefing layer.
+- `docs/architecture.md` now includes an explicit one-way dependency diagram and terminology table for the planning layer, with cross-links to the planning guide and data-model reference.
+- `docs/planning-data-models.md` now includes an enumerated backward-compatibility guarantee list and a troubleshooting summary.
+- `README.md` now points to the optional planning-layer documentation without changing the standalone Milestone onboarding flow.
 - `-version` / `--version` CLI flag to check the current version of the tool.
 - Root `AGENTS.md` support as the canonical current instruction source for agent prompts, replacing the older `.cyclestone/AI_CONTEXT.md` context file.
 - First-run setup can create an editable starter `AGENTS.md`, and runtime settings now support `agent_instructions.file`, `agent_instructions.propose_updates`, and `agent_instructions.auto_apply_updates`.

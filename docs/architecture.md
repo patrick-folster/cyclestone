@@ -29,7 +29,7 @@ Milestone -> Milestone Cycles
 
 The planning layer is an optional higher-level workflow and navigation layer above that core. It may organize future work, prepare Milestones, or show relationships in the TUI, but Milestones and Cycles do not require planning-layer data. Existing Milestone creation, execution, reporting, deletion, and archival flows continue to work with no Plan and no Briefing.
 
-The detailed planning persistence model is documented in [Planning Data Models](planning-data-models.md). That document defines the Plan and Briefing records, validation rules, status lifecycles, ordering, dependency behavior, optional Milestone provenance shape, manual CLI management commands, and migration constraints.
+The user-facing planning workflows (conceptual overview, step-by-step CLI/TUI workflows, troubleshooting, migration, and backward-compatibility guarantees) are documented in [Planning Guide](planning-guide.md). The detailed planning persistence model is documented in [Planning Data Models](planning-data-models.md). That document defines the Plan and Briefing records, validation rules, status lifecycles, ordering, dependency behavior, optional Milestone provenance shape, manual CLI management commands, and migration constraints.
 
 Manual CLI management is available with explicit `cyclestone plan ...` and `cyclestone briefing ...` commands. These commands load planning files and the compact milestone index before TUI startup, surface planning warnings, and validate before writing. Ordinary planning mutations do not run Milestones or mutate Milestone runtime artifacts. The explicit `briefing execute` command is the narrow bridge: it resolves or generates one ordinary Milestone, then hands that Milestone to the unchanged TUI preflight and `executor.ExecuteCycle` path.
 
@@ -46,6 +46,32 @@ Concept boundaries:
 - Milestone Cycle: one execution pass for a Milestone. Cycles belong to Milestones only, not to Plans or Briefings.
 
 Dependency direction is one-way: planning concepts may point to Milestones, but Milestone config, runtime state, executor paths, reports, and Cycles must not depend on Plans, Briefings, or Planner state. A missing, deleted, or archived Plan or Briefing must not invalidate a Milestone or any of its reports.
+
+```text
++-------------------+      depends on      +------------------+      depends on      +------------------+
+|  Planning Layer   |  --------------->   |  Milestone Layer |  --------------->   |   Cycle Engine   |
+| Planner/Plan/     |                      | milestone.yml /  |                      | executor.Execute |
+| Briefing (opt-in) |                      | milestones/*.md /|                      | reports / state  |
+| plans/*.yml       |                      | state.json       |                      | branches         |
++-------------------+                      +------------------+                      +------------------+
+        ^                                      ^
+        |  never                               |  never
+        |  depends on                          |  depends on
+        +--------------------------------------+
+                    REVERSE DIRECTION IS NEVER ALLOWED
+```
+
+Terminology:
+
+| Term | Meaning |
+| --- | --- |
+| Milestone Planner | Virtual UI/navigation root that presents Plans and standalone Milestones. No required persisted identity. |
+| Milestone Plan | Planning intent for related work. Groups Briefings; does not own Milestone execution state or reports. |
+| Milestone Briefing | Actionable preparation for possible Milestone work. May reference zero or one Milestone. |
+| Milestone | The independent execution unit: compact index entry, optional spec, runtime state, reports. Standalone or planned. |
+| Milestone Cycle | One execution pass for a Milestone. Belongs to Milestones only, never to Plans or Briefings. |
+| Standalone Milestone | A Milestone with no Plan or Briefing relationship. Fully first-class; requires no planning data. |
+| Provenance | Optional advisory metadata indicating a Milestone came from a Briefing. Advisory and backward-compatible; current execution ignores it. |
 
 Relationship cardinalities:
 

@@ -2,6 +2,8 @@
 
 This document defines Cyclestone's optional planning-layer persistence model. Planning remains optional and does not migrate or replace ordinary Milestone runtime data. Explicit planning commands may generate or orchestrate ordinary Milestones through the existing TUI and cycle engine.
 
+User-facing workflows, CLI/TUI reference, troubleshooting, migration, and backward-compatibility guarantees are documented in [Planning Guide](planning-guide.md). This document is the persistence schema and validation reference.
+
 The current execution model remains independent:
 
 ```text
@@ -310,6 +312,26 @@ Existing data remains readable without modification:
 - Cycle artifacts remain under `.cyclestone/reports/<milestone-id>/`.
 
 Planning files may be added, removed, archived, or malformed without changing Milestone execution validity. Future planning features should isolate planning validation failures to planning views and planning commands.
+
+### Backward Compatibility Guarantees
+
+- `.cyclestone/milestone.yml` remains the compact Milestone index and remains valid without any Plan or Briefing data.
+- `.cyclestone/milestones/*.md` remains the long-form Milestone spec location and remains valid without planning provenance.
+- `.cyclestone/state.json` remains keyed by Milestone runtime progress and remains valid without planning state.
+- `.cyclestone/reports/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added.
+- `.cyclestone/plans/*.yml` is optional and additive. Adding planning files never rewrites Milestone specs, compact index entries, state, reports, temp files, or branch snapshots.
+- Existing projects require no migration for the optional planning layer.
+- Standalone and generated Milestones function as fully independent first-class entities regardless of source Plan or Briefing archival, deletion, or missing status.
+
+### Troubleshooting
+
+See [Planning Guide](planning-guide.md#troubleshooting) for the full troubleshooting workflow. Summary:
+
+- `milestone: missing <id>` warnings: a Briefing's `milestone_id` is not in the compact index. Warning, not an error; unrelated Briefings/Milestones are not blocked. Repair with `briefing link --replace-link`, `briefing unlink`, or by re-creating the Milestone. Repair mutates only the containing Plan file.
+- Dangling Briefing links: preserved and surfaced as warnings. `plan start`/`plan resume` treat them as actionable stops and never auto-create or auto-relink.
+- Stale provenance: a Milestone's optional `source` points at an archived/deleted Plan or Briefing. Provenance is advisory; current execution ignores it. No repair required for the Milestone to remain executable.
+- Cross-Plan duplicate links: `briefing link` blocks active/completed duplicate links across Plans; detail views surface them for awareness. Reconcile with `briefing unlink` or `briefing link --replace-link`.
+- Planning warnings never invalidate Milestone specs, compact index entries, state, reports, temp files, or branch snapshots, and never block unrelated Briefing or Milestone operations.
 
 ## Examples
 

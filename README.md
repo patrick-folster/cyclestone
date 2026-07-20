@@ -264,6 +264,14 @@ Commit milestone specs only when you want the team to share them:
 
 See [docs/architecture.md](docs/architecture.md) for the milestone flow, agents, report files, branch behavior, and runner boundary model.
 
+### Optional Planning Layer
+
+Cyclestone also offers an **optional** planning layer — Milestone Planner, Milestone Plans, and Milestone Briefings — that sits above the core Milestone -> Cycle execution model. It is opt-in: standalone Milestone workflows continue to work with no Plan and no Briefing, and existing repositories require no migration.
+
+- [Planning Guide](docs/planning-guide.md) — conceptual overview, terminology, step-by-step CLI/TUI workflows, troubleshooting, and migration guidance.
+- [Planning Data Models](docs/planning-data-models.md) — Plan/Briefing persistence schema, validation rules, status lifecycles, and data examples.
+- [Architecture — Planning Layer](docs/architecture.md#planning-layer) — one-way dependency direction and concept boundaries.
+
 ### Release Checklist
 
 See [docs/release.md](docs/release.md) for tag format, GoReleaser output, and checksum verification.
