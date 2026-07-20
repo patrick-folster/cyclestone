@@ -41,6 +41,9 @@ const (
 	ScreenSettings
 	ScreenAgentGroups
 	ScreenSetup
+	ScreenPlans
+	ScreenPlanDetails
+	ScreenBriefingDetails
 )
 
 // ChangeScreenMsg is sent to switch views.
@@ -88,6 +91,9 @@ type RootModel struct {
 	Settings          SettingsModel
 	AgentGroups       AgentGroupsModel
 	Setup             SetupWizardModel
+	Plans             PlansModel
+	PlanDetails       PlanDetailsModel
+	BriefingDetails   BriefingDetailsModel
 	Width             int
 	Height            int
 	Config            *config.Config
@@ -124,6 +130,17 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 	styles := DefaultStyles(disableBold, disableRoundedBorders)
 
 	dashboard := NewDashboardModel(cfg, state, styles)
+	if configPath != "" {
+		plansDir := filepath.Join(filepath.Dir(configPath), "plans")
+		var msIDs []string
+		if cfg != nil {
+			for _, ms := range cfg.Milestones {
+				msIDs = append(msIDs, ms.ID)
+			}
+		}
+		planning, _ := config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs(msIDs))
+		dashboard.Planning = planning
+	}
 	details := NewDetailsModel(styles)
 	runner := NewRunnerModel(styles)
 	createMilestone := NewCreateMilestoneModel(styles)
@@ -132,6 +149,25 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 	settings := NewSettingsModel(styles)
 	agentGroups := NewAgentGroupsModel(styles)
 	setup := NewSetupWizardModel(configPath, statePath, styles)
+
+	plansDir := ""
+	if configPath != "" {
+		plansDir = filepath.Join(filepath.Dir(configPath), "plans")
+	}
+	var msIDs []string
+	if cfg != nil {
+		for _, ms := range cfg.Milestones {
+			msIDs = append(msIDs, ms.ID)
+		}
+	}
+	var planning *config.PlanningState
+	if plansDir != "" {
+		planning, _ = config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs(msIDs))
+	}
+
+	plansModel := NewPlansModel(cfg, state, planning, styles)
+	planDetailsModel := NewPlanDetailsModel(cfg, state, styles)
+	briefingDetailsModel := NewBriefingDetailsModel(styles)
 
 	return RootModel{
 		ActiveScreen:    ScreenDashboard,
@@ -143,6 +179,9 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 		Settings:        settings,
 		AgentGroups:     agentGroups,
 		Setup:           setup,
+		Plans:           plansModel,
+		PlanDetails:     planDetailsModel,
+		BriefingDetails: briefingDetailsModel,
 		Config:          cfg,
 		State:           state,
 		ConfigPath:      configPath,
@@ -189,6 +228,9 @@ func (m RootModel) Init() tea.Cmd {
 		m.Settings.Init(),
 		m.AgentGroups.Init(),
 		m.Setup.Init(),
+		m.Plans.Init(),
+		m.PlanDetails.Init(),
+		m.BriefingDetails.Init(),
 	}
 	if m.PendingCycle != nil {
 		req := *m.PendingCycle
@@ -337,6 +379,13 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		m.Setup, cmd = m.Setup.Update(msg)
 		cmds = append(cmds, cmd)
+
+		m.Plans, cmd = m.Plans.Update(msg)
+		cmds = append(cmds, cmd)
+		m.PlanDetails, cmd = m.PlanDetails.Update(msg)
+		cmds = append(cmds, cmd)
+		m.BriefingDetails, cmd = m.BriefingDetails.Update(msg)
+		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 
 	case ShowDeleteMilestoneMsg:
@@ -432,6 +481,62 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Setup.Width = m.Width
 			m.Setup.Height = m.Height
 			m.Setup.resizeInputs()
+		} else if msg.Screen == ScreenPlans {
+			m.Plans.Config = m.Config
+			m.Plans.State = m.State
+			if m.ConfigPath != "" {
+				plansDir := filepath.Join(filepath.Dir(m.ConfigPath), "plans")
+				var msIDs []string
+				if m.Config != nil {
+					for _, ms := range m.Config.Milestones {
+						msIDs = append(msIDs, ms.ID)
+					}
+				}
+				planning, _ := config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs(msIDs))
+				m.Plans.Planning = planning
+			}
+			m.Plans.Width = m.Width
+			m.Plans.Height = m.Height
+			m.Plans.UpdateTableRows()
+		} else if msg.Screen == ScreenPlanDetails {
+			if plan, ok := msg.Data.(config.Plan); ok {
+				m.PlanDetails.Plan = plan
+				m.PlanDetails.Config = m.Config
+				m.PlanDetails.State = m.State
+				m.PlanDetails.Width = m.Width
+				m.PlanDetails.Height = m.Height
+				m.PlanDetails.UpdateTableRows()
+			}
+		} else if msg.Screen == ScreenBriefingDetails {
+			if data, ok := msg.Data.(BriefingDetailData); ok {
+				m.BriefingDetails.Plan = data.Plan
+				m.BriefingDetails.Briefing = data.Briefing
+				m.BriefingDetails.Width = m.Width
+				m.BriefingDetails.Height = m.Height
+				m.BriefingDetails.ScrollOffset = 0
+				m.BriefingDetails.LinkedMS = nil
+				m.BriefingDetails.History = nil
+				if data.Briefing.MilestoneID != "" && m.Config != nil {
+					for _, ms := range m.Config.Milestones {
+						if ms.ID == data.Briefing.MilestoneID {
+							msCopy := ms
+							if st, ok := m.State.MilestoneStatuses[ms.ID]; ok {
+								msCopy.Status = st
+							}
+							if cyc, ok := m.State.MilestoneCycles[ms.ID]; ok {
+								msCopy.Cycles = cyc
+							}
+							m.BriefingDetails.LinkedMS = &msCopy
+							break
+						}
+					}
+					if m.State != nil {
+						if h, ok := m.State.History[data.Briefing.MilestoneID]; ok {
+							m.BriefingDetails.History = h
+						}
+					}
+				}
+			}
 		}
 		return m, nil
 
@@ -1052,6 +1157,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		setupModel, cmd = m.Setup.Update(msg)
 		m.Setup = setupModel
 		cmds = append(cmds, cmd)
+	case ScreenPlans:
+		var plansModel PlansModel
+		plansModel, cmd = m.Plans.Update(msg)
+		m.Plans = plansModel
+		cmds = append(cmds, cmd)
+	case ScreenPlanDetails:
+		var planDetModel PlanDetailsModel
+		planDetModel, cmd = m.PlanDetails.Update(msg)
+		m.PlanDetails = planDetModel
+		cmds = append(cmds, cmd)
+	case ScreenBriefingDetails:
+		var briefingDetModel BriefingDetailsModel
+		briefingDetModel, cmd = m.BriefingDetails.Update(msg)
+		m.BriefingDetails = briefingDetModel
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1084,6 +1204,12 @@ func (m RootModel) View() string {
 		activeView = m.AgentGroups.View()
 	case ScreenSetup:
 		activeView = m.Setup.View()
+	case ScreenPlans:
+		activeView = m.Plans.View()
+	case ScreenPlanDetails:
+		activeView = m.PlanDetails.View()
+	case ScreenBriefingDetails:
+		activeView = m.BriefingDetails.View()
 	default:
 		activeView = "Unknown Screen"
 	}
@@ -1189,6 +1315,12 @@ func screenName(screen Screen) string {
 		return "AGENT GROUPS"
 	case ScreenSetup:
 		return "SETUP"
+	case ScreenPlans:
+		return "PLANS"
+	case ScreenPlanDetails:
+		return "PLAN DETAILS"
+	case ScreenBriefingDetails:
+		return "BRIEFING DETAILS"
 	default:
 		return "UNKNOWN"
 	}
@@ -1197,6 +1329,17 @@ func screenName(screen Screen) string {
 // refreshUI updates tables and sub-model structures on state change.
 func (m *RootModel) refreshUI(milestoneID string) {
 	m.Dashboard.State = m.State
+	if m.ConfigPath != "" {
+		plansDir := filepath.Join(filepath.Dir(m.ConfigPath), "plans")
+		var msIDs []string
+		if m.Config != nil {
+			for _, ms := range m.Config.Milestones {
+				msIDs = append(msIDs, ms.ID)
+			}
+		}
+		planning, _ := config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs(msIDs))
+		m.Dashboard.Planning = planning
+	}
 	m.Dashboard.updateTableRows()
 
 	if m.ActiveScreen == ScreenDetails && m.Details.Milestone.ID == milestoneID {

@@ -13,12 +13,14 @@ import (
 
 // DashboardModel manages the main dashboard table displaying all milestones.
 type DashboardModel struct {
-	Table  table.Model
-	Config *config.Config
-	State  *config.State
-	Width  int
-	Height int
-	Styles Styles
+	Table           table.Model
+	Config          *config.Config
+	State           *config.State
+	Planning        *config.PlanningState
+	ShowPlannerTree bool
+	Width           int
+	Height          int
+	Styles          Styles
 }
 
 // NewDashboardModel creates and returns a new DashboardModel with initial columns.
@@ -113,6 +115,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 		helpCmds := []string{
 			"↑/↓ Navigate",
 			"Enter Details",
+			"p Plans",
 			"c Create",
 			"n Log Cycle",
 			"u Update AGENTS",
@@ -197,6 +200,12 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "p":
+			return m, func() tea.Msg {
+				return ChangeScreenMsg{
+					Screen: ScreenPlans,
+				}
+			}
 		case "enter":
 			// Fetch the selected milestone and switch to details screen
 			selectedRow := m.Table.SelectedRow()
@@ -360,9 +369,14 @@ func (m *DashboardModel) SelectMilestone(id string) {
 
 // View outputs the rendered table string with a help/commands guide.
 func (m DashboardModel) View() string {
+	if m.ShowPlannerTree {
+		return m.viewPlannerTree()
+	}
+
 	helpCmds := []string{
 		"↑/↓ Navigate",
 		"Enter Details",
+		"p Plans",
 		"c Create",
 		"n Log Cycle",
 		"u Update AGENTS",
@@ -396,6 +410,44 @@ func (m DashboardModel) View() string {
 	elements = append(elements, tableStr, helpText)
 
 	return lipgloss.JoinVertical(lipgloss.Left, elements...)
+}
+
+func (m DashboardModel) viewPlannerTree() string {
+	helpCmds := []string{
+		"p Back to Milestones",
+		"q Quit",
+		"Ctrl+C Quit",
+	}
+	helpWidth := m.Width - 4
+	if helpWidth < 10 {
+		helpWidth = 10
+	}
+	helpText := renderCommandHelp(m.Styles, helpCmds, helpWidth)
+
+	var plans []config.Plan
+	if m.Planning != nil {
+		plans = m.Planning.Plans
+	}
+
+	var milestones []config.Milestone
+	if m.Config != nil {
+		milestones = m.Config.Milestones
+	}
+
+	opts := TreeOptions{
+		MaxWidth: m.Width - 4,
+		Styled:   true,
+		Styles:   m.Styles,
+	}
+
+	treeStr := RenderTree(plans, milestones, m.State, opts)
+	if m.Height >= 20 {
+		treeStr = m.Styles.ActiveBorder.
+			Width(m.Width - 4).
+			Render(treeStr)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, m.Styles.SectionTitle.Render("Milestone Planner Hierarchy"), treeStr, helpText)
 }
 
 func (m DashboardModel) summaryCards() string {

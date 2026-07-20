@@ -228,6 +228,8 @@ func runReadOnlyCommand(args []string, configPath string, stdout, stderr io.Writ
 
 func runPlanningCommand(args []string, configPath string, stdout, stderr io.Writer) int {
 	switch {
+	case len(args) >= 2 && args[0] == "plan" && args[1] == "tree":
+		return runPlanTree(args[2:], configPath, stdout, stderr)
 	case len(args) == 2 && args[0] == "plan" && args[1] == "list":
 		return runPlanList(configPath, stdout, stderr)
 	case len(args) == 3 && args[0] == "plan" && args[1] == "show":
@@ -294,6 +296,52 @@ func runPlanShow(configPath, planID string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	printPlan(stdout, plan, milestoneIDs, buildMilestoneRelationIndex(state))
+	return commandStatusFromValidation(validation)
+}
+
+func runPlanTree(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("plan tree", stderr)
+	ascii := flags.Bool("ascii", false, "Use ASCII tree branch glyphs")
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+
+	var planID string
+	if flags.NArg() > 0 {
+		planID = flags.Arg(0)
+	}
+
+	state, validation, _, err := loadPlanningForCommand(configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	printPlanningMessages(stderr, validation)
+
+	if planID != "" {
+		if _, ok := findPlan(state, planID); !ok {
+			fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
+			return 1
+		}
+	}
+
+	var milestones []config.Milestone
+	if cfg, loadErr := config.LoadConfig(configPath); loadErr == nil && cfg != nil {
+		milestones = cfg.Milestones
+	}
+
+	statePath := filepath.Join(filepath.Dir(configPath), "state.json")
+	st, _ := config.LoadState(statePath)
+
+	opts := tui.TreeOptions{
+		PlanID:   planID,
+		UseASCII: *ascii,
+		Styled:   false,
+	}
+
+	out := tui.RenderTree(state.Plans, milestones, st, opts)
+	fmt.Fprint(stdout, out)
+
 	return commandStatusFromValidation(validation)
 }
 

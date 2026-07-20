@@ -124,6 +124,81 @@ func TestPlanListReadOnlyOutput(t *testing.T) {
 	assertPathMissing(t, filepath.Join(root, ".cyclestone", "plans", "missing-milestone.yml"))
 }
 
+func TestPlanTreeCommand(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+	)
+
+	t.Run("all plans tree", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := runReadOnlyCommand([]string{"plan", "tree"}, configPath, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("plan tree returned %d, stderr:\n%s", code, stderr.String())
+		}
+		out := stdout.String()
+		for _, want := range []string{
+			"Milestone Planner",
+			"Plan: delivery-plan - Delivery Plan",
+			"Briefing: no-milestone - No Milestone",
+			"[unlinked]",
+			"Briefing: linked-existing - Linked Existing",
+			"[linked: existing-milestone]",
+			"Milestone: existing-milestone - Existing Milestone",
+			"Briefing: blocked-missing - Blocked Missing",
+			"[missing: missing-milestone]",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("expected plan tree output to contain %q, got:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "standalone-milestone") {
+			t.Fatalf("expected standalone milestone to be excluded from Planner tree, got:\n%s", out)
+		}
+	})
+
+	t.Run("specific plan tree", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := runReadOnlyCommand([]string{"plan", "tree", "delivery-plan"}, configPath, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("plan tree delivery-plan returned %d, stderr:\n%s", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "Plan: delivery-plan") {
+			t.Fatalf("expected specific plan tree output, got:\n%s", stdout.String())
+		}
+	})
+
+	t.Run("non-existent plan tree", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := runReadOnlyCommand([]string{"plan", "tree", "non-existent-plan"}, configPath, &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("expected code 1 for non-existent plan, got %d", code)
+		}
+		if !strings.Contains(stderr.String(), "Plan \"non-existent-plan\" not found") {
+			t.Fatalf("expected error message for non-existent plan, got stderr:\n%s", stderr.String())
+		}
+	})
+
+	t.Run("ascii flag tree", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := runReadOnlyCommand([]string{"plan", "tree", "--ascii"}, configPath, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("plan tree --ascii returned %d, stderr:\n%s", code, stderr.String())
+		}
+		out := stdout.String()
+		if !strings.Contains(out, "|-- ") && !strings.Contains(out, "\\-- ") {
+			t.Fatalf("expected ASCII branch glyphs, got:\n%s", out)
+		}
+	})
+
+	assertFilesUnchanged(t, before)
+}
+
 func TestPlanListEmptyPlanningDirectorySucceeds(t *testing.T) {
 	t.Parallel()
 
