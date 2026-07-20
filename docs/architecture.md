@@ -19,6 +19,61 @@ Cyclestone is a local-first Go CLI/TUI for running milestone-oriented agent cycl
 13. Runtime state is updated in `.cyclestone/state.json`.
 14. Repository-wide and milestone-scoped `AGENTS.md` update workflows reuse the runner/preflight screens but execute a single Agent Instructions Updater phase that produces a human-reviewable proposal instead of a normal milestone cycle.
 
+## Planning Layer
+
+Cyclestone's execution core remains the existing hierarchy:
+
+```text
+Milestone -> Milestone Cycles
+```
+
+The planning layer is an optional higher-level workflow and navigation layer above that core. It may organize future work, prepare Milestones, or show relationships in the TUI, but Milestones and Cycles do not require planning-layer data. Existing Milestone creation, execution, reporting, deletion, and archival flows continue to work with no Plan and no Briefing.
+
+The detailed planning persistence model is documented in [Planning Data Models](planning-data-models.md). That document defines the future Plan and Briefing records, validation rules, status lifecycles, ordering, dependency behavior, optional Milestone provenance shape, and migration constraints.
+
+Concept boundaries:
+
+- Milestone Planner: a virtual UI/navigation root that presents Plans and standalone Milestones. It has no required persisted identity unless a future feature introduces one explicitly.
+- Milestone Plan: planning intent for related work. A Plan can group Briefings and help organize navigation, but it does not own Milestone execution state or reports.
+- Milestone Briefing: actionable preparation for possible Milestone work. A Briefing may exist without a Milestone, may later create or reference one Milestone, and may not own that Milestone's lifecycle after creation.
+- Milestone: the independent execution unit backed by the compact index entry, optional long-form spec, runtime state, and reports. A Milestone can be standalone or can carry optional provenance indicating that it came from a Briefing.
+- Milestone Cycle: one execution pass for a Milestone. Cycles belong to Milestones only, not to Plans or Briefings.
+
+Dependency direction is one-way: planning concepts may point to Milestones, but Milestone config, runtime state, executor paths, reports, and Cycles must not depend on Plans, Briefings, or Planner state. A missing, deleted, or archived Plan or Briefing must not invalidate a Milestone or any of its reports.
+
+Relationship cardinalities:
+
+| Source | Relationship |
+| --- | --- |
+| Milestone Planner | Presents zero or more Plans and zero or more standalone Milestones. |
+| Milestone Plan | Has zero or more Briefings. |
+| Milestone Briefing | References zero or one Milestone. |
+| Milestone | Has zero or one source Briefing provenance reference. |
+| Milestone | Has zero or more Milestone Cycles. |
+| Standalone Milestone | Has no Plan or Briefing relationship. |
+
+Planning lifecycle rules:
+
+- Creating or running a standalone Milestone requires no Plan and no Briefing.
+- A Briefing can remain preparatory only, can later create a Milestone, or can later reference one existing Milestone.
+- Once a Milestone exists, its lifecycle is controlled by Milestone flows. Removing or archiving the source Briefing must leave the Milestone valid.
+- Removing or archiving a Plan affects only planning organization. It must not automatically delete Milestones, Cycles, `.cyclestone/reports` contents, runtime state history, or branch/report snapshots.
+- Milestone provenance is optional metadata only. Documentation examples may use illustrative field names, but no planning-layer schema is required by the current architecture.
+
+Backward compatibility rules:
+
+- `.cyclestone/milestone.yml` remains the compact Milestone index and remains valid without any Plan or Briefing data.
+- `.cyclestone/milestones/*.md` remains the long-form Milestone spec location and remains valid without planning provenance.
+- `.cyclestone/state.json` remains keyed by Milestone runtime progress and remains valid without planning state.
+- `.cyclestone/reports/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added elsewhere in the future.
+- Existing projects require no migration for the optional planning layer.
+
+Examples:
+
+- Standalone Milestone: a user creates `0002-fix-runner-status` directly from the TUI. It has an index entry, optional spec, state history, and reports, with no Plan or Briefing.
+- Planned Milestone: a Plan named "Improve onboarding" contains a Briefing named "First-run setup review". The Briefing later creates or references Milestone `0003-setup-validation`; after that, the Milestone runs and reports independently.
+- Optional hierarchy: `Milestone Planner -> Plan -> Briefing -> Milestone -> Cycles`. The only required execution hierarchy remains `Milestone -> Milestone Cycles`.
+
 ## Agents
 
 Default agents are embedded from `resources/agents/`.
@@ -58,6 +113,7 @@ Project config:
 
 - `.cyclestone/milestone.yml`: compact milestone index.
 - `.cyclestone/milestones/*.md`: milestone specs.
+- `.cyclestone/plans/*.yml`: future optional planning-layer Plan files, when planning persistence is implemented.
 - `.cyclestone/settings.yml`: local project runner/settings overrides.
 - `AGENTS.md`: optional concise current operating instructions loaded into agent prompts when present.
 - `.cyclestone/DECISIONS.md`: chronological durable decision log kept separate from current instructions.
