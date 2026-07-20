@@ -1,0 +1,488 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadPlanningStateEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	state, result := LoadPlanningState(filepath.Join(tmpDir, "plans"))
+	if result.HasErrors() || result.HasWarnings() {
+		t.Fatalf("expected no validation messages for missing plans dir, got %+v", result.Messages)
+	}
+	if len(state.Plans) != 0 {
+		t.Fatalf("expected empty planning state, got %+v", state.Plans)
+	}
+
+	plansDir := filepath.Join(tmpDir, "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatalf("failed to create plans dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(plansDir, "ignored.yaml"), []byte("not: loaded\n"), 0644); err != nil {
+		t.Fatalf("failed to write ignored file: %v", err)
+	}
+	state, result = LoadPlanningState(plansDir)
+	if result.HasErrors() || len(state.Plans) != 0 {
+		t.Fatalf("expected empty state for no *.yml files, state=%+v result=%+v", state, result)
+	}
+}
+
+func TestPlanAndBriefingRoundTrip(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	plan := representativePlan()
+
+	result, err := SavePlan(plansDir, plan, WithKnownMilestoneIDs([]string{"0003-persist-planning-layer"}))
+	if err != nil {
+		t.Fatalf("SavePlan failed: %v result=%+v", err, result)
+	}
+
+	state, result := LoadPlanningState(plansDir, WithKnownMilestoneIDs([]string{"0003-persist-planning-layer"}))
+	if result.HasErrors() || result.HasWarnings() {
+		t.Fatalf("expected clean reload, got %+v", result.Messages)
+	}
+	if len(state.Plans) != 1 {
+		t.Fatalf("expected one plan, got %d", len(state.Plans))
+	}
+	got := state.Plans[0]
+	if got.SchemaVersion != PlanningSchemaVersion || got.ID != plan.ID || got.Title != plan.Title || got.Objective != plan.Objective || got.Status != plan.Status {
+		t.Fatalf("plan identity fields did not round trip: %+v", got)
+	}
+	if got.CreatedAt != plan.CreatedAt || got.CreatedBy != plan.CreatedBy || got.UpdatedAt != plan.UpdatedAt || got.UpdatedBy != plan.UpdatedBy {
+		t.Fatalf("plan metadata did not round trip: %+v", got)
+	}
+	if strings.Join(got.Constraints, "|") != strings.Join(plan.Constraints, "|") {
+		t.Fatalf("plan constraints did not round trip: %+v", got.Constraints)
+	}
+	if strings.Join(got.BriefingOrder, "|") != strings.Join(plan.BriefingOrder, "|") {
+		t.Fatalf("briefing order did not round trip: %+v", got.BriefingOrder)
+	}
+	if len(got.Briefings) != 3 {
+		t.Fatalf("expected three briefings, got %d", len(got.Briefings))
+	}
+	byID := map[string]Briefing{}
+	for _, briefing := range got.Briefings {
+		byID[briefing.ID] = briefing
+	}
+	active := byID["setup-copy-review"]
+	if active.Title == "" || active.Objective == "" || active.Intent == "" || active.CompletionSignal == "" {
+		t.Fatalf("required briefing text fields did not round trip: %+v", active)
+	}
+	if active.Status != "active" || active.CreatedAt != "2026-07-20T10:15:00Z" || active.UpdatedBy != "patrick" {
+		t.Fatalf("active briefing metadata did not round trip: %+v", active)
+	}
+	if strings.Join(active.Constraints, "|") != "Do not change runner detection behavior." {
+		t.Fatalf("briefing constraints did not round trip: %+v", active.Constraints)
+	}
+	completed := byID["persist-plan-files"]
+	if completed.Status != "completed" || strings.Join(completed.DependsOn, "|") != "setup-copy-review" || completed.MilestoneID != "0003-persist-planning-layer" {
+		t.Fatalf("optional briefing fields did not round trip: %+v", completed)
+	}
+	archived := byID["archived-note"]
+	if archived.Status != "archived" {
+		t.Fatalf("expected archived briefing to remain parseable, got %+v", archived)
+	}
+}
+
+func TestLoadPlanningStateInvalidFilesAreScoped(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatalf("failed to create plans dir: %v", err)
+	}
+	writeFile(t, filepath.Join(plansDir, "valid.yml"), validPlanYAML("valid-plan"))
+	writeFile(t, filepath.Join(plansDir, "malformed.yml"), "schema_version: 1\nid: [broken\n")
+	writeFile(t, filepath.Join(plansDir, "missing-fields.yml"), `id: Bad_ID
+title: ""
+objective: Missing fields
+status: waiting
+created_at: not-a-time
+updated_at: "2026-07-20T10:00:00Z"
+briefing_order:
+  - missing
+briefings: []
+`)
+	writeFile(t, filepath.Join(plansDir, "duplicate-a.yml"), validPlanYAML("duplicate-plan"))
+	writeFile(t, filepath.Join(plansDir, "duplicate-b.yml"), validPlanYAML("duplicate-plan"))
+	writeFile(t, filepath.Join(plansDir, "invalid-briefings.yml"), `schema_version: 1
+id: invalid-briefings
+title: Invalid Briefings
+objective: Exercise validation errors
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - first
+  - first
+  - missing
+briefings:
+  - id: first
+    title: First
+    objective: First objective
+    intent: First intent
+    status: active
+    depends_on:
+      - second
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+  - id: first
+    title: Duplicate
+    objective: Duplicate objective
+    intent: Duplicate intent
+    status: completed
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+  - id: second
+    title: Second
+    objective: Second objective
+    intent: Second intent
+    status: active
+    depends_on:
+      - first
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`)
+
+	state, result := LoadPlanningState(plansDir)
+	if !result.HasErrors() {
+		t.Fatalf("expected validation errors")
+	}
+	if len(state.Plans) != 2 {
+		t.Fatalf("expected valid non-duplicate plans to load, got %d: %+v", len(state.Plans), state.Plans)
+	}
+	messages := planningMessagesText(result)
+	for _, want := range []string{
+		"malformed YAML",
+		"schema_version",
+		"Plan ID",
+		"invalid status",
+		"created_at must be RFC3339",
+		"duplicate Plan ID",
+		"duplicate Briefing ID",
+		"duplicate Briefing ID \"first\" in briefing_order",
+		"briefing_order references missing Briefing \"missing\"",
+		"dependency cycle",
+	} {
+		if !strings.Contains(messages, want) {
+			t.Fatalf("expected validation messages to contain %q, got:\n%s", want, messages)
+		}
+	}
+}
+
+func TestPlanningWarningsForDanglingOptionalReferences(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatalf("failed to create plans dir: %v", err)
+	}
+	writeFile(t, filepath.Join(plansDir, "references.yml"), `schema_version: 1
+id: references
+title: References
+objective: Exercise warnings
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - active-briefing
+briefings:
+  - id: active-briefing
+    title: Active Briefing
+    objective: Active objective
+    intent: Active intent
+    status: active
+    milestone_id: missing-milestone
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+  - id: archived-briefing
+    title: Archived Briefing
+    objective: Archived objective
+    intent: Archived intent
+    status: archived
+    depends_on:
+      - missing-archived-dependency
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`)
+
+	state, result := LoadPlanningState(
+		plansDir,
+		WithKnownMilestoneIDs([]string{"existing-milestone"}),
+		WithMilestoneSourceReferences([]MilestoneSourceReference{
+			{MilestoneID: "generated-milestone", Type: "briefing", PlanID: "references", BriefingID: "deleted-briefing"},
+			{MilestoneID: "orphan-milestone", Type: "briefing", PlanID: "deleted-plan", BriefingID: "anything"},
+		}),
+	)
+	if result.HasErrors() {
+		t.Fatalf("expected warnings only, got %+v", result.Messages)
+	}
+	if !result.HasWarnings() || len(result.UnresolvedReferences) != 3 {
+		t.Fatalf("expected dangling references and archived dependency warnings, result=%+v", result)
+	}
+	if len(state.Plans) != 1 || len(state.Plans[0].Briefings) != 2 {
+		t.Fatalf("expected archived briefing to remain addressable, state=%+v", state)
+	}
+	messages := planningMessagesText(result)
+	for _, want := range []string{
+		"references missing Milestone",
+		"depends on missing Briefing",
+		"references missing source Briefing",
+		"references missing source Plan",
+	} {
+		if !strings.Contains(messages, want) {
+			t.Fatalf("expected warning %q, got:\n%s", want, messages)
+		}
+	}
+}
+
+func TestPlanningErrorForMalformedBriefingMilestoneID(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatalf("failed to create plans dir: %v", err)
+	}
+	writeFile(t, filepath.Join(plansDir, "malformed-reference.yml"), `schema_version: 1
+id: malformed-reference
+title: Malformed Reference
+objective: Exercise malformed optional milestone IDs
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - active-briefing
+briefings:
+  - id: active-briefing
+    title: Active Briefing
+    objective: Active objective
+    intent: Active intent
+    status: active
+    milestone_id: Bad_ID
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`)
+
+	state, result := LoadPlanningState(plansDir, WithKnownMilestoneIDs([]string{"existing-milestone"}))
+	if !result.HasErrors() {
+		t.Fatalf("expected malformed milestone_id to be a validation error, got %+v", result.Messages)
+	}
+	if len(state.Plans) != 0 {
+		t.Fatalf("expected invalid Plan file to be excluded, got %+v", state.Plans)
+	}
+	if len(result.UnresolvedReferences) != 0 {
+		t.Fatalf("malformed milestone_id should not be reported as an unresolved reference: %+v", result.UnresolvedReferences)
+	}
+	messages := planningMessagesText(result)
+	for _, want := range []string{
+		"briefings.active-briefing.milestone_id",
+		"Milestone ID must use lowercase ASCII letters, numbers, and hyphens",
+	} {
+		if !strings.Contains(messages, want) {
+			t.Fatalf("expected validation messages to contain %q, got:\n%s", want, messages)
+		}
+	}
+}
+
+func TestPlanningSaveDoesNotRewriteMilestoneStorage(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	statePath := filepath.Join(tmpDir, "state.json")
+	specPath := filepath.Join(tmpDir, "milestones", "standalone.md")
+	reportPath := filepath.Join(tmpDir, "reports", "standalone", "summary.md")
+	writeFile(t, configPath, `milestones:
+  - id: standalone
+    title: Standalone
+    spec_path: milestones/standalone.md
+    source:
+      type: briefing
+      plan_id: deleted-plan
+      briefing_id: deleted-briefing
+`)
+	writeFile(t, specPath, "# Milestone Spec: standalone - Standalone\n\n## Goal\nStay independent.\n")
+	writeFile(t, statePath, `{"active_milestone_id":"standalone","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
+	writeFile(t, reportPath, "existing report\n")
+
+	before := readFiles(t, configPath, statePath, specPath, reportPath)
+	if _, err := SavePlan(filepath.Join(tmpDir, "plans"), representativePlan(), WithKnownMilestoneIDs([]string{"0003-persist-planning-layer"})); err != nil {
+		t.Fatalf("SavePlan failed: %v", err)
+	}
+	after := readFiles(t, configPath, statePath, specPath, reportPath)
+	for path, beforeContent := range before {
+		if after[path] != beforeContent {
+			t.Fatalf("expected %s to remain unchanged", path)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "plans", "onboarding-improvements.yml")); err != nil {
+		t.Fatalf("expected plan file to be written: %v", err)
+	}
+}
+
+func TestMilestoneStorageIndependentFromPlanning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	statePath := filepath.Join(tmpDir, "state.json")
+	writeFile(t, configPath, "milestones:\n  - id: standalone\n    title: Standalone\n    spec_path: milestones/standalone.md\n")
+	writeFile(t, filepath.Join(tmpDir, "milestones", "standalone.md"), "# Milestone Spec: standalone - Standalone\n\n## Goal\nHydrated.\n\n## Acceptance Criteria\n- [ ] Works\n")
+	writeFile(t, filepath.Join(tmpDir, "plans", "broken.yml"), "schema_version: [broken\n")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig should ignore planning files: %v", err)
+	}
+	if len(cfg.Milestones) != 1 || cfg.Milestones[0].Goal != "Hydrated." {
+		t.Fatalf("expected standalone milestone to load and hydrate, got %+v", cfg.Milestones)
+	}
+
+	if err := AddMilestone(configPath, Milestone{ID: "second", Title: "Second"}); err != nil {
+		t.Fatalf("AddMilestone should not require planning: %v", err)
+	}
+	if _, err := MigrateMilestoneStorage(configPath, statePath); err != nil {
+		t.Fatalf("MigrateMilestoneStorage should not require planning: %v", err)
+	}
+	state, err := LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState should not require planning: %v", err)
+	}
+	if err := SaveState(statePath, state); err != nil {
+		t.Fatalf("SaveState should not require planning: %v", err)
+	}
+	if err := DeleteMilestone(configPath, statePath, "second"); err != nil {
+		t.Fatalf("DeleteMilestone should not require planning: %v", err)
+	}
+}
+
+func representativePlan() Plan {
+	return Plan{
+		SchemaVersion: PlanningSchemaVersion,
+		ID:            "onboarding-improvements",
+		Title:         "Improve onboarding",
+		Objective:     "Make first-run setup easier to understand and recover from.",
+		Status:        "active",
+		CreatedAt:     "2026-07-20T10:15:00Z",
+		CreatedBy:     "patrick",
+		UpdatedAt:     "2026-07-20T12:30:00Z",
+		UpdatedBy:     "developer-agent",
+		Constraints:   []string{"Keep setup usable in non-TTY environments."},
+		BriefingOrder: []string{"setup-copy-review", "persist-plan-files"},
+		Briefings: []Briefing{
+			{
+				ID:               "setup-copy-review",
+				Title:            "Review setup copy",
+				Objective:        "Clarify first-run setup labels and confirmation text.",
+				Intent:           "Users should understand what files setup will create before confirmation.",
+				Status:           "active",
+				CompletionSignal: "Setup copy is reviewed and accepted in the TUI.",
+				Constraints:      []string{"Do not change runner detection behavior."},
+				CreatedAt:        "2026-07-20T10:15:00Z",
+				CreatedBy:        "patrick",
+				UpdatedAt:        "2026-07-20T10:15:00Z",
+				UpdatedBy:        "patrick",
+			},
+			{
+				ID:               "persist-plan-files",
+				Title:            "Persist plan files",
+				Objective:        "Save and reload planning data.",
+				Intent:           "Planning state should survive local CLI runs.",
+				Status:           "completed",
+				DependsOn:        []string{"setup-copy-review"},
+				MilestoneID:      "0003-persist-planning-layer",
+				CompletionSignal: "Plan files round trip in tests.",
+				CreatedAt:        "2026-07-20T10:18:00Z",
+				CreatedBy:        "patrick",
+				UpdatedAt:        "2026-07-20T12:30:00Z",
+				UpdatedBy:        "developer-agent",
+			},
+			{
+				ID:               "archived-note",
+				Title:            "Archived note",
+				Objective:        "Keep historical context addressable.",
+				Intent:           "Archived briefings remain parseable outside active ordering.",
+				Status:           "archived",
+				CompletionSignal: "Archived record reloads.",
+				CreatedAt:        "2026-07-20T10:20:00Z",
+				CreatedBy:        "patrick",
+				UpdatedAt:        "2026-07-20T10:20:00Z",
+				UpdatedBy:        "patrick",
+			},
+		},
+	}
+}
+
+func validPlanYAML(id string) string {
+	return `schema_version: 1
+id: ` + id + `
+title: Valid Plan
+objective: Valid objective
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - valid-briefing
+briefings:
+  - id: valid-briefing
+    title: Valid Briefing
+    objective: Valid objective
+    intent: Valid intent
+    status: active
+    completion_signal: Done
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("failed to create dir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write %s: %v", path, err)
+	}
+}
+
+func readFiles(t *testing.T, paths ...string) map[string]string {
+	t.Helper()
+	files := make(map[string]string, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", path, err)
+		}
+		files[path] = string(data)
+	}
+	return files
+}
+
+func planningMessagesText(result PlanningValidationResult) string {
+	var parts []string
+	for _, msg := range result.Messages {
+		parts = append(parts, msg.Severity+" "+msg.File+" "+msg.Field+" "+msg.Message)
+	}
+	return strings.Join(parts, "\n")
+}
