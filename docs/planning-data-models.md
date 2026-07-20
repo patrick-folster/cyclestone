@@ -1,6 +1,6 @@
 # Planning Data Models
 
-This document defines the future persistent data model for Cyclestone's optional planning layer. It is a design contract only. It does not implement persistence, parsers, validators, migrations, executor behavior, runner orchestration, or TUI flows.
+This document defines Cyclestone's optional planning-layer persistence model. The model is implemented for manual Plan and Briefing CLI management; it does not imply migrations, executor behavior, runner orchestration, AI generation, or TUI flows.
 
 The current execution model remains independent:
 
@@ -18,7 +18,7 @@ The Milestone Planner is a virtual UI and navigation root. It has no required pe
 
 ## File Layout
 
-Future planning persistence should use one YAML file per Plan under `.cyclestone/plans/`:
+Planning persistence uses one YAML file per Plan under `.cyclestone/plans/`:
 
 ```text
 .cyclestone/plans/<plan-id>.yml
@@ -32,6 +32,40 @@ Each Plan file embeds its Briefing records and keeps a canonical `briefing_order
 - `.cyclestone/reports/<milestone-id>/` remains cycle artifacts keyed by Milestone ID.
 
 Old projects with no `.cyclestone/plans/` directory are valid and require no migration.
+
+## Manual CLI Management
+
+The CLI exposes the planning layer without mutating Milestone, state, report, temp, or runner files:
+
+```text
+cyclestone plan list
+cyclestone plan show <plan-id>
+cyclestone plan create <plan-id> --title <title> --objective <objective> [--actor <actor>]
+cyclestone plan edit <plan-id> [--title <title>] [--objective <objective>] [--actor <actor>]
+cyclestone plan archive <plan-id> [--actor <actor>]
+cyclestone plan restore <plan-id> [--actor <actor>]
+cyclestone plan delete <plan-id> --confirm <plan-id>
+
+cyclestone briefing show <plan-id> <briefing-id>
+cyclestone briefing add <plan-id> <briefing-id> --title <title> --objective <objective> --intent <intent> --completion-signal <signal> [--actor <actor>]
+cyclestone briefing edit <plan-id> <briefing-id> [metadata flags] [--actor <actor>]
+cyclestone briefing reorder <plan-id> <briefing-id> [<briefing-id>...] [--actor <actor>]
+cyclestone briefing archive <plan-id> <briefing-id> [--actor <actor>]
+cyclestone briefing restore <plan-id> <briefing-id> [--actor <actor>]
+cyclestone briefing delete <plan-id> <briefing-id> --confirm <briefing-id>
+cyclestone briefing dependency add <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
+cyclestone briefing dependency remove <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
+cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--actor <actor>]
+cyclestone briefing unlink <plan-id> <briefing-id> [--actor <actor>]
+```
+
+These commands load `.cyclestone/plans/*.yml` relative to the configured `-config` file directory. Display commands use the existing milestone index only to label Briefing relationships as `milestone: none`, `milestone: linked <id>`, or `milestone: missing <id>`. Missing optional Milestone references remain warnings and do not create Milestone specs, state, reports, or Plan files.
+
+`plan list` prints deterministic Plan rows with ID, title, status, Briefing count, and derived progress. `plan show` prints one Plan with metadata, progress, and Briefings in `briefing_order`, followed by remaining addressable Briefings sorted by ID. `briefing show` prints one Briefing with objective, intent, completion signal, dependencies, constraints, derived readiness, and Milestone relationship.
+
+Mutating commands load and validate all planning files before writing. Planning validation errors block the command and leave files unchanged; warnings are printed and the command may continue. Plan creation creates `.cyclestone/plans/` on first use. Plan deletion removes only `.cyclestone/plans/<plan-id>.yml` and requires an exact `--confirm <plan-id>` token. Briefing deletion removes only the embedded Briefing record and its active order entry and requires `--confirm <briefing-id>`. Archive commands set status to `archived`; they do not delete records or Milestone artifacts.
+
+`briefing link` is strict: the Milestone ID must already exist in the compact Milestone index, the target Briefing must not already link a different Milestone, and no other active or completed Briefing in any valid Plan may already link the same Milestone. `briefing unlink`, archive, delete, and Plan delete never modify linked Milestone specs, compact index entries, runtime state, reports, temp files, branch snapshots, or cycles.
 
 ## Plan Record
 
@@ -190,7 +224,7 @@ Versioning rules:
 - Version `1` is the initial planned schema.
 - Additive optional fields may be introduced without changing existing files.
 - New required fields require a new schema version or a migration plan.
-- Unknown fields should be preserved by future planning editors when practical and reported as warnings by validators.
+- Unknown fields should be preserved by future planning editors when practical and reported as warnings by validators. The current manual CLI uses the typed Plan model for writes, so editing a Plan file rewrites known schema fields and does not preserve unknown YAML fields.
 - Unknown future `schema_version` values are validation errors for planning files only.
 - Projects without planning files remain valid for every planning schema version.
 - Migrations must not rewrite `.cyclestone/milestone.yml`, `.cyclestone/milestones/*.md`, `.cyclestone/state.json`, or `.cyclestone/reports/` unless a later milestone explicitly targets those files.

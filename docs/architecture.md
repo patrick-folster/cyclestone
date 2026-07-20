@@ -29,7 +29,9 @@ Milestone -> Milestone Cycles
 
 The planning layer is an optional higher-level workflow and navigation layer above that core. It may organize future work, prepare Milestones, or show relationships in the TUI, but Milestones and Cycles do not require planning-layer data. Existing Milestone creation, execution, reporting, deletion, and archival flows continue to work with no Plan and no Briefing.
 
-The detailed planning persistence model is documented in [Planning Data Models](planning-data-models.md). That document defines the future Plan and Briefing records, validation rules, status lifecycles, ordering, dependency behavior, optional Milestone provenance shape, and migration constraints.
+The detailed planning persistence model is documented in [Planning Data Models](planning-data-models.md). That document defines the Plan and Briefing records, validation rules, status lifecycles, ordering, dependency behavior, optional Milestone provenance shape, manual CLI management commands, and migration constraints.
+
+Manual CLI management is available with explicit `cyclestone plan ...` and `cyclestone briefing ...` commands. These commands load planning files and the compact milestone index before TUI startup, surface planning warnings, validate before writing, and only create, edit, archive, restore, reorder, link, unlink, or delete planning records. They do not run Milestones or mutate Milestone specs, compact index entries, runtime state, reports, temp files, branch snapshots, or runner workflows.
 
 Concept boundaries:
 
@@ -113,7 +115,7 @@ Project config:
 
 - `.cyclestone/milestone.yml`: compact milestone index.
 - `.cyclestone/milestones/*.md`: milestone specs.
-- `.cyclestone/plans/*.yml`: future optional planning-layer Plan files, when planning persistence is implemented.
+- `.cyclestone/plans/*.yml`: optional planning-layer Plan files used by manual Plan and Briefing CLI management.
 - `.cyclestone/settings.yml`: local project runner/settings overrides.
 - `AGENTS.md`: optional concise current operating instructions loaded into agent prompts when present.
 - `.cyclestone/DECISIONS.md`: chronological durable decision log kept separate from current instructions.
