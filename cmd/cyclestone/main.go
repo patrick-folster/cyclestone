@@ -74,6 +74,26 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}
 
 	if flags.NArg() > 0 {
+		if len(flags.Args()) >= 2 && flags.Args()[0] == "plan" && (flags.Args()[1] == "start" || flags.Args()[1] == "resume") {
+			return runPlanExecution(flags.Args()[2:], briefingExecutionOptions{
+				configPath:            *configPath,
+				statePath:             *statePath,
+				noBranchChange:        *noBranchChange,
+				unrestricted:          *unrestricted,
+				disableBold:           *disableBold,
+				disableRoundedBorders: *disableRoundedBorders,
+			}, flags.Args()[1] == "resume", stdout, stderr, runRootProgram)
+		}
+		if len(flags.Args()) >= 2 && flags.Args()[0] == "briefing" && flags.Args()[1] == "execute" {
+			return runBriefingExecute(flags.Args()[2:], briefingExecutionOptions{
+				configPath:            *configPath,
+				statePath:             *statePath,
+				noBranchChange:        *noBranchChange,
+				unrestricted:          *unrestricted,
+				disableBold:           *disableBold,
+				disableRoundedBorders: *disableRoundedBorders,
+			}, stdout, stderr, runRootProgram)
+		}
 		return runPlanningCommand(flags.Args(), *configPath, stdout, stderr)
 	}
 
@@ -112,6 +132,63 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	}
 	p := tea.NewProgram(rootModel, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(stderr, "Error running TUI: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+type briefingExecutionOptions struct {
+	configPath            string
+	statePath             string
+	noBranchChange        bool
+	unrestricted          bool
+	disableBold           bool
+	disableRoundedBorders bool
+}
+
+func runRootProgram(root tui.RootModel) error {
+	_, err := tea.NewProgram(root, tea.WithAltScreen()).Run()
+	return err
+}
+
+func runBriefingExecute(args []string, opts briefingExecutionOptions, stdout, stderr io.Writer, launch func(tui.RootModel) error) int {
+	if len(args) != 2 {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing execute <plan-id> <briefing-id>")
+		return 1
+	}
+	ctx, ok := loadWritablePlanningContext(opts.configPath, stderr)
+	if !ok {
+		return 1
+	}
+	result, err := prepareBriefingMilestone(ctx, opts.configPath, briefingMilestoneRequest{
+		planID:      args[0],
+		briefingID:  args[1],
+		actor:       "briefing-executor",
+		allowActive: true,
+		allowLinked: true,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	if result.Generated {
+		fmt.Fprintf(stdout, "Milestone %q generated from Briefing %q in Plan %q\n", result.Milestone.ID, args[1], args[0])
+	}
+
+	cfg, err := config.LoadConfig(opts.configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: reloading milestone config: %v\n", err)
+		return 1
+	}
+	st, err := config.LoadState(opts.statePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: loading state: %v\n", err)
+		return 1
+	}
+	root := tui.NewRootModel(cfg, st, opts.configPath, opts.statePath, opts.noBranchChange, opts.unrestricted, opts.disableBold, opts.disableRoundedBorders)
+	root.QueueBriefingCycle(result.Milestone, tui.BriefingOrigin{PlanID: args[0], BriefingID: args[1]})
+	if err := launch(root); err != nil {
 		fmt.Fprintf(stderr, "Error running TUI: %v\n", err)
 		return 1
 	}
@@ -170,6 +247,7 @@ type planningCommandContext struct {
 	validation   config.PlanningValidationResult
 	milestoneIDs map[string]bool
 	plansDir     string
+	configPath   string
 }
 
 func runPlanList(configPath string, stdout, stderr io.Writer) int {
@@ -193,6 +271,9 @@ func runPlanList(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  status: %s\n", plan.Status)
 		fmt.Fprintf(stdout, "  briefings: %d\n", len(plan.Briefings))
 		fmt.Fprintf(stdout, "  progress: %s\n", progress.String())
+		if plan.Execution != nil {
+			fmt.Fprintf(stdout, "  execution: %s (%s, %s)\n", plan.Execution.State, plan.Execution.Mode, plan.Execution.Checkpoint)
+		}
 	}
 	return commandStatusFromValidation(validation)
 }
@@ -210,7 +291,7 @@ func runPlanShow(configPath, planID string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
 		return 1
 	}
-	printPlan(stdout, plan, milestoneIDs)
+	printPlan(stdout, plan, milestoneIDs, buildMilestoneRelationIndex(state))
 	return commandStatusFromValidation(validation)
 }
 
@@ -232,7 +313,7 @@ func runBriefingShow(configPath, planID, briefingID string, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", briefingID, planID)
 		return 1
 	}
-	printBriefing(stdout, plan, briefing, milestoneIDs)
+	printBriefing(stdout, plan, briefing, milestoneIDs, buildMilestoneRelationIndex(state))
 	return commandStatusFromValidation(validation)
 }
 
@@ -262,6 +343,7 @@ func loadPlanningCommandContext(configPath string) (planningCommandContext, erro
 		validation:   validation,
 		milestoneIDs: milestoneIDSet,
 		plansDir:     plansDir,
+		configPath:   configPath,
 	}, nil
 }
 
@@ -459,14 +541,14 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 	}
 	if *preview {
 		fmt.Fprintf(stdout, "Generated Plan %q preview\n", plan.ID)
-		printPlan(stdout, plan, ctx.milestoneIDs)
+		printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}))
 		return 0
 	}
 	if !savePlanForCommand(ctx, plan, stderr) {
 		return 1
 	}
 	fmt.Fprintf(stdout, "Plan %q generated\n", plan.ID)
-	printPlan(stdout, plan, ctx.milestoneIDs)
+	printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}))
 	return 0
 }
 
@@ -1072,8 +1154,9 @@ func runBriefingDependencyChange(args []string, configPath string, add bool, std
 func runBriefingLink(args []string, configPath string, stdout, stderr io.Writer) int {
 	flags := newPlanningFlagSet("briefing link", stderr)
 	actor := flags.String("actor", "manual", "Actor recorded in planning metadata")
+	replaceLink := flags.Bool("replace-link", false, "Replace an existing Briefing milestone link without deleting the old Milestone")
 	if !parsePlanningFlags(flags, args, stderr) || flags.NArg() != 3 {
-		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--actor <actor>]")
+		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--replace-link] [--actor <actor>]")
 		return 1
 	}
 	planID, briefingID, milestoneID := flags.Arg(0), flags.Arg(1), flags.Arg(2)
@@ -1091,8 +1174,8 @@ func runBriefingLink(args []string, configPath string, stdout, stderr io.Writer)
 		return 1
 	}
 	briefing := &plan.Briefings[briefingIndex]
-	if briefing.MilestoneID != "" && briefing.MilestoneID != milestoneID {
-		fmt.Fprintf(stderr, "Error: Briefing %q is already linked to Milestone %q\n", briefingID, briefing.MilestoneID)
+	if briefing.MilestoneID != "" && briefing.MilestoneID != milestoneID && !*replaceLink {
+		fmt.Fprintf(stderr, "Error: Briefing %q is already linked to Milestone %q; pass --replace-link to replace only the Briefing link\n", briefingID, briefing.MilestoneID)
 		return 1
 	}
 	if linkedPlanID, linkedBriefingID, exists := findActiveMilestoneLink(ctx.state, milestoneID, planID, briefingID); exists {
@@ -1148,69 +1231,166 @@ func runBriefingGenerateMilestone(args []string, configPath string, stdout, stde
 	if !ok {
 		return 1
 	}
-	planID, briefingID := flags.Arg(0), flags.Arg(1)
-	plan, briefingIndex, ok := findPlanBriefing(ctx.state, planID, briefingID)
-	if !ok {
-		fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", briefingID, planID)
+	result, err := prepareBriefingMilestone(ctx, configPath, briefingMilestoneRequest{
+		planID:      flags.Arg(0),
+		briefingID:  flags.Arg(1),
+		targetID:    *milestoneID,
+		actor:       *actor,
+		replaceLink: *replaceLink,
+		preview:     *preview,
+		allowLinked: false,
+		allowActive: false,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
+	}
+	if *preview {
+		fmt.Fprintf(stdout, "Generated Milestone %q preview\n", result.Milestone.ID)
+		fmt.Fprintf(stdout, "Title: %s\n", result.Milestone.Title)
+		fmt.Fprintf(stdout, "Spec Path: %s\n", result.Milestone.SpecPath)
+		fmt.Fprintf(stdout, "Briefing Link: Plan %q Briefing %q -> Milestone %q\n\n", flags.Arg(0), flags.Arg(1), result.Milestone.ID)
+		fmt.Fprint(stdout, result.Spec)
+		return 0
+	}
+	fmt.Fprintf(stdout, "Milestone %q generated from Briefing %q in Plan %q\n", result.Milestone.ID, flags.Arg(1), flags.Arg(0))
+	return 0
+}
+
+type briefingMilestoneRequest struct {
+	planID      string
+	briefingID  string
+	targetID    string
+	actor       string
+	replaceLink bool
+	preview     bool
+	allowLinked bool
+	allowActive bool
+}
+
+type briefingMilestoneResult struct {
+	Milestone config.Milestone
+	Spec      string
+	Generated bool
+}
+
+var (
+	addPlanningMilestoneWithSpec   = config.AddMilestoneWithSpec
+	indexExistingPlanningMilestone = config.AddMilestone
+)
+
+// prepareBriefingMilestone is the shared planning-layer resolver used by both
+// generation and execution. It never changes runtime state, reports, or branches.
+func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req briefingMilestoneRequest) (briefingMilestoneResult, error) {
+	plan, briefingIndex, ok := findPlanBriefing(ctx.state, req.planID, req.briefingID)
+	if !ok {
+		if _, exists := findPlan(ctx.state, req.planID); !exists {
+			return briefingMilestoneResult{}, fmt.Errorf("Plan %q not found", req.planID)
+		}
+		return briefingMilestoneResult{}, fmt.Errorf("Briefing %q not found in Plan %q", req.briefingID, req.planID)
 	}
 	briefing := plan.Briefings[briefingIndex]
-	if briefing.Status != "completed" {
-		fmt.Fprintf(stderr, "Error: Briefing %q must be completed before generating a Milestone\n", briefingID)
-		return 1
+	eligible := briefing.Status == "completed" || (req.allowActive && briefing.Status == "active")
+	if !eligible {
+		if req.allowActive {
+			return briefingMilestoneResult{}, fmt.Errorf("Briefing %q is not eligible for execution: status is %q", briefing.ID, briefing.Status)
+		}
+		return briefingMilestoneResult{}, fmt.Errorf("Briefing %q must be completed before generating a Milestone", briefing.ID)
 	}
 	if blockedBy := incompleteBriefingDependencies(plan, briefing); len(blockedBy) > 0 {
-		fmt.Fprintf(stderr, "Error: Briefing %q has incomplete dependencies: %s\n", briefingID, strings.Join(blockedBy, ", "))
-		return 1
+		return briefingMilestoneResult{}, fmt.Errorf("Briefing %q has incomplete dependencies: %s", briefing.ID, strings.Join(blockedBy, ", "))
 	}
 
-	targetID := strings.TrimSpace(*milestoneID)
+	if req.allowLinked && briefing.MilestoneID != "" {
+		cfg, err := config.LoadConfig(configPath)
+		if err != nil {
+			return briefingMilestoneResult{}, fmt.Errorf("loading linked Milestone: %w", err)
+		}
+		for _, milestone := range cfg.Milestones {
+			if milestone.ID == briefing.MilestoneID {
+				return briefingMilestoneResult{Milestone: milestone}, nil
+			}
+		}
+		return briefingMilestoneResult{}, fmt.Errorf("Briefing %q links missing Milestone %q", briefing.ID, briefing.MilestoneID)
+	}
+
+	targetID := strings.TrimSpace(req.targetID)
 	if targetID == "" {
 		targetID = uniquePlanningSlug(plan.ID+"-"+briefing.ID, map[string]bool{})
 	}
 	if !milestoneIDPattern.MatchString(targetID) {
-		fmt.Fprintf(stderr, "Error: Milestone ID %q must use lowercase letters, numbers, and hyphens\n", targetID)
-		return 1
+		return briefingMilestoneResult{}, fmt.Errorf("Milestone ID %q must use lowercase letters, numbers, and hyphens", targetID)
 	}
-	if ctx.milestoneIDs[targetID] {
-		fmt.Fprintf(stderr, "Error: Milestone %q already exists\n", targetID)
-		return 1
+	if linkedPlanID, linkedBriefingID, exists := findActiveMilestoneLink(ctx.state, targetID, plan.ID, briefing.ID); exists {
+		return briefingMilestoneResult{}, fmt.Errorf("Milestone %q is already linked by Briefing %q in Plan %q", targetID, linkedBriefingID, linkedPlanID)
 	}
-	if linkedPlanID, linkedBriefingID, exists := findActiveMilestoneLink(ctx.state, targetID, planID, briefingID); exists {
-		fmt.Fprintf(stderr, "Error: Milestone %q is already linked by Briefing %q in Plan %q\n", targetID, linkedBriefingID, linkedPlanID)
-		return 1
-	}
-	if briefing.MilestoneID != "" && briefing.MilestoneID != targetID && !*replaceLink {
-		fmt.Fprintf(stderr, "Error: Briefing %q is already linked to Milestone %q; pass --replace-link to replace only the Briefing link\n", briefingID, briefing.MilestoneID)
-		return 1
+	if briefing.MilestoneID != "" && briefing.MilestoneID != targetID && !req.replaceLink {
+		return briefingMilestoneResult{}, fmt.Errorf("Briefing %q is already linked to Milestone %q; pass --replace-link to replace only the Briefing link", briefing.ID, briefing.MilestoneID)
 	}
 
 	spec := buildBriefingMilestoneSpec(configPath, ctx, plan, briefing, targetID)
-	ms := config.Milestone{
-		ID:       targetID,
-		Title:    briefing.Title,
-		SpecPath: filepath.Join("milestones", targetID+".md"),
+	milestone := config.Milestone{ID: targetID, Title: briefing.Title, SpecPath: filepath.Join("milestones", targetID+".md")}
+	result := briefingMilestoneResult{Milestone: milestone, Spec: spec}
+	if req.preview {
+		return result, nil
 	}
-	if *preview {
-		fmt.Fprintf(stdout, "Generated Milestone %q preview\n", targetID)
-		fmt.Fprintf(stdout, "Title: %s\n", ms.Title)
-		fmt.Fprintf(stdout, "Spec Path: %s\n", ms.SpecPath)
-		fmt.Fprintf(stdout, "Briefing Link: Plan %q Briefing %q -> Milestone %q\n\n", plan.ID, briefing.ID, targetID)
-		fmt.Fprint(stdout, spec)
-		return 0
+	absoluteSpecPath := filepath.Join(filepath.Dir(configPath), milestone.SpecPath)
+	if ctx.milestoneIDs[targetID] {
+		if !req.allowActive || briefing.MilestoneID != "" {
+			return briefingMilestoneResult{}, fmt.Errorf("Milestone %q already exists", targetID)
+		}
+		indexed, exists := milestoneByID(ctx, targetID)
+		if !exists || !reclaimableBriefingMilestone(indexed, milestone, absoluteSpecPath, plan.ID, briefing.ID) {
+			return briefingMilestoneResult{}, fmt.Errorf("Milestone %q already exists and cannot be proven to belong to Briefing %q in Plan %q", targetID, briefing.ID, plan.ID)
+		}
+		plan.Briefings[briefingIndex].MilestoneID = targetID
+		touchBriefing(&plan, &plan.Briefings[briefingIndex], req.actor)
+		if !savePlanForCommand(ctx, plan, io.Discard) {
+			return result, fmt.Errorf("recovered Milestone %q, but its Briefing link could not be persisted; execution was not started", targetID)
+		}
+		return result, nil
 	}
-	if err := config.AddMilestoneWithSpec(configPath, ms, spec); err != nil {
-		fmt.Fprintf(stderr, "Error: creating Milestone: %v\n", err)
-		return 1
+	_, specStatErr := os.Stat(absoluteSpecPath)
+	specExisted := specStatErr == nil
+	if specExisted {
+		if !req.allowActive || !reclaimableBriefingMilestone(milestone, milestone, absoluteSpecPath, plan.ID, briefing.ID) {
+			return briefingMilestoneResult{}, fmt.Errorf("Milestone spec %q already exists and cannot be proven to belong to Briefing %q in Plan %q", milestone.SpecPath, briefing.ID, plan.ID)
+		}
+		if err := indexExistingPlanningMilestone(configPath, milestone); err != nil {
+			return result, fmt.Errorf("reindexing interrupted Milestone %q: %w", targetID, err)
+		}
+		ctx.milestoneIDs[targetID] = true
+	} else {
+		if err := addPlanningMilestoneWithSpec(configPath, milestone, spec); err != nil {
+			if _, statErr := os.Stat(absoluteSpecPath); statErr == nil {
+				return result, fmt.Errorf("Milestone spec %q was written, but the compact index update failed; execution was not started: %w", milestone.SpecPath, err)
+			}
+			return briefingMilestoneResult{}, fmt.Errorf("creating Milestone: %w", err)
+		}
+		result.Generated = true
 	}
 	ctx.milestoneIDs[targetID] = true
 	plan.Briefings[briefingIndex].MilestoneID = targetID
-	touchBriefing(&plan, &plan.Briefings[briefingIndex], *actor)
-	if !savePlanForCommand(ctx, plan, stderr) {
-		return 1
+	touchBriefing(&plan, &plan.Briefings[briefingIndex], req.actor)
+	if !savePlanForCommand(ctx, plan, io.Discard) {
+		return result, fmt.Errorf("Milestone %q was created, but its Briefing link could not be persisted; execution was not started", targetID)
 	}
-	fmt.Fprintf(stdout, "Milestone %q generated from Briefing %q in Plan %q\n", targetID, briefing.ID, plan.ID)
-	return 0
+	return result, nil
+}
+
+func reclaimableBriefingMilestone(indexed, expected config.Milestone, specPath, planID, briefingID string) bool {
+	if indexed.ID != expected.ID || indexed.Title != expected.Title || filepath.Clean(indexed.SpecPath) != filepath.Clean(expected.SpecPath) {
+		return false
+	}
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return false
+	}
+	content := string(data)
+	return strings.Contains(content, fmt.Sprintf("# Milestone Spec: %s - %s", expected.ID, expected.Title)) &&
+		strings.Contains(content, fmt.Sprintf("Briefing `%s` in Plan `%s`", briefingID, planID)) &&
+		strings.Contains(content, fmt.Sprintf("- Source Plan: `%s`", planID)) &&
+		strings.Contains(content, fmt.Sprintf("- Source Briefing: `%s`", briefingID))
 }
 
 func newPlanningFlagSet(name string, stderr io.Writer) *flag.FlagSet {
@@ -1275,7 +1455,7 @@ func loadWritablePlanningContext(configPath string, stderr io.Writer) (planningC
 
 func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.Writer) bool {
 	milestoneIDs := planningMilestoneIDs(ctx)
-	validation, err := config.SavePlan(ctx.plansDir, plan, config.WithKnownMilestoneIDs(milestoneIDs))
+	validation, err := savePlanningPlan(ctx.plansDir, plan, config.WithKnownMilestoneIDs(milestoneIDs))
 	printPlanningMessages(stderr, validation)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -1283,6 +1463,8 @@ func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.
 	}
 	return true
 }
+
+var savePlanningPlan = config.SavePlan
 
 func planningMilestoneIDs(ctx planningCommandContext) []string {
 	milestoneIDs := make([]string, 0, len(ctx.milestoneIDs))
@@ -2015,7 +2197,33 @@ func orderedBriefings(plan config.Plan) []config.Briefing {
 	return ordered
 }
 
-func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool) {
+type milestoneRelationRef struct {
+	PlanID     string
+	BriefingID string
+}
+
+type milestoneRelationIndex map[string][]milestoneRelationRef
+
+func buildMilestoneRelationIndex(state *config.PlanningState) milestoneRelationIndex {
+	index := make(milestoneRelationIndex)
+	if state == nil {
+		return index
+	}
+	for _, plan := range state.Plans {
+		for _, briefing := range plan.Briefings {
+			if briefing.MilestoneID == "" || (briefing.Status != "active" && briefing.Status != "completed") {
+				continue
+			}
+			index[briefing.MilestoneID] = append(index[briefing.MilestoneID], milestoneRelationRef{
+				PlanID:     plan.ID,
+				BriefingID: briefing.ID,
+			})
+		}
+	}
+	return index
+}
+
+func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool, relations milestoneRelationIndex) {
 	fmt.Fprintf(w, "Plan: %s\n", plan.ID)
 	fmt.Fprintf(w, "Title: %s\n", plan.Title)
 	fmt.Fprintf(w, "Status: %s\n", plan.Status)
@@ -2023,6 +2231,23 @@ func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool) {
 	fmt.Fprintf(w, "Created: %s by %s\n", plan.CreatedAt, plan.CreatedBy)
 	fmt.Fprintf(w, "Updated: %s by %s\n", plan.UpdatedAt, plan.UpdatedBy)
 	fmt.Fprintf(w, "Progress: %s\n", planProgress(plan).String())
+	if plan.Execution != nil {
+		fmt.Fprintf(w, "Execution: %s\n", plan.Execution.State)
+		fmt.Fprintf(w, "Execution Mode: %s\n", plan.Execution.Mode)
+		fmt.Fprintf(w, "Checkpoint: %s\n", plan.Execution.Checkpoint)
+		if plan.Execution.CurrentBriefingID != "" {
+			fmt.Fprintf(w, "Current Briefing: %s\n", plan.Execution.CurrentBriefingID)
+		}
+		if plan.Execution.CurrentMilestoneID != "" {
+			fmt.Fprintf(w, "Current Milestone: %s\n", plan.Execution.CurrentMilestoneID)
+		}
+		if plan.Execution.PendingApproval != "" {
+			fmt.Fprintf(w, "Pending Approval: %s\n", plan.Execution.PendingApproval)
+		}
+		if plan.Execution.StopReason != "" {
+			fmt.Fprintf(w, "Stop Reason: %s\n", plan.Execution.StopReason)
+		}
+	}
 	printStringList(w, "Constraints", plan.Constraints)
 	fmt.Fprintln(w, "Briefings:")
 	briefings := orderedBriefings(plan)
@@ -2037,19 +2262,19 @@ func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool) {
 			briefing.ID,
 			briefing.Status,
 			briefingReadiness(plan, briefing),
-			milestoneRelationship(briefing, milestoneIDs),
+			milestoneRelationship(plan.ID, briefing, milestoneIDs, relations),
 			briefing.Title,
 		)
 	}
 }
 
-func printBriefing(w io.Writer, plan config.Plan, briefing config.Briefing, milestoneIDs map[string]bool) {
+func printBriefing(w io.Writer, plan config.Plan, briefing config.Briefing, milestoneIDs map[string]bool, relations milestoneRelationIndex) {
 	fmt.Fprintf(w, "Briefing: %s\n", briefing.ID)
 	fmt.Fprintf(w, "Plan: %s\n", plan.ID)
 	fmt.Fprintf(w, "Title: %s\n", briefing.Title)
 	fmt.Fprintf(w, "Status: %s\n", briefing.Status)
 	fmt.Fprintf(w, "Readiness: %s\n", briefingReadiness(plan, briefing))
-	fmt.Fprintf(w, "Milestone: %s\n", milestoneRelationship(briefing, milestoneIDs))
+	fmt.Fprintf(w, "Milestone: %s\n", milestoneRelationship(plan.ID, briefing, milestoneIDs, relations))
 	fmt.Fprintf(w, "Objective: %s\n", briefing.Objective)
 	fmt.Fprintf(w, "Intent: %s\n", briefing.Intent)
 	fmt.Fprintf(w, "Completion Signal: %s\n", briefing.CompletionSignal)
@@ -2088,14 +2313,25 @@ func briefingReadiness(plan config.Plan, briefing config.Briefing) string {
 	return "ready"
 }
 
-func milestoneRelationship(briefing config.Briefing, milestoneIDs map[string]bool) string {
+func milestoneRelationship(planID string, briefing config.Briefing, milestoneIDs map[string]bool, relations milestoneRelationIndex) string {
 	if briefing.MilestoneID == "" {
 		return "none"
 	}
-	if milestoneIDs[briefing.MilestoneID] {
-		return "linked " + briefing.MilestoneID
+	if !milestoneIDs[briefing.MilestoneID] {
+		return "missing " + briefing.MilestoneID
 	}
-	return "missing " + briefing.MilestoneID
+	var others []string
+	for _, ref := range relations[briefing.MilestoneID] {
+		if ref.PlanID == planID && ref.BriefingID == briefing.ID {
+			continue
+		}
+		others = append(others, fmt.Sprintf("Plan %s Briefing %s", ref.PlanID, ref.BriefingID))
+	}
+	sort.Strings(others)
+	if len(others) == 0 {
+		return "linked " + briefing.MilestoneID + " (standalone)"
+	}
+	return "linked " + briefing.MilestoneID + " (also linked by " + strings.Join(others, "; ") + ")"
 }
 
 func printPlanningMessages(w io.Writer, validation config.PlanningValidationResult) {

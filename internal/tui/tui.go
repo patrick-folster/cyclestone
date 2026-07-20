@@ -27,6 +27,8 @@ var terminalSize = func() (int, int, error) {
 	return term.GetSize(os.Stdout.Fd())
 }
 
+var executeCycle = executor.ExecuteCycle
+
 // Screen identifies the currently active UI view.
 type Screen int
 
@@ -77,29 +79,44 @@ type LogCycleResultMsg struct {
 
 // RootModel is the top-level Bubble Tea model containing application state.
 type RootModel struct {
-	ActiveScreen    Screen
-	Dashboard       DashboardModel
-	Details         DetailsModel
-	Runner          RunnerModel
-	CreateMilestone CreateMilestoneModel
-	Preflight       PreflightModel
-	Settings        SettingsModel
-	AgentGroups     AgentGroupsModel
-	Setup           SetupWizardModel
-	Width           int
-	Height          int
-	Config          *config.Config
-	State           *config.State
-	ConfigPath      string
-	StatePath       string
-	NoBranchChange  bool
-	Unrestricted    bool
-	MsgChan         chan tea.Msg
-	Styles          Styles
-	StatusMsg       string
-	StatusTime      time.Time
-	MissingConfig   bool
-	InitConfigError string
+	ActiveScreen      Screen
+	Dashboard         DashboardModel
+	Details           DetailsModel
+	Runner            RunnerModel
+	CreateMilestone   CreateMilestoneModel
+	Preflight         PreflightModel
+	Settings          SettingsModel
+	AgentGroups       AgentGroupsModel
+	Setup             SetupWizardModel
+	Width             int
+	Height            int
+	Config            *config.Config
+	State             *config.State
+	ConfigPath        string
+	StatePath         string
+	NoBranchChange    bool
+	Unrestricted      bool
+	MsgChan           chan tea.Msg
+	Styles            Styles
+	StatusMsg         string
+	StatusTime        time.Time
+	MissingConfig     bool
+	InitConfigError   string
+	PendingCycle      *StartCycleMsg
+	BriefingOrigin    BriefingOrigin
+	activePlanOrigin  BriefingOrigin
+	PlanCycleStarted  func(BriefingOrigin) error
+	PlanCycleFinished func(BriefingOrigin, string, string, error) (PlanContinuation, error)
+	// CycleExecutor runs an ordinary Milestone cycle. It defaults to the shared
+	// executor and permits deterministic local integration tests without a live runner.
+	CycleExecutor func(context.Context, config.Milestone, []config.Agent, executor.RunOptions, *config.State, chan tea.Msg)
+}
+
+// PlanContinuation describes the next durable Plan-run transition after a cycle.
+type PlanContinuation struct {
+	NextMilestone *config.Milestone
+	NextOrigin    BriefingOrigin
+	Message       string
 }
 
 // NewRootModel constructs the RootModel and initializes its sub-models.
@@ -137,9 +154,32 @@ func NewRootModel(cfg *config.Config, state *config.State, configPath, statePath
 	}
 }
 
+// QueueBriefingCycle opens the existing preflight for one resolved ordinary
+// Milestone when the TUI starts from `briefing execute`.
+func (m *RootModel) QueueBriefingCycle(milestone config.Milestone, origin BriefingOrigin) {
+	runnerMode := "sandbox"
+	if m.Unrestricted {
+		runnerMode = "unrestricted"
+	}
+	req := StartCycleMsg{
+		Milestone:      milestone,
+		RunnerMode:     runnerMode,
+		NoBranchChange: m.NoBranchChange,
+		BriefingOrigin: origin,
+	}
+	m.PendingCycle = &req
+}
+
+// QueuePlanCycle queues an ordinary Milestone while retaining immutable Plan context.
+func (m *RootModel) QueuePlanCycle(milestone config.Milestone, origin BriefingOrigin) {
+	origin.PlanRun = true
+	origin.MilestoneID = milestone.ID
+	m.QueueBriefingCycle(milestone, origin)
+}
+
 // Init initializes the Bubble Tea program.
 func (m RootModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		initialWindowSizeCmd(),
 		m.Dashboard.Init(),
 		m.Details.Init(),
@@ -149,7 +189,14 @@ func (m RootModel) Init() tea.Cmd {
 		m.Settings.Init(),
 		m.AgentGroups.Init(),
 		m.Setup.Init(),
-	)
+	}
+	if m.PendingCycle != nil {
+		req := *m.PendingCycle
+		cmds = append(cmds, func() tea.Msg {
+			return ChangeScreenMsg{Screen: ScreenPreflight, Data: req}
+		})
+	}
+	return tea.Batch(cmds...)
 }
 
 // initialWindowSizeCmd queries the terminal's width and height on startup.
@@ -299,6 +346,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ChangeScreenMsg:
+		if (m.ActiveScreen == ScreenPreflight || m.ActiveScreen == ScreenRunner) && msg.Screen != ScreenRunner && msg.Screen != ScreenPreflight {
+			m.BriefingOrigin = BriefingOrigin{}
+		}
 		m.ActiveScreen = msg.Screen
 		if msg.Screen == ScreenDetails {
 			if ms, ok := msg.Data.(config.Milestone); ok {
@@ -657,6 +707,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		m.BriefingOrigin = msg.BriefingOrigin
+		if msg.BriefingOrigin.PlanRun {
+			m.activePlanOrigin = msg.BriefingOrigin
+		} else {
+			m.activePlanOrigin = BriefingOrigin{}
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		m.Runner.Ctx = ctx
 		m.Runner.CancelFunc = cancel
@@ -696,6 +752,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Runner.ReportFile = ""
 		m.Runner.ActiveTab = RunnerTabLog
 		m.Runner.Workflow = WorkflowCycle
+		m.Runner.PlanContext = ""
+		if origin := msg.BriefingOrigin; origin.PlanRun {
+			m.Runner.PlanContext = fmt.Sprintf("Plan %s | Briefing %s | Queue %d/%d | Mode %s", origin.PlanID, origin.BriefingID, origin.QueuePosition, origin.QueueTotal, origin.Mode)
+		}
 
 		// Flush pipeline events channel
 		for len(m.MsgChan) > 0 {
@@ -715,9 +775,20 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			SingleAgentID:  msg.SingleAgentID,
 			CycleNote:      msg.Note,
 		}
+		if msg.BriefingOrigin.PlanRun && m.PlanCycleStarted != nil {
+			if err := m.PlanCycleStarted(msg.BriefingOrigin); err != nil {
+				m.StatusMsg = "Plan execution stopped before cycle launch: " + err.Error()
+				m.StatusTime = time.Now()
+				return m, nil
+			}
+		}
 
 		// Run executing routine in background
-		go executor.ExecuteCycle(ctx, msg.Milestone, pipeline, opts, m.State, m.MsgChan)
+		cycleExecutor := m.CycleExecutor
+		if cycleExecutor == nil {
+			cycleExecutor = executeCycle
+		}
+		go cycleExecutor(ctx, msg.Milestone, pipeline, opts, m.State, m.MsgChan)
 
 		m.ActiveScreen = ScreenRunner
 		return m, tea.Batch(
@@ -749,7 +820,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var rCmd tea.Cmd
 		m.Runner, rCmd = m.Runner.Update(msg)
 		m.refreshUI(msg.MilestoneID)
-		return m, rCmd
+		continuationCmd := m.finishBriefingExecution(msg)
+		return m, tea.Batch(rCmd, continuationCmd)
 
 	case executor.CreateMilestoneProgressMsg:
 		m.CreateMilestone.Logs = append(m.CreateMilestone.Logs, msg.LogLine)
@@ -1137,6 +1209,121 @@ func (m *RootModel) refreshUI(milestoneID string) {
 		m.Details.AgentInstructionsUpdateScore = m.State.GetMilestoneAgentInstructionsUpdateScore(milestoneID)
 		m.Details.clampHistorySelection()
 	}
+}
+
+// finishBriefingExecution maps a terminal Milestone result back to the one
+// originating Briefing. Milestone artifacts are already final at this point,
+// so planning failures are surfaced without changing the cycle result.
+func (m *RootModel) finishBriefingExecution(msg executor.CycleFinishedMsg) tea.Cmd {
+	origin := m.BriefingOrigin
+	if !origin.PlanRun && m.activePlanOrigin.PlanRun {
+		origin = m.activePlanOrigin
+	}
+	m.BriefingOrigin = BriefingOrigin{}
+	m.activePlanOrigin = BriefingOrigin{}
+	if origin.PlanRun && m.PlanCycleFinished != nil {
+		continuation, err := m.PlanCycleFinished(origin, msg.MilestoneID, msg.Status, msg.Error)
+		if err != nil {
+			m.setPlanningCompletionWarning(err)
+			return nil
+		}
+		if continuation.Message != "" {
+			m.StatusMsg = continuation.Message
+			m.StatusTime = time.Now()
+		}
+		if continuation.NextMilestone != nil {
+			if cfg, loadErr := config.LoadConfig(m.ConfigPath); loadErr == nil {
+				m.Config = cfg
+				m.Dashboard.Config = cfg
+			}
+			if state, loadErr := config.LoadState(m.StatePath); loadErr == nil {
+				m.State = state
+				m.Dashboard.State = state
+			}
+			m.Dashboard.updateTableRows()
+			m.QueuePlanCycle(*continuation.NextMilestone, continuation.NextOrigin)
+			req := *m.PendingCycle
+			m.PendingCycle = nil
+			return func() tea.Msg { return ChangeScreenMsg{Screen: ScreenPreflight, Data: req} }
+		}
+		return nil
+	}
+	if origin.PlanID == "" || origin.BriefingID == "" || msg.Error != nil || msg.Status != "approved" {
+		return nil
+	}
+
+	cfg, err := config.LoadConfig(m.ConfigPath)
+	if err != nil {
+		m.setPlanningCompletionWarning(fmt.Errorf("reload milestone config: %w", err))
+		return nil
+	}
+	milestoneIDs := make([]string, 0, len(cfg.Milestones))
+	for _, milestone := range cfg.Milestones {
+		milestoneIDs = append(milestoneIDs, milestone.ID)
+	}
+	plansDir := filepath.Join(filepath.Dir(m.ConfigPath), "plans")
+	planning, validation := config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs(milestoneIDs))
+	if validation.HasErrors() {
+		m.setPlanningCompletionWarning(fmt.Errorf("planning files contain validation errors"))
+		return nil
+	}
+
+	for planIndex := range planning.Plans {
+		plan := &planning.Plans[planIndex]
+		if plan.ID != origin.PlanID {
+			continue
+		}
+		for briefingIndex := range plan.Briefings {
+			briefing := &plan.Briefings[briefingIndex]
+			if briefing.ID != origin.BriefingID {
+				continue
+			}
+			if briefing.MilestoneID != msg.MilestoneID {
+				m.setPlanningCompletionWarning(fmt.Errorf("Briefing %q now links Milestone %q instead of completed Milestone %q", briefing.ID, briefing.MilestoneID, msg.MilestoneID))
+				return nil
+			}
+			now := planningCompletionTimestamp(plan.CreatedAt, briefing.CreatedAt)
+			briefing.Status = "completed"
+			briefing.UpdatedAt = now
+			briefing.UpdatedBy = "briefing-executor"
+			plan.UpdatedAt = now
+			plan.UpdatedBy = "briefing-executor"
+			if validation, err := config.SavePlan(plansDir, *plan, config.WithKnownMilestoneIDs(milestoneIDs)); err != nil || validation.HasErrors() {
+				if err == nil {
+					err = fmt.Errorf("updated Plan did not pass validation")
+				}
+				m.setPlanningCompletionWarning(err)
+			}
+			return nil
+		}
+		m.setPlanningCompletionWarning(fmt.Errorf("Briefing %q no longer exists in Plan %q", origin.BriefingID, origin.PlanID))
+		return nil
+	}
+	m.setPlanningCompletionWarning(fmt.Errorf("Plan %q no longer exists", origin.PlanID))
+	return nil
+}
+
+func planningCompletionTimestamp(createdAt ...string) string {
+	stamp := time.Now().UTC()
+	for _, value := range createdAt {
+		created, err := time.Parse(time.RFC3339, value)
+		if err == nil && stamp.Before(created) {
+			stamp = created
+		}
+	}
+	return stamp.Format(time.RFC3339)
+}
+
+func (m *RootModel) setPlanningCompletionWarning(err error) {
+	warning := "Planning update warning: Milestone cycle remains valid, but Briefing completion was not saved: " + err.Error()
+	m.StatusMsg = warning
+	m.StatusTime = time.Now()
+	if m.Runner.LastError == "" {
+		m.Runner.LastError = warning
+	} else {
+		m.Runner.LastError += "; " + warning
+	}
+	m.Runner.Status += " " + warning
 }
 
 // getHistoryForMilestone gathers logged cycles from State for a specific milestone.

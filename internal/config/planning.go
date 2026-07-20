@@ -15,22 +15,51 @@ import (
 
 const PlanningSchemaVersion = 1
 
+const (
+	PlanExecutionModeOnce       = "once"
+	PlanExecutionModeContinuous = "continuous"
+	PlanExecutionModeReview     = "review"
+)
+
 var planningIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Plan is the persisted planning-layer record stored under .cyclestone/plans.
 type Plan struct {
-	SchemaVersion int        `yaml:"schema_version" json:"schema_version"`
-	ID            string     `yaml:"id" json:"id"`
-	Title         string     `yaml:"title" json:"title"`
-	Objective     string     `yaml:"objective" json:"objective"`
-	Status        string     `yaml:"status" json:"status"`
-	CreatedAt     string     `yaml:"created_at" json:"created_at"`
-	CreatedBy     string     `yaml:"created_by" json:"created_by"`
-	UpdatedAt     string     `yaml:"updated_at" json:"updated_at"`
-	UpdatedBy     string     `yaml:"updated_by" json:"updated_by"`
-	Constraints   []string   `yaml:"constraints,omitempty" json:"constraints,omitempty"`
-	BriefingOrder []string   `yaml:"briefing_order" json:"briefing_order"`
-	Briefings     []Briefing `yaml:"briefings" json:"briefings"`
+	SchemaVersion int            `yaml:"schema_version" json:"schema_version"`
+	ID            string         `yaml:"id" json:"id"`
+	Title         string         `yaml:"title" json:"title"`
+	Objective     string         `yaml:"objective" json:"objective"`
+	Status        string         `yaml:"status" json:"status"`
+	CreatedAt     string         `yaml:"created_at" json:"created_at"`
+	CreatedBy     string         `yaml:"created_by" json:"created_by"`
+	UpdatedAt     string         `yaml:"updated_at" json:"updated_at"`
+	UpdatedBy     string         `yaml:"updated_by" json:"updated_by"`
+	Constraints   []string       `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	BriefingOrder []string       `yaml:"briefing_order" json:"briefing_order"`
+	Briefings     []Briefing     `yaml:"briefings" json:"briefings"`
+	Execution     *PlanExecution `yaml:"execution,omitempty" json:"execution,omitempty"`
+}
+
+// PlanExecution is the optional durable coordinator state for an explicitly
+// started Plan. Ordinary Milestones and repositories without Plans never use it.
+type PlanExecution struct {
+	Mode               string `yaml:"mode" json:"mode"`
+	State              string `yaml:"state" json:"state"`
+	Checkpoint         string `yaml:"checkpoint,omitempty" json:"checkpoint,omitempty"`
+	CurrentBriefingID  string `yaml:"current_briefing_id,omitempty" json:"current_briefing_id,omitempty"`
+	CurrentMilestoneID string `yaml:"current_milestone_id,omitempty" json:"current_milestone_id,omitempty"`
+	PendingApproval    string `yaml:"pending_approval,omitempty" json:"pending_approval,omitempty"`
+	StopReason         string `yaml:"stop_reason,omitempty" json:"stop_reason,omitempty"`
+	UpdatedAt          string `yaml:"updated_at" json:"updated_at"`
+}
+
+// IsValidPlanExecutionMode reports whether mode is a supported queue behavior.
+func IsValidPlanExecutionMode(mode string) bool {
+	switch mode {
+	case PlanExecutionModeOnce, PlanExecutionModeContinuous, PlanExecutionModeReview:
+		return true
+	}
+	return false
 }
 
 // Briefing is a same-Plan planning item embedded inside a Plan file.
@@ -262,6 +291,31 @@ func validatePlan(plan Plan, file string, result *PlanningValidationResult, opts
 	}
 	validateBriefingOrder(plan, briefingsByID, file, result)
 	validateBriefingDependencies(plan, briefingsByID, file, result)
+	validatePlanExecution(plan, briefingsByID, file, result)
+}
+
+func validatePlanExecution(plan Plan, briefingsByID map[string]Briefing, file string, result *PlanningValidationResult) {
+	if plan.Execution == nil {
+		return
+	}
+	execution := plan.Execution
+	if !IsValidPlanExecutionMode(execution.Mode) {
+		result.addError(file, "execution.mode", fmt.Sprintf("invalid Plan execution mode %q", execution.Mode))
+	}
+	switch execution.State {
+	case "running", "paused", "stopped", "blocked", "completed":
+	default:
+		result.addError(file, "execution.state", fmt.Sprintf("invalid Plan execution state %q", execution.State))
+	}
+	validatePlanningTimestamp(execution.UpdatedAt, file, "execution.updated_at", result)
+	if execution.CurrentBriefingID != "" {
+		if _, ok := briefingsByID[execution.CurrentBriefingID]; !ok {
+			result.addWarning(file, "execution.current_briefing_id", fmt.Sprintf("execution references missing Briefing %q; Plan execution must stop for explicit repair", execution.CurrentBriefingID))
+		}
+	}
+	if execution.CurrentMilestoneID != "" && !planningIDPattern.MatchString(execution.CurrentMilestoneID) {
+		result.addError(file, "execution.current_milestone_id", "Milestone ID must use lowercase ASCII letters, numbers, and hyphens")
+	}
 }
 
 func validateBriefing(plan Plan, briefing Briefing, file string, result *PlanningValidationResult, opts planningValidationOptions) {
@@ -476,6 +530,7 @@ func warnUnknownPlanningFields(file string, root *yaml.Node, result *PlanningVal
 		"constraints":    true,
 		"briefing_order": true,
 		"briefings":      true,
+		"execution":      true,
 	}
 	briefingFields := map[string]bool{
 		"id":                true,
@@ -492,6 +547,11 @@ func warnUnknownPlanningFields(file string, root *yaml.Node, result *PlanningVal
 		"depends_on":        true,
 		"milestone_id":      true,
 	}
+	executionFields := map[string]bool{
+		"mode": true, "state": true, "checkpoint": true,
+		"current_briefing_id": true, "current_milestone_id": true,
+		"pending_approval": true, "stop_reason": true, "updated_at": true,
+	}
 	planNode := root.Content[0]
 	for i := 0; i+1 < len(planNode.Content); i += 2 {
 		key := planNode.Content[i].Value
@@ -500,17 +560,30 @@ func warnUnknownPlanningFields(file string, root *yaml.Node, result *PlanningVal
 			result.addWarning(file, key, fmt.Sprintf("unknown Plan field %q", key))
 			continue
 		}
-		if key != "briefings" || value.Kind != yaml.SequenceNode {
-			continue
-		}
-		for _, briefingNode := range value.Content {
-			if briefingNode.Kind != yaml.MappingNode {
+		switch key {
+		case "briefings":
+			if value.Kind != yaml.SequenceNode {
 				continue
 			}
-			for j := 0; j+1 < len(briefingNode.Content); j += 2 {
-				briefingKey := briefingNode.Content[j].Value
-				if !briefingFields[briefingKey] {
-					result.addWarning(file, "briefings."+briefingKey, fmt.Sprintf("unknown Briefing field %q", briefingKey))
+			for _, briefingNode := range value.Content {
+				if briefingNode.Kind != yaml.MappingNode {
+					continue
+				}
+				for j := 0; j+1 < len(briefingNode.Content); j += 2 {
+					briefingKey := briefingNode.Content[j].Value
+					if !briefingFields[briefingKey] {
+						result.addWarning(file, "briefings."+briefingKey, fmt.Sprintf("unknown Briefing field %q", briefingKey))
+					}
+				}
+			}
+		case "execution":
+			if value.Kind != yaml.MappingNode {
+				continue
+			}
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				executionKey := value.Content[j].Value
+				if !executionFields[executionKey] {
+					result.addWarning(file, "execution."+executionKey, fmt.Sprintf("unknown Plan execution field %q", executionKey))
 				}
 			}
 		}

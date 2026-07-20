@@ -681,3 +681,20 @@ func withIsolatedSettingsEnvironment(t *testing.T, fn func()) {
 
 	fn()
 }
+
+func TestDefaultPlanExecutionModeIsZeroValueSafe(t *testing.T) {
+	withIsolatedSettingsEnvironment(t, func() {
+		if got := LoadMergedSettings().DefaultPlanExecutionMode; got != PlanExecutionModeOnce {
+			t.Fatalf("default mode = %q, want once", got)
+		}
+		if err := os.MkdirAll(".cyclestone", 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(".cyclestone", "settings.yml"), []byte("default_plan_execution_mode: review\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if got := LoadMergedSettings().DefaultPlanExecutionMode; got != PlanExecutionModeReview {
+			t.Fatalf("project mode = %q, want review", got)
+		}
+	})
+}

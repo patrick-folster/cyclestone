@@ -31,6 +31,40 @@ func TestLoadPlanningStateEmpty(t *testing.T) {
 	}
 }
 
+func TestPlanExecutionRoundTripAndValidation(t *testing.T) {
+	t.Parallel()
+	plan := representativePlan()
+	plan.Execution = &PlanExecution{
+		Mode: PlanExecutionModeContinuous, State: "paused", Checkpoint: "approval-required",
+		CurrentBriefingID: plan.Briefings[0].ID, PendingApproval: "before-cycle", UpdatedAt: plan.UpdatedAt,
+	}
+	dir := filepath.Join(t.TempDir(), "plans")
+	if result, err := SavePlan(dir, plan); err != nil || result.HasErrors() {
+		t.Fatalf("SavePlan() = %v, %+v", err, result)
+	}
+	state, result := LoadPlanningState(dir)
+	if result.HasErrors() || len(state.Plans) != 1 || state.Plans[0].Execution == nil || state.Plans[0].Execution.Mode != PlanExecutionModeContinuous {
+		t.Fatalf("execution metadata did not round trip: %+v %+v", state, result)
+	}
+	plan.Execution.Mode = "turbo"
+	if result := ValidatePlan(plan, "plan.yml"); !result.HasErrors() {
+		t.Fatal("expected invalid execution mode to fail validation")
+	}
+}
+
+func TestPlanExecutionMissingCurrentBriefingIsRepairableWarning(t *testing.T) {
+	t.Parallel()
+	plan := representativePlan()
+	plan.Execution = &PlanExecution{
+		Mode: PlanExecutionModeContinuous, State: "stopped", Checkpoint: "cycle-running",
+		CurrentBriefingID: "removed", CurrentMilestoneID: "linked", UpdatedAt: plan.UpdatedAt,
+	}
+	result := ValidatePlan(plan, "plan.yml")
+	if result.HasErrors() || !result.HasWarnings() {
+		t.Fatalf("missing retained Briefing should remain loadable for explicit repair: %+v", result.Messages)
+	}
+}
+
 func TestPlanAndBriefingRoundTrip(t *testing.T) {
 	plansDir := filepath.Join(t.TempDir(), "plans")
 	plan := representativePlan()

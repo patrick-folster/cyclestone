@@ -418,6 +418,10 @@ func (m PreflightModel) content() string {
 		sb.WriteString(fmt.Sprintf("Workflow: Milestone-scoped AGENTS.md update for %s\n", m.Milestone.ID))
 	} else {
 		sb.WriteString(fmt.Sprintf("Milestone: %s - %s\n", m.Milestone.ID, emptyFallback(m.Milestone.Title, "(untitled)")))
+		if origin := m.Request.BriefingOrigin; origin.PlanRun {
+			sb.WriteString(fmt.Sprintf("Plan: %s | Briefing: %s | Queue: %d/%d\n", origin.PlanID, origin.BriefingID, origin.QueuePosition, origin.QueueTotal))
+			sb.WriteString(fmt.Sprintf("Plan execution: %s | Dependencies: %s\n", origin.Mode, emptyFallback(origin.DependencyState, "ready")))
+		}
 		sb.WriteString(fmt.Sprintf("Status: %s\n", status))
 		sb.WriteString(fmt.Sprintf("Next cycle: %s\n", cyclePadded))
 		sb.WriteString(fmt.Sprintf("Agent group: %s\n", group))

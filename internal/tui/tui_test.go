@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
+	"github.com/patrick-folster/cyclestone/internal/executor"
 )
 
 func TestParseMilestoneFile(t *testing.T) {
@@ -498,4 +501,342 @@ func TestWindowSizeSafetyChecks(t *testing.T) {
 	if got.Width != 80 || got.Height != 24 {
 		t.Errorf("expected zero width WindowSizeMsg to be ignored, got %dx%d", got.Width, got.Height)
 	}
+}
+
+func TestBriefingExecutionApprovedCompletesOnlyOriginatingBriefing(t *testing.T) {
+	root, model := writeBriefingExecutionTUIFixture(t)
+	model.BriefingOrigin = BriefingOrigin{PlanID: "plan-one", BriefingID: "selected"}
+
+	model.finishBriefingExecution(executor.CycleFinishedMsg{MilestoneID: "linked-milestone", Status: "approved"})
+
+	planning, validation := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked-milestone"}))
+	if validation.HasErrors() || len(planning.Plans) != 1 {
+		t.Fatalf("failed to reload planning state: %+v", validation)
+	}
+	selected := planning.Plans[0].Briefings[0]
+	other := planning.Plans[0].Briefings[1]
+	if selected.Status != "completed" || selected.UpdatedBy != "briefing-executor" {
+		t.Fatalf("expected selected Briefing completed, got %+v", selected)
+	}
+	if other.Status != "active" {
+		t.Fatalf("expected other ready Briefing to remain active, got %+v", other)
+	}
+	if model.BriefingOrigin != (BriefingOrigin{}) {
+		t.Fatalf("expected origin context cleared, got %+v", model.BriefingOrigin)
+	}
+}
+
+func TestBriefingStartUsesExistingCycleEngineWithNormalMilestoneOptions(t *testing.T) {
+	_, model := writeBriefingExecutionTUIFixture(t)
+	type call struct {
+		milestone config.Milestone
+		opts      executor.RunOptions
+	}
+	calls := make(chan call, 1)
+	original := executeCycle
+	executeCycle = func(_ context.Context, milestone config.Milestone, _ []config.Agent, opts executor.RunOptions, _ *config.State, _ chan tea.Msg) {
+		calls <- call{milestone: milestone, opts: opts}
+	}
+	t.Cleanup(func() { executeCycle = original })
+
+	request := StartCycleMsg{
+		Milestone:      config.Milestone{ID: "linked-milestone", Title: "Linked", SpecPath: "milestones/linked-milestone.md"},
+		NoBranchChange: true,
+		BriefingOrigin: BriefingOrigin{PlanID: "plan-one", BriefingID: "selected"},
+	}
+	updated, _ := model.Update(request)
+	gotModel := updated.(RootModel)
+	if gotModel.ActiveScreen != ScreenRunner || gotModel.BriefingOrigin != request.BriefingOrigin {
+		t.Fatalf("expected ordinary runner with one planning origin, screen=%v origin=%+v", gotModel.ActiveScreen, gotModel.BriefingOrigin)
+	}
+	select {
+	case got := <-calls:
+		if got.milestone.ID != request.Milestone.ID || got.milestone.SpecPath != request.Milestone.SpecPath || got.opts.ConfigPath != model.ConfigPath || got.opts.StatePath != model.StatePath || !got.opts.NoBranchChange {
+			t.Fatalf("unexpected ExecuteCycle handoff: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("existing ExecuteCycle seam was not invoked")
+	}
+}
+
+func TestQueuedBriefingCycleRoutesResolvedSafetyModeThroughPreflight(t *testing.T) {
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+		_ = os.Setenv("HOME", oldHome)
+		_ = os.Setenv("USERPROFILE", oldUserProfile)
+	})
+
+	oldRunnerCheck := checkRunnerAvailable
+	checkRunnerAvailable = func(string) (bool, string) { return true, "available in test" }
+	t.Cleanup(func() { checkRunnerAvailable = oldRunnerCheck })
+
+	oldExecuteCycle := executeCycle
+	t.Cleanup(func() { executeCycle = oldExecuteCycle })
+
+	for _, tc := range []struct {
+		name             string
+		unrestricted     bool
+		settingsMode     string
+		wantMode         string
+		wantUnrestricted bool
+	}{
+		{name: "CLI unrestricted overrides sandbox settings", unrestricted: true, settingsMode: "sandbox", wantMode: "unrestricted", wantUnrestricted: true},
+		{name: "CLI sandbox overrides unrestricted settings", unrestricted: false, settingsMode: "unrestricted", wantMode: "sandbox", wantUnrestricted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Setenv("HOME", root); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Setenv("USERPROFILE", root); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chdir(root); err != nil {
+				t.Fatal(err)
+			}
+			cyclestoneDir := filepath.Join(root, ".cyclestone")
+			if err := os.MkdirAll(cyclestoneDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cyclestoneDir, "settings.yml"), []byte("default_llm: codex\ndefault_mode: "+tc.settingsMode+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			configPath := filepath.Join(cyclestoneDir, "milestone.yml")
+			statePath := filepath.Join(cyclestoneDir, "state.json")
+			milestone := config.Milestone{ID: "linked-milestone", Title: "Linked", SpecPath: "milestones/linked-milestone.md"}
+			state := &config.State{
+				MilestoneStatuses:        map[string]string{},
+				MilestoneCycles:          map[string]int{},
+				MilestoneRecommendations: map[string]int{},
+				History:                  map[string][]config.MilestoneCycleLog{},
+			}
+			origin := BriefingOrigin{PlanID: "plan-one", BriefingID: "selected"}
+			model := NewRootModel(&config.Config{Milestones: []config.Milestone{milestone}}, state, configPath, statePath, true, tc.unrestricted, true, true)
+			model.QueueBriefingCycle(milestone, origin)
+
+			batch, ok := model.Init()().(tea.BatchMsg)
+			if !ok {
+				t.Fatalf("expected Init to return tea.BatchMsg")
+			}
+			var route ChangeScreenMsg
+			for _, cmd := range batch {
+				if msg, ok := cmd().(ChangeScreenMsg); ok {
+					route = msg
+					break
+				}
+			}
+			if route.Screen != ScreenPreflight {
+				t.Fatalf("expected queued briefing to route to preflight, got %#v", route)
+			}
+
+			updated, _ := model.Update(route)
+			routed := updated.(RootModel)
+			request := routed.Preflight.Request
+			if routed.ActiveScreen != ScreenPreflight || request.Milestone.ID != milestone.ID || request.Milestone.Title != milestone.Title || request.Milestone.SpecPath != milestone.SpecPath || request.BriefingOrigin != origin {
+				t.Fatalf("unexpected queued preflight request: screen=%v request=%+v", routed.ActiveScreen, request)
+			}
+			if request.RunnerMode != tc.wantMode || !request.NoBranchChange || routed.Preflight.ConfigPath != configPath || routed.Preflight.StatePath != statePath {
+				t.Fatalf("preflight lost execution options: request=%+v config=%q state=%q", request, routed.Preflight.ConfigPath, routed.Preflight.StatePath)
+			}
+
+			routed.Preflight.Issues = nil
+			_, confirmCmd := routed.Preflight.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if confirmCmd == nil {
+				t.Fatal("expected preflight confirmation command")
+			}
+			confirmed, ok := confirmCmd().(StartCycleMsg)
+			if !ok || confirmed.RunnerMode != tc.wantMode || confirmed.BriefingOrigin != origin {
+				t.Fatalf("preflight did not preserve queued request: %#v", confirmed)
+			}
+
+			calls := make(chan executor.RunOptions, 1)
+			executeCycle = func(_ context.Context, _ config.Milestone, _ []config.Agent, opts executor.RunOptions, _ *config.State, _ chan tea.Msg) {
+				calls <- opts
+			}
+			updated, _ = routed.Update(confirmed)
+			running := updated.(RootModel)
+			if running.ActiveScreen != ScreenRunner || running.BriefingOrigin != origin {
+				t.Fatalf("runner lost briefing origin: screen=%v origin=%+v", running.ActiveScreen, running.BriefingOrigin)
+			}
+			select {
+			case opts := <-calls:
+				if opts.Unrestricted != tc.wantUnrestricted || !opts.NoBranchChange || opts.ConfigPath != configPath || opts.StatePath != statePath {
+					t.Fatalf("executor received mismatched options: %+v", opts)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("existing ExecuteCycle seam was not invoked")
+			}
+		})
+	}
+}
+
+func TestBriefingExecutionNonApprovedResultsAndCancellationDoNotAdvanceStatus(t *testing.T) {
+	for _, result := range []executor.CycleFinishedMsg{
+		{MilestoneID: "linked-milestone", Status: "failed"},
+		{MilestoneID: "linked-milestone", Status: "blocked"},
+		{MilestoneID: "linked-milestone", Status: "failed", Error: errors.New("executor failed")},
+		{MilestoneID: "linked-milestone", Status: "failed", Error: context.Canceled},
+	} {
+		root, model := writeBriefingExecutionTUIFixture(t)
+		model.BriefingOrigin = BriefingOrigin{PlanID: "plan-one", BriefingID: "selected"}
+		model.finishBriefingExecution(result)
+		planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked-milestone"}))
+		if got := planning.Plans[0].Briefings[0].Status; got != "active" {
+			t.Errorf("result %+v advanced Briefing to %q", result, got)
+		}
+	}
+}
+
+func TestStandaloneApprovedMilestoneDoesNotUpdatePlanning(t *testing.T) {
+	root, model := writeBriefingExecutionTUIFixture(t)
+	model.finishBriefingExecution(executor.CycleFinishedMsg{MilestoneID: "linked-milestone", Status: "approved"})
+	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked-milestone"}))
+	if got := planning.Plans[0].Briefings[0].Status; got != "active" {
+		t.Fatalf("standalone execution changed planning status to %q", got)
+	}
+}
+
+func TestPlanTerminalCallbackReceivesActualMilestoneID(t *testing.T) {
+	model := RootModel{BriefingOrigin: BriefingOrigin{PlanID: "plan-one", BriefingID: "selected", MilestoneID: "expected", PlanRun: true}}
+	var got string
+	model.PlanCycleFinished = func(_ BriefingOrigin, milestoneID, _ string, _ error) (PlanContinuation, error) {
+		got = milestoneID
+		return PlanContinuation{}, nil
+	}
+	model.finishBriefingExecution(executor.CycleFinishedMsg{MilestoneID: "actual", Status: "approved"})
+	if got != "actual" {
+		t.Fatalf("Plan callback received Milestone ID %q, want terminal event ID", got)
+	}
+}
+
+func TestPlanCancellationRetainsOriginUntilDelayedTerminalMessage(t *testing.T) {
+	origin := BriefingOrigin{PlanID: "plan-one", BriefingID: "selected", MilestoneID: "linked-milestone", PlanRun: true}
+	state := &config.State{}
+	milestone := config.Milestone{ID: "linked-milestone", Title: "Linked"}
+	model := NewRootModel(&config.Config{Milestones: []config.Milestone{milestone}}, state, "milestone.yml", "state.json", true, false, true, true)
+	model.ActiveScreen = ScreenRunner
+	model.BriefingOrigin = origin
+	model.activePlanOrigin = origin
+	model.Runner.Milestone = config.Milestone{ID: "linked-milestone", Title: "Linked"}
+	model.Runner.Workflow = WorkflowCycle
+	var gotOrigin BriefingOrigin
+	var gotErr error
+	model.PlanCycleFinished = func(callbackOrigin BriefingOrigin, _ string, _ string, cycleErr error) (PlanContinuation, error) {
+		gotOrigin, gotErr = callbackOrigin, cycleErr
+		return PlanContinuation{}, nil
+	}
+
+	updated, routeCmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if routeCmd == nil {
+		t.Fatal("cancel key did not return navigation command")
+	}
+	routed, _ := updated.(RootModel).Update(routeCmd())
+	afterNavigation := routed.(RootModel)
+	if afterNavigation.BriefingOrigin != (BriefingOrigin{}) || afterNavigation.activePlanOrigin != origin {
+		t.Fatalf("navigation did not preserve only active callback ownership: visible=%+v active=%+v", afterNavigation.BriefingOrigin, afterNavigation.activePlanOrigin)
+	}
+	afterNavigation.Update(executor.CycleFinishedMsg{MilestoneID: "linked-milestone", Status: "failed", Error: context.Canceled})
+	if gotOrigin != origin || gotErr != context.Canceled {
+		t.Fatalf("delayed cancellation lost Plan ownership: origin=%+v err=%v", gotOrigin, gotErr)
+	}
+}
+
+func TestBriefingCompletionSaveFailureIsVisibleAndDoesNotChangeMilestoneArtifacts(t *testing.T) {
+	root, model := writeBriefingExecutionTUIFixture(t)
+	model.BriefingOrigin = BriefingOrigin{PlanID: "plan-one", BriefingID: "selected"}
+	milestonePath := filepath.Join(root, ".cyclestone", "milestones", "linked-milestone.md")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	beforeMilestone, _ := os.ReadFile(milestonePath)
+	beforeState, _ := os.ReadFile(statePath)
+	plansDir := filepath.Join(root, ".cyclestone", "plans")
+	if err := os.Chmod(plansDir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(plansDir, 0755) })
+
+	model.finishBriefingExecution(executor.CycleFinishedMsg{MilestoneID: "linked-milestone", Status: "approved", ReportFile: "report.yaml"})
+
+	if !strings.Contains(model.Runner.LastError, "Planning update warning") || !strings.Contains(model.Runner.Status, "cycle remains valid") {
+		t.Fatalf("expected visible planning save warning, status=%q error=%q", model.Runner.Status, model.Runner.LastError)
+	}
+	afterMilestone, _ := os.ReadFile(milestonePath)
+	afterState, _ := os.ReadFile(statePath)
+	if string(afterMilestone) != string(beforeMilestone) || string(afterState) != string(beforeState) {
+		t.Fatal("planning save failure changed Milestone spec or runtime state")
+	}
+}
+
+func writeBriefingExecutionTUIFixture(t *testing.T) (string, RootModel) {
+	t.Helper()
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	plansDir := filepath.Join(root, ".cyclestone", "plans")
+	if err := os.MkdirAll(filepath.Join(root, ".cyclestone", "milestones"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("milestones:\n  - id: linked-milestone\n    title: Linked\n    spec_path: milestones/linked-milestone.md\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".cyclestone", "milestones", "linked-milestone.md"), []byte("# Linked\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"milestone_statuses":{},"milestone_cycles":{},"history":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	plan := `schema_version: 1
+id: plan-one
+title: Plan One
+objective: Execute one Briefing.
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: pm
+updated_at: "2026-07-20T10:00:00Z"
+updated_by: pm
+briefing_order: [selected, other]
+briefings:
+  - id: selected
+    title: Selected
+    objective: Execute selected work.
+    intent: Run one Milestone.
+    status: active
+    milestone_id: linked-milestone
+    completion_signal: Selected work completes.
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: pm
+    updated_at: "2026-07-20T10:00:00Z"
+    updated_by: pm
+  - id: other
+    title: Other
+    objective: Remain ready.
+    intent: Do not auto-start.
+    status: active
+    completion_signal: Other stays active.
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: pm
+    updated_at: "2026-07-20T10:00:00Z"
+    updated_by: pm
+`
+	if err := os.WriteFile(filepath.Join(plansDir, "plan-one.yml"), []byte(plan), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, NewRootModel(cfg, state, configPath, statePath, true, false, true, true)
 }

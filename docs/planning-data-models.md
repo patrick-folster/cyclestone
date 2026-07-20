@@ -1,6 +1,6 @@
 # Planning Data Models
 
-This document defines Cyclestone's optional planning-layer persistence model. The model is implemented for manual Plan and Briefing CLI management; it does not imply migrations, executor behavior, runner orchestration, AI generation, or TUI flows.
+This document defines Cyclestone's optional planning-layer persistence model. Planning remains optional and does not migrate or replace ordinary Milestone runtime data. Explicit planning commands may generate or orchestrate ordinary Milestones through the existing TUI and cycle engine.
 
 The current execution model remains independent:
 
@@ -62,11 +62,14 @@ cyclestone briefing split <plan-id> <briefing-id> --parts-file <path> [--milesto
 cyclestone briefing merge <plan-id> <target-briefing-id> <merged-briefing-id> [<merged-briefing-id>...] --title <title> --objective <objective> --intent <intent> --completion-signal <signal> [--status <status>] [--milestone-link <briefing-id|none>] [--actor <actor>]
 cyclestone briefing dependency add <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
 cyclestone briefing dependency remove <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
-cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--actor <actor>]
+cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--replace-link] [--actor <actor>]
 cyclestone briefing unlink <plan-id> <briefing-id> [--actor <actor>]
+cyclestone briefing execute <plan-id> <briefing-id>
+cyclestone plan start <plan-id> [--mode once|continuous|review]
+cyclestone plan resume <plan-id> [--mode once|continuous|review] [--approve]
 ```
 
-These commands load `.cyclestone/plans/*.yml` relative to the configured `-config` file directory. Display commands use the existing milestone index only to label Briefing relationships as `milestone: none`, `milestone: linked <id>`, or `milestone: missing <id>`. Missing optional Milestone references remain warnings and do not create Milestone specs, state, reports, or Plan files.
+These commands load `.cyclestone/plans/*.yml` relative to the configured `-config` file directory. Display commands use the existing milestone index and loaded planning files only to label Briefing relationships as `milestone: none`, `milestone: linked <id> (standalone)`, `milestone: linked <id> (also linked by Plan <plan-id> Briefing <briefing-id>)`, or `milestone: missing <id>`. Missing optional Milestone references remain warnings and do not create Milestone specs, state, reports, or Plan files.
 
 `plan list` prints deterministic Plan rows with ID, title, status, Briefing count, and derived progress. `plan show` prints one Plan with metadata, progress, and Briefings in `briefing_order`, followed by remaining addressable Briefings sorted by ID. `briefing show` prints one Briefing with objective, intent, completion signal, dependencies, constraints, derived readiness, and Milestone relationship.
 
@@ -78,9 +81,31 @@ Review commands are aliases over the same typed planning mutation path. `plan ap
 
 `briefing merge` keeps the first Briefing ID as the stable target ID, requires explicit merged metadata flags, removes the other merged Briefing records from the Plan, unions dependencies while excluding merged IDs and self-dependencies, and rewrites external dependents of merged-away Briefings to the target. If multiple merged Briefings have `milestone_id`, the command fails unless `--milestone-link <briefing-id|none>` selects one linked Briefing to preserve or clears the link. Merge and split only rewrite the containing Plan file; linked or standalone Milestone storage is never deleted or edited.
 
-`briefing link` is strict: the Milestone ID must already exist in the compact Milestone index, the target Briefing must not already link a different Milestone, and no other active or completed Briefing in any valid Plan may already link the same Milestone. `briefing unlink`, archive, delete, and Plan delete never modify linked Milestone specs, compact index entries, runtime state, reports, temp files, branch snapshots, or cycles.
+`briefing link` is strict: the Milestone ID must already exist in the compact Milestone index, the target Briefing must not already link a different Milestone unless `--replace-link` is supplied, and no other active or completed Briefing in any valid Plan may already link the same Milestone. Replacement changes only the selected Briefing's `milestone_id` and planning metadata; it does not create, delete, or mutate either the previously linked Milestone or the replacement Milestone. `briefing unlink`, archive, delete, and Plan delete never modify linked Milestone specs, compact index entries, runtime state, reports, temp files, branch snapshots, or cycles.
 
 `briefing generate-milestone <plan-id> <briefing-id>` creates exactly one ordinary Milestone from one completed Briefing. The command validates all Plan files before writing, requires every dependency of the selected Briefing to also be completed, refuses an existing Briefing link unless `--replace-link` is supplied, writes a long-form Markdown spec under `.cyclestone/milestones/`, appends a compact entry to `.cyclestone/milestone.yml`, and then stores the generated Milestone ID back on only the source Briefing. `--preview` prints the proposed Milestone ID, spec, and Briefing link without writing milestone or planning data. Replacing a Briefing link does not delete or mutate the previously linked Milestone.
+
+`briefing execute <plan-id> <briefing-id>` executes exactly one active or completed Briefing whose dependencies are completed. A valid existing `milestone_id` resolves to that ordinary Milestone without rewriting its index entry, spec, state, or reports. An unlinked Briefing reuses the same generation preparation path, persists its new Milestone link, reloads normal Milestone config and state, and opens the existing preflight and runner workflow. If Milestone creation succeeds but link persistence fails, the generated standalone Milestone is preserved and execution stops with an explicit partial-success error. A Plan resume may reclaim only the deterministic generated ID whose title, spec path, and embedded Plan/Briefing source markers prove it is the interrupted output for that same Briefing; ambiguous collisions stop for explicit repair.
+
+The executor receives only the resolved `config.Milestone` and normal run options. Planning origin stays in the TUI wrapper. An `approved` terminal result marks only the selected Briefing `completed`; `failed`, `blocked`, executor errors, and cancellation do not advance it. Completion reloads the Plan and verifies that the Briefing still links the executed Milestone before saving. A post-cycle Plan save failure is shown as a warning and never rolls back or invalidates cycle state, reports, branch snapshots, or the generated/linked Milestone. No other ready Briefing starts automatically.
+
+## Plan Execution
+
+An approved Plan uses the existing `completed` Plan status. `plan start` creates optional `execution` metadata in that Plan file and selects only from its `briefing_order`. Archived and completed Briefings are skipped; an active Briefing is eligible only when all same-Plan dependencies are completed. If incomplete work remains but none is eligible, execution ends in the distinct `blocked` / `dependency-deadlock` state. If no incomplete work remains, it ends at `completed` / `exhausted`.
+
+Execution modes are:
+
+- `once`: reconcile or execute one eligible Briefing, then pause.
+- `continuous`: continue selecting eligible Briefings after each approved result until exhaustion, failure, or dependency deadlock.
+- `review`: persist an `approval-required` checkpoint before each Milestone cycle. `plan resume <id> --approve` consumes approval only for the displayed Briefing/Milestone gate.
+
+The command-line `--mode` overrides `default_plan_execution_mode`; the resolved mode is persisted for resume. A resume-time mode changes only the Plan coordinator behavior and never changes runner safety or branch settings.
+
+The optional execution record stores the resolved mode, state, checkpoint, current Briefing and Milestone IDs, pending approval token, stop reason, and update time. Checkpoints are written around selection, durable Milestone linkage, pending launch, active cycle, Briefing completion, review pause, one-item pause, stop, deadlock, and exhaustion. A safe stop at an uncertain launch boundary retains `cycle-pending` or `cycle-running` instead of collapsing it to a generic checkpoint. The TUI preflight and runner show Plan ID, Briefing ID, queue position, dependency readiness, and mode while continuing to execute an ordinary Milestone.
+
+Resume always reloads the selected Plan, compact Milestone index, and `state.json`. Approval consumption and the final preflight-to-runner transition both require the retained Plan to remain approved, the Briefing to remain active and dependency-ready, its exact retained link to remain intact, and the Milestone to remain indexed. A valid existing link is reused. An Approved linked Milestone completes the Briefing without another cycle; Failed or Blocked stops on the current Briefing. A dangling or edited link is preserved and requires explicit repair. If a process ends after `cycle-running` was saved but no terminal Milestone status exists, every resume remains non-launchable and stops for inspection until runtime state is reconciled. Terminal events whose Milestone identity does not match the retained cycle are recorded as actionable stops and never advance planning. Navigation after runner cancellation hides the visible Plan context but retains callback ownership until the delayed terminal event durably stops the selected Briefing.
+
+Archiving or deleting a Plan only changes/removes its planning file. It never cascades to generated or linked Milestone specs, compact index entries, state, cycle history, reports, handoffs, temp data, or branch snapshots.
 
 ## AI-Assisted Plan Generation
 

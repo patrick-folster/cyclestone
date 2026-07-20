@@ -78,6 +78,20 @@ type StartCycleMsg struct {
 	Group          config.AgentGroup
 	Note           string
 	Workflow       WorkflowKind
+	BriefingOrigin BriefingOrigin
+}
+
+// BriefingOrigin identifies the one planning item that launched a normal
+// Milestone cycle. It is intentionally kept out of executor.RunOptions.
+type BriefingOrigin struct {
+	PlanID          string
+	BriefingID      string
+	MilestoneID     string
+	Mode            string
+	QueuePosition   int
+	QueueTotal      int
+	DependencyState string
+	PlanRun         bool
 }
 
 // Init initializes the details sub-model.

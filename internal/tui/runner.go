@@ -78,6 +78,7 @@ type RunnerModel struct {
 	ActiveTab           RunnerTab
 	Workflow            WorkflowKind
 	ReturnScreen        Screen
+	PlanContext         string
 }
 
 // NewRunnerModel instantiates a new RunnerModel.
@@ -469,6 +470,9 @@ func (m RunnerModel) View() string {
 	if m.Height < 20 {
 		// Tabbed view layout for small resolution
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("RUNNER: %s - %s", m.Milestone.ID, m.Milestone.Title)) + "\n")
+		if m.PlanContext != "" {
+			sb.WriteString(m.Styles.DetailValue.Render(m.PlanContext) + "\n")
+		}
 		sb.WriteString(fmt.Sprintf("%s %s\n", m.Styles.DetailLabel.Render("Status:"), m.Styles.DetailValue.Render(m.compactStatusLine())))
 
 		tabLine := lipgloss.JoinHorizontal(
@@ -578,6 +582,9 @@ func (m RunnerModel) View() string {
 	} else {
 		// Default standard resolution layout
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("RUNNER: %s - %s", m.Milestone.ID, m.Milestone.Title)) + "\n")
+		if m.PlanContext != "" {
+			sb.WriteString(m.Styles.DetailValue.Render(m.PlanContext) + "\n")
+		}
 		sb.WriteString(fmt.Sprintf("%s %s\n", m.Styles.DetailLabel.Render("Status:"), m.Styles.DetailValue.Render(m.compactStatusLine())))
 		sb.WriteString(m.renderRunnerContext(runnerContextLines))
 		sb.WriteString(m.renderBudgetLine(runnerBudgetLines))

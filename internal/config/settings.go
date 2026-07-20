@@ -27,13 +27,14 @@ type AgentInstructionsSettings struct {
 
 // Settings represents global and project configurations.
 type Settings struct {
-	DefaultLLM             string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", "ollama-codex", or "" (inherit)
-	DefaultMode            string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`                       // "sandbox", "unrestricted", or "" (inherit)
-	AutoGitBranch          *bool  `yaml:"auto_git_branch,omitempty" json:"auto_git_branch,omitempty"`                 // pointer to bool, nil if unset/inherit
-	CreateMilestoneBranch  *bool  `yaml:"create_milestone_branch,omitempty" json:"create_milestone_branch,omitempty"` // pointer to bool, nil if unset/inherit
-	DisableBold            *bool  `yaml:"disable_bold,omitempty" json:"disable_bold,omitempty"`                       // pointer to bool, nil if unset/inherit
-	DisableRoundedBorders  *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
-	DefaultGitBranchPrefix string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
+	DefaultLLM               string `yaml:"default_llm,omitempty" json:"default_llm,omitempty"`                         // "codex", "agy", "aider", "ollama", "ollama-codex", or "" (inherit)
+	DefaultMode              string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`                       // "sandbox", "unrestricted", or "" (inherit)
+	AutoGitBranch            *bool  `yaml:"auto_git_branch,omitempty" json:"auto_git_branch,omitempty"`                 // pointer to bool, nil if unset/inherit
+	CreateMilestoneBranch    *bool  `yaml:"create_milestone_branch,omitempty" json:"create_milestone_branch,omitempty"` // pointer to bool, nil if unset/inherit
+	DisableBold              *bool  `yaml:"disable_bold,omitempty" json:"disable_bold,omitempty"`                       // pointer to bool, nil if unset/inherit
+	DisableRoundedBorders    *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
+	DefaultGitBranchPrefix   string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
+	DefaultPlanExecutionMode string `yaml:"default_plan_execution_mode,omitempty" json:"default_plan_execution_mode,omitempty"`
 
 	AiderModel                      string                    `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
 	OllamaModel                     string                    `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
@@ -108,6 +109,7 @@ func LoadDefaultSettings() Settings {
 		DisableBold:                     &disableBold,
 		DisableRoundedBorders:           &disableRoundedBorders,
 		DefaultGitBranchPrefix:          "cyclestone/milestones/",
+		DefaultPlanExecutionMode:        PlanExecutionModeOnce,
 		EnableContextCaching:            &enableContextCaching,
 		EnableCompactPhaseHandoffs:      &enableCompactPhaseHandoffs,
 		EnableCodexSessionResume:        &enableCodexSessionResume,
@@ -239,6 +241,9 @@ func LoadMergedSettings() Settings {
 	if s.DefaultGitBranchPrefix == "" {
 		s.DefaultGitBranchPrefix = "cyclestone/milestones/"
 	}
+	if !IsValidPlanExecutionMode(s.DefaultPlanExecutionMode) {
+		s.DefaultPlanExecutionMode = PlanExecutionModeOnce
+	}
 	if s.CacheTTLMinutes <= 0 {
 		s.CacheTTLMinutes = 30
 	}
@@ -327,6 +332,9 @@ func LoadMergedSettings() Settings {
 				if projectSettings.DefaultGitBranchPrefix != "" {
 					s.DefaultGitBranchPrefix = projectSettings.DefaultGitBranchPrefix
 				}
+				if projectSettings.DefaultPlanExecutionMode != "" {
+					s.DefaultPlanExecutionMode = projectSettings.DefaultPlanExecutionMode
+				}
 				if projectSettings.MaxLLMInputChars != 0 {
 					s.MaxLLMInputChars = projectSettings.MaxLLMInputChars
 				}
@@ -382,6 +390,9 @@ func LoadMergedSettings() Settings {
 	normalizeAgentInstructionsSettings(&s)
 	if s.DefaultGitBranchPrefix == "" {
 		s.DefaultGitBranchPrefix = "cyclestone/milestones/"
+	}
+	if !IsValidPlanExecutionMode(s.DefaultPlanExecutionMode) {
+		s.DefaultPlanExecutionMode = PlanExecutionModeOnce
 	}
 	if s.CacheTTLMinutes <= 0 {
 		s.CacheTTLMinutes = 30
