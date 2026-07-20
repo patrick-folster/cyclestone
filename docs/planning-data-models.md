@@ -40,8 +40,11 @@ The CLI exposes the planning layer without mutating Milestone, state, report, te
 ```text
 cyclestone plan list
 cyclestone plan show <plan-id>
+cyclestone plan generate --goal <goal> [--preview] [--actor <actor>] [--runner-command <command>] [--response-file <path>]
 cyclestone plan create <plan-id> --title <title> --objective <objective> [--actor <actor>]
 cyclestone plan edit <plan-id> [--title <title>] [--objective <objective>] [--actor <actor>]
+cyclestone plan approve <plan-id> [--actor <actor>]
+cyclestone plan reject <plan-id> [--actor <actor>]
 cyclestone plan archive <plan-id> [--actor <actor>]
 cyclestone plan restore <plan-id> [--actor <actor>]
 cyclestone plan delete <plan-id> --confirm <plan-id>
@@ -50,9 +53,13 @@ cyclestone briefing show <plan-id> <briefing-id>
 cyclestone briefing add <plan-id> <briefing-id> --title <title> --objective <objective> --intent <intent> --completion-signal <signal> [--actor <actor>]
 cyclestone briefing edit <plan-id> <briefing-id> [metadata flags] [--actor <actor>]
 cyclestone briefing reorder <plan-id> <briefing-id> [<briefing-id>...] [--actor <actor>]
+cyclestone briefing approve <plan-id> <briefing-id> [--actor <actor>]
+cyclestone briefing reject <plan-id> <briefing-id> [--actor <actor>]
 cyclestone briefing archive <plan-id> <briefing-id> [--actor <actor>]
 cyclestone briefing restore <plan-id> <briefing-id> [--actor <actor>]
 cyclestone briefing delete <plan-id> <briefing-id> --confirm <briefing-id>
+cyclestone briefing split <plan-id> <briefing-id> --parts-file <path> [--milestone-link <part-id|none>] [--actor <actor>]
+cyclestone briefing merge <plan-id> <target-briefing-id> <merged-briefing-id> [<merged-briefing-id>...] --title <title> --objective <objective> --intent <intent> --completion-signal <signal> [--status <status>] [--milestone-link <briefing-id|none>] [--actor <actor>]
 cyclestone briefing dependency add <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
 cyclestone briefing dependency remove <plan-id> <briefing-id> <dependency-id> [--actor <actor>]
 cyclestone briefing link <plan-id> <briefing-id> <milestone-id> [--actor <actor>]
@@ -65,7 +72,21 @@ These commands load `.cyclestone/plans/*.yml` relative to the configured `-confi
 
 Mutating commands load and validate all planning files before writing. Planning validation errors block the command and leave files unchanged; warnings are printed and the command may continue. Plan creation creates `.cyclestone/plans/` on first use. Plan deletion removes only `.cyclestone/plans/<plan-id>.yml` and requires an exact `--confirm <plan-id>` token. Briefing deletion removes only the embedded Briefing record and its active order entry and requires `--confirm <briefing-id>`. Archive commands set status to `archived`; they do not delete records or Milestone artifacts.
 
+Review commands are aliases over the same typed planning mutation path. `plan approve` and `briefing approve` set status to `completed`; `plan reject` and `briefing reject` set status to `archived`. Briefing rejection removes the Briefing from active `briefing_order` while preserving the embedded record and any `milestone_id`. Approval and rejection do not execute Plans, create Milestones, start runner cycles, or mutate Milestone specs, compact index entries, state, reports, temp files, cycle artifacts, or branch snapshots.
+
+`briefing split` reads a JSON parts file, either as `{"parts":[...]}` or as a top-level array. Each part supplies `id`, `title`, `objective`, `intent`, and `completion_signal`, with optional `status`, `constraints`, and `depends_on`; omitted status defaults to `active`. Splitting removes the source Briefing record from the Plan, inserts the new non-archived part IDs where the source appeared in `briefing_order`, gives the first part the source dependencies when `depends_on` is omitted, chains later omitted dependencies to the previous part, and rewrites external dependents of the source to the final part. If the source has `milestone_id`, the command fails unless `--milestone-link <part-id|none>` explicitly selects the part that keeps the link or clears it.
+
+`briefing merge` keeps the first Briefing ID as the stable target ID, requires explicit merged metadata flags, removes the other merged Briefing records from the Plan, unions dependencies while excluding merged IDs and self-dependencies, and rewrites external dependents of merged-away Briefings to the target. If multiple merged Briefings have `milestone_id`, the command fails unless `--milestone-link <briefing-id|none>` selects one linked Briefing to preserve or clears the link. Merge and split only rewrite the containing Plan file; linked or standalone Milestone storage is never deleted or edited.
+
 `briefing link` is strict: the Milestone ID must already exist in the compact Milestone index, the target Briefing must not already link a different Milestone, and no other active or completed Briefing in any valid Plan may already link the same Milestone. `briefing unlink`, archive, delete, and Plan delete never modify linked Milestone specs, compact index entries, runtime state, reports, temp files, branch snapshots, or cycles.
+
+## AI-Assisted Plan Generation
+
+`cyclestone plan generate --goal <goal>` asks a configured local runner to return one structured JSON object with a Plan title, objective, optional constraints, and ordered Briefings. Cyclestone parses that JSON, derives lowercase Plan and Briefing IDs from titles, normalizes same-Plan dependencies after IDs are fixed, sets Plan and Briefing status to `active`, clears Milestone links by rejecting any generated `milestone_id`, validates the in-memory Plan with the same planning validator used by `SavePlan`, and then writes only `.cyclestone/plans/<plan-id>.yml`.
+
+Generation may also run in review-only mode with `--preview`, which prints the generated Plan through the same renderer as `plan show` and writes nothing. Tests and deterministic local workflows may pass `--response-file <path>` to provide the structured response directly; this bypasses runner execution but still uses the same parser, converter, validation, collision checks, and preview/save behavior.
+
+The generation prompt is bounded and assembled from stable repository context: `AGENTS.md`, `.cyclestone/DECISIONS.md`, `docs/architecture.md`, `docs/planning-data-models.md`, and tracked repository structure when available. It does not load unrelated milestone specs, reports, state entries, or temp artifacts. Invalid JSON, missing required generated fields, dependency references that cannot be mapped to generated Briefings, dependency cycles, generated Milestone links, validation errors, or Plan ID collisions fail before any Plan file is written.
 
 ## Plan Record
 
@@ -125,9 +146,9 @@ Ordering is stored by the parent Plan's `briefing_order` list, not by a mutable 
 
 Plans and Briefings share the same status values:
 
-- `active`: visible and available for continued planning work.
-- `completed`: finished, retained for context, and normally read-only except metadata corrections or explicit reopen actions.
-- `archived`: hidden from active planning views by default, retained for history, and excluded from derived progress.
+- `active`: visible and available for continued planning work or review.
+- `completed`: approved or finished, retained for context, and normally read-only except metadata corrections or explicit reopen actions.
+- `archived`: rejected or hidden from active planning views by default, retained for history, and excluded from derived progress.
 
 Allowed transitions:
 

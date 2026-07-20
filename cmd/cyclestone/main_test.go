@@ -299,6 +299,192 @@ func TestPlanAndBriefingManualCommands(t *testing.T) {
 	}
 }
 
+func TestPlanGenerateCreatesValidatedPlanOnly(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	writeMainTestFile(t, configPath, `milestones:
+  - id: existing-milestone
+    title: Existing Milestone
+    spec_path: milestones/existing-milestone.md
+`)
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"), "# Existing\n")
+	writeMainTestFile(t, statePath, `{"active_milestone_id":"existing-milestone","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"), "existing report\n")
+	responsePath := filepath.Join(root, "response.json")
+	writeMainTestFile(t, responsePath, `{
+  "title": "Improve First Run Setup",
+  "objective": "Make first run setup dependable and easy to validate.",
+  "constraints": ["Do not alter milestone execution."],
+  "briefings": [
+    {
+      "title": "Audit setup flow",
+      "objective": "Map current setup states.",
+      "intent": "Expose gaps before implementation.",
+      "completion_signal": "Setup states are documented."
+    },
+    {
+      "title": "Add setup validation",
+      "objective": "Validate setup inputs before save.",
+      "intent": "Prevent invalid local configuration.",
+      "completion_signal": "Invalid setup input is rejected.",
+      "constraints": ["Keep non-interactive startup unchanged."],
+      "depends_on": ["Audit setup flow"]
+    },
+    {
+      "title": "Add setup validation",
+      "objective": "Cover duplicate-title ID suffixing.",
+      "intent": "Keep generated IDs deterministic.",
+      "completion_signal": "Duplicate title has a suffixed ID."
+    }
+  ]
+}`)
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"plan", "generate", "--goal", "Improve first run setup", "--actor", "pm", "--response-file", responsePath}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan generate returned %d, stderr:\n%s", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"Plan \"improve-first-run-setup\" generated",
+		"Plan: improve-first-run-setup",
+		"- audit-setup-flow | active | readiness: ready | milestone: none | Audit setup flow",
+		"- add-setup-validation | active | readiness: blocked | milestone: none | Add setup validation",
+		"- add-setup-validation-2 | active | readiness: ready | milestone: none | Add setup validation",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected generated output to contain %q, got:\n%s", want, out)
+		}
+	}
+	assertFilesUnchanged(t, before)
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "temp"))
+	plan := loadMainTestPlan(t, root, "improve-first-run-setup")
+	if plan.CreatedBy != "pm" || plan.UpdatedBy != "pm" || plan.Status != "active" {
+		t.Fatalf("unexpected generated plan metadata: %+v", plan)
+	}
+	if strings.Join(plan.BriefingOrder, "|") != "audit-setup-flow|add-setup-validation|add-setup-validation-2" {
+		t.Fatalf("unexpected generated briefing order: %+v", plan.BriefingOrder)
+	}
+	second, ok := findBriefing(plan, "add-setup-validation")
+	if !ok || strings.Join(second.DependsOn, "|") != "audit-setup-flow" || second.MilestoneID != "" {
+		t.Fatalf("unexpected generated dependency or milestone link: %+v", second)
+	}
+}
+
+func TestPlanGeneratePreviewDoesNotWritePlan(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	writeMainTestFile(t, configPath, "milestones: []\n")
+	responsePath := filepath.Join(root, "response.json")
+	writeMainTestFile(t, responsePath, validGeneratedPlanJSON("Preview Plan"))
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"plan", "generate", "--goal", "Preview work", "--preview", "--response-file", responsePath}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("preview returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Generated Plan \"preview-plan\" preview") || !strings.Contains(stdout.String(), "Plan: preview-plan") {
+		t.Fatalf("unexpected preview output:\n%s", stdout.String())
+	}
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "plans"))
+}
+
+func TestPlanGenerateRejectsInvalidResponsesWithoutWrites(t *testing.T) {
+	cases := []struct {
+		name  string
+		body  string
+		error string
+	}{
+		{name: "malformed", body: `{"title":`, error: "response must contain one JSON object"},
+		{name: "missing fields", body: `{"title":"Missing Fields","objective":"","briefings":[]}`, error: "objective is required"},
+		{name: "unknown dependency", body: `{"title":"Bad Dependency","objective":"Objective.","briefings":[{"title":"One","objective":"Objective.","intent":"Intent.","completion_signal":"Done.","depends_on":["Missing"]}]}`, error: "depends on unknown Briefing"},
+		{name: "milestone id", body: `{"title":"Forbidden Link","objective":"Objective.","briefings":[{"title":"One","objective":"Objective.","intent":"Intent.","completion_signal":"Done.","milestone_id":"existing-milestone"}]}`, error: "must not include milestone_id"},
+		{name: "cycle", body: `{"title":"Cycle Plan","objective":"Objective.","briefings":[{"title":"One","objective":"Objective.","intent":"Intent.","completion_signal":"Done.","depends_on":["Two"]},{"title":"Two","objective":"Objective.","intent":"Intent.","completion_signal":"Done.","depends_on":["One"]}]}`, error: "generated Plan validation failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, configPath, statePath := writePlanningCommandFixture(t)
+			planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml")
+			before := snapshotFiles(t,
+				configPath,
+				statePath,
+				planPath,
+				filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+				filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+			)
+			responsePath := filepath.Join(root, tc.name+".json")
+			writeMainTestFile(t, responsePath, tc.body)
+
+			assertCommandFails(t, configPath,
+				[]string{"plan", "generate", "--goal", "Should not write", "--response-file", responsePath},
+				tc.error,
+			)
+			assertFilesUnchanged(t, before)
+			assertPathMissing(t, filepath.Join(root, ".cyclestone", "plans", "should-not-write.yml"))
+		})
+	}
+}
+
+func TestPlanGenerateRejectsExistingPlanCollision(t *testing.T) {
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+	responsePath := filepath.Join(root, "collision.json")
+	writeMainTestFile(t, responsePath, validGeneratedPlanJSON("Delivery Plan"))
+
+	assertCommandFails(t, configPath,
+		[]string{"plan", "generate", "--goal", "Collision", "--response-file", responsePath},
+		"generated Plan \"delivery-plan\" already exists",
+	)
+	assertFilesUnchanged(t, before)
+}
+
+func TestPlanGenerateUsesInjectedRunnerAndBoundedPrompt(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	writeMainTestFile(t, configPath, "milestones: []\n")
+	oldRunner := runPlanGenerationRunner
+	defer func() { runPlanGenerationRunner = oldRunner }()
+	var gotCommand, gotPrompt string
+	runPlanGenerationRunner = func(command, prompt string) (string, error) {
+		gotCommand, gotPrompt = command, prompt
+		return validGeneratedPlanJSON("Runner Plan"), nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"plan", "generate", "--goal", "Runner goal", "--runner-command", "fake-ai"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("runner generation returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if gotCommand != "fake-ai" {
+		t.Fatalf("expected runner command to be passed through, got %q", gotCommand)
+	}
+	for _, want := range []string{"# Cyclestone Plan Generation", "Runner goal", "Return only one JSON object", "Do not include `milestone_id`"} {
+		if !strings.Contains(gotPrompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, gotPrompt)
+		}
+	}
+	if len([]rune(gotPrompt)) > maxPlanGenerationContextChars {
+		t.Fatalf("prompt exceeded context bound")
+	}
+	plan := loadMainTestPlan(t, root, "runner-plan")
+	if plan.ID != "runner-plan" || len(plan.Briefings) != 1 {
+		t.Fatalf("unexpected generated plan from runner: %+v", plan)
+	}
+}
+
 func TestBriefingLinkUnlinkAndDeletesPreserveMilestoneStorage(t *testing.T) {
 	t.Parallel()
 
@@ -356,6 +542,226 @@ func TestBriefingLinkUnlinkAndDeletesPreserveMilestoneStorage(t *testing.T) {
 	if _, err := config.LoadState(statePath); err != nil {
 		t.Fatalf("LoadState should still succeed after Plan delete: %v", err)
 	}
+}
+
+func TestPlanAndBriefingReviewAliasesOnlyUpdatePlanFile(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	milestonePaths := []string{
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"),
+		filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"),
+	}
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"), "temp artifact\n")
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"), "snapshot artifact\n")
+	beforeMilestones := snapshotFiles(t, milestonePaths...)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "approve", "delivery-plan", "no-milestone", "--actor", "reviewer"},
+		"Briefing \"no-milestone\" approved",
+	)
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	noMilestone, _ := findBriefing(plan, "no-milestone")
+	if noMilestone.Status != "completed" || noMilestone.UpdatedBy != "reviewer" {
+		t.Fatalf("expected briefing approval to update planning status, got %+v", noMilestone)
+	}
+	assertFilesUnchanged(t, beforeMilestones)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "reject", "delivery-plan", "blocked-missing", "--actor", "reviewer"},
+		"Briefing \"blocked-missing\" rejected",
+	)
+	plan = loadMainTestPlan(t, root, "delivery-plan")
+	blocked, _ := findBriefing(plan, "blocked-missing")
+	if blocked.Status != "archived" || containsString(plan.BriefingOrder, "blocked-missing") {
+		t.Fatalf("expected rejected briefing to be archived and removed from active order, plan=%+v", plan)
+	}
+	assertFilesUnchanged(t, beforeMilestones)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"plan", "approve", "delivery-plan", "--actor", "reviewer"},
+		"Plan \"delivery-plan\" approved",
+	)
+	plan = loadMainTestPlan(t, root, "delivery-plan")
+	if plan.Status != "completed" || plan.UpdatedBy != "reviewer" {
+		t.Fatalf("expected plan approval to update planning status, got %+v", plan)
+	}
+	assertFilesUnchanged(t, beforeMilestones)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"plan", "reject", "delivery-plan", "--actor", "reviewer"},
+		"Plan \"delivery-plan\" rejected",
+	)
+	plan = loadMainTestPlan(t, root, "delivery-plan")
+	if plan.Status != "archived" {
+		t.Fatalf("expected plan rejection to archive planning status, got %+v", plan)
+	}
+	assertFilesUnchanged(t, beforeMilestones)
+}
+
+func TestBriefingSplitRewritesOrderDependenciesAndPreservesMilestoneStorage(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	partsPath := filepath.Join(root, "split-parts.json")
+	writeMainTestFile(t, partsPath, `{
+  "parts": [
+    {
+      "id": "scope-copy",
+      "title": "Scope Copy",
+      "objective": "Scope copy changes.",
+      "intent": "Keep the first split part focused.",
+      "completion_signal": "Copy scope is clear."
+    },
+    {
+      "id": "ship-copy",
+      "title": "Ship Copy",
+      "objective": "Ship copy changes.",
+      "intent": "Keep delivery separate.",
+      "completion_signal": "Copy ships."
+    }
+  ]
+}`)
+	milestonePaths := []string{
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	}
+	beforeMilestones := snapshotFiles(t, milestonePaths...)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "split", "delivery-plan", "no-milestone", "--parts-file", partsPath, "--actor", "reviewer"},
+		"Briefing \"no-milestone\" split into 2 Briefings",
+	)
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	if _, ok := findBriefing(plan, "no-milestone"); ok {
+		t.Fatalf("expected source briefing to be removed after split, plan=%+v", plan)
+	}
+	if strings.Join(plan.BriefingOrder, "|") != "scope-copy|ship-copy|linked-existing|blocked-missing" {
+		t.Fatalf("unexpected split briefing order: %+v", plan.BriefingOrder)
+	}
+	shipCopy, _ := findBriefing(plan, "ship-copy")
+	if strings.Join(shipCopy.DependsOn, "|") != "scope-copy" {
+		t.Fatalf("expected second split part to depend on first by default, got %+v", shipCopy)
+	}
+	blocked, _ := findBriefing(plan, "blocked-missing")
+	if strings.Join(blocked.DependsOn, "|") != "ship-copy" {
+		t.Fatalf("expected external dependent to point at final split part, got %+v", blocked)
+	}
+	assertFilesUnchanged(t, beforeMilestones)
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "scope-copy.md"))
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "ship-copy.md"))
+}
+
+func TestBriefingSplitLinkedSourceRequiresExplicitMilestoneChoice(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	partsPath := filepath.Join(root, "linked-split-parts.json")
+	writeMainTestFile(t, partsPath, `[
+  {
+    "id": "linked-scope",
+    "title": "Linked Scope",
+    "objective": "Scope linked work.",
+    "intent": "Separate linked scope.",
+    "completion_signal": "Linked scope is clear."
+  },
+  {
+    "id": "linked-ship",
+    "title": "Linked Ship",
+    "objective": "Ship linked work.",
+    "intent": "Separate linked delivery.",
+    "completion_signal": "Linked delivery ships."
+  }
+]`)
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml")
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		planPath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+
+	assertCommandFails(t, configPath,
+		[]string{"briefing", "split", "delivery-plan", "linked-existing", "--parts-file", partsPath},
+		"requires --milestone-link",
+	)
+	assertFilesUnchanged(t, before)
+
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "split", "delivery-plan", "linked-existing", "--parts-file", partsPath, "--milestone-link", "linked-ship"},
+		"Briefing \"linked-existing\" split into 2 Briefings",
+	)
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	linkedScope, _ := findBriefing(plan, "linked-scope")
+	linkedShip, _ := findBriefing(plan, "linked-ship")
+	if linkedScope.MilestoneID != "" || linkedShip.MilestoneID != "existing-milestone" {
+		t.Fatalf("expected explicit split part to keep milestone link, scope=%+v ship=%+v", linkedScope, linkedShip)
+	}
+	assertFilesUnchanged(t, map[string]string{
+		configPath: before[configPath],
+		statePath:  before[statePath],
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"):         before[filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")],
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md")],
+	})
+}
+
+func TestBriefingMergeRequiresExplicitLinkChoiceForMultipleLinks(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml")
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		planPath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+	mergeArgs := []string{
+		"briefing", "merge", "delivery-plan", "linked-existing", "blocked-missing",
+		"--title", "Merged Review Work",
+		"--objective", "Merge review work.",
+		"--intent", "Review as one item.",
+		"--completion-signal", "Merged item is reviewable.",
+		"--status", "active",
+	}
+
+	assertCommandFails(t, configPath, mergeArgs, "requires --milestone-link")
+	assertFilesUnchanged(t, before)
+
+	assertCommandSucceeds(t, configPath,
+		append(mergeArgs, "--milestone-link", "linked-existing", "--actor", "reviewer"),
+		"Merged 2 Briefings into \"linked-existing\"",
+	)
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	merged, _ := findBriefing(plan, "linked-existing")
+	if merged.MilestoneID != "existing-milestone" || merged.Status != "active" || merged.UpdatedBy != "reviewer" {
+		t.Fatalf("expected merged briefing to keep selected link and metadata, got %+v", merged)
+	}
+	if strings.Join(merged.DependsOn, "|") != "no-milestone" {
+		t.Fatalf("expected merged dependencies to exclude merged IDs and keep external deps, got %+v", merged.DependsOn)
+	}
+	if strings.Join(merged.Constraints, "|") != "Do not create milestone files." {
+		t.Fatalf("expected merged constraints to be preserved, got %+v", merged.Constraints)
+	}
+	if _, ok := findBriefing(plan, "blocked-missing"); ok || containsString(plan.BriefingOrder, "blocked-missing") {
+		t.Fatalf("expected merged-away briefing to be removed from Plan and order, plan=%+v", plan)
+	}
+	assertFilesUnchanged(t, map[string]string{
+		configPath: before[configPath],
+		statePath:  before[statePath],
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"):         before[filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")],
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md")],
+	})
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "blocked-missing.md"))
 }
 
 func TestMutatingPlanningCommandFailuresLeaveFilesUnchanged(t *testing.T) {
@@ -564,4 +970,19 @@ func assertPathMissing(t *testing.T, path string) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected %s to be missing, stat error: %v", path, err)
 	}
+}
+
+func validGeneratedPlanJSON(title string) string {
+	return `{
+  "title": "` + title + `",
+  "objective": "Deliver a generated planning outcome.",
+  "briefings": [
+    {
+      "title": "Define generated work",
+      "objective": "Describe the work.",
+      "intent": "Keep generation reviewable.",
+      "completion_signal": "The generated work is clear."
+    }
+  ]
+}`
 }

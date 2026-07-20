@@ -156,9 +156,7 @@ func LoadPlanningState(plansDir string, options ...PlanningValidationOption) (*P
 
 // SavePlan validates and atomically writes plan to plansDir/<plan-id>.yml.
 func SavePlan(plansDir string, plan Plan, options ...PlanningValidationOption) (PlanningValidationResult, error) {
-	opts := collectPlanningOptions(options)
-	var result PlanningValidationResult
-	validatePlan(plan, filepath.Join(plansDir, plan.ID+".yml"), &result, opts)
+	result := ValidatePlan(plan, filepath.Join(plansDir, plan.ID+".yml"), options...)
 	if result.HasErrors() {
 		return result, errors.New("plan validation failed")
 	}
@@ -173,6 +171,14 @@ func SavePlan(plansDir string, plan Plan, options ...PlanningValidationOption) (
 		return result, err
 	}
 	return result, nil
+}
+
+// ValidatePlan validates one in-memory Plan without writing it.
+func ValidatePlan(plan Plan, file string, options ...PlanningValidationOption) PlanningValidationResult {
+	opts := collectPlanningOptions(options)
+	var result PlanningValidationResult
+	validatePlan(plan, file, &result, opts)
+	return result
 }
 
 // HasErrors reports whether any validation message has error severity.

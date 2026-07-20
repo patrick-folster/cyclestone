@@ -1,20 +1,29 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
 	"github.com/patrick-folster/cyclestone/internal/tui"
 )
+
+const maxPlanGenerationContextChars = 120000
+
+var runPlanGenerationRunner = executePlanGenerationRunner
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -259,12 +268,18 @@ func runPlanMutatingCommand(args []string, configPath string, stdout, stderr io.
 	switch args[0] {
 	case "create":
 		return runPlanCreate(args[1:], configPath, stdout, stderr)
+	case "generate":
+		return runPlanGenerate(args[1:], configPath, stdout, stderr)
 	case "edit":
 		return runPlanEdit(args[1:], configPath, stdout, stderr)
 	case "archive":
 		return runPlanStatus(args[1:], configPath, "archive", "archived", "archived", stdout, stderr)
 	case "restore":
 		return runPlanStatus(args[1:], configPath, "restore", "active", "restored", stdout, stderr)
+	case "approve":
+		return runPlanStatus(args[1:], configPath, "approve", "completed", "approved", stdout, stderr)
+	case "reject":
+		return runPlanStatus(args[1:], configPath, "reject", "archived", "rejected", stdout, stderr)
 	case "delete":
 		return runPlanDelete(args[1:], configPath, stdout, stderr)
 	default:
@@ -285,8 +300,16 @@ func runBriefingMutatingCommand(args []string, configPath string, stdout, stderr
 		return runBriefingStatus(args[1:], configPath, "archive", "archived", "archived", stdout, stderr)
 	case "restore":
 		return runBriefingStatus(args[1:], configPath, "restore", "active", "restored", stdout, stderr)
+	case "approve":
+		return runBriefingStatus(args[1:], configPath, "approve", "completed", "approved", stdout, stderr)
+	case "reject":
+		return runBriefingStatus(args[1:], configPath, "reject", "archived", "rejected", stdout, stderr)
 	case "delete":
 		return runBriefingDelete(args[1:], configPath, stdout, stderr)
+	case "split":
+		return runBriefingSplit(args[1:], configPath, stdout, stderr)
+	case "merge":
+		return runBriefingMerge(args[1:], configPath, stdout, stderr)
 	case "dependency":
 		return runBriefingDependency(args[1:], configPath, stdout, stderr)
 	case "link":
@@ -342,6 +365,105 @@ func runPlanCreate(args []string, configPath string, stdout, stderr io.Writer) i
 		return 1
 	}
 	fmt.Fprintf(stdout, "Plan %q created\n", plan.ID)
+	return 0
+}
+
+type generatedPlanResponse struct {
+	Title       string                      `json:"title"`
+	Objective   string                      `json:"objective"`
+	Constraints []string                    `json:"constraints"`
+	Briefings   []generatedBriefingResponse `json:"briefings"`
+}
+
+type generatedBriefingResponse struct {
+	Title            string   `json:"title"`
+	Objective        string   `json:"objective"`
+	Intent           string   `json:"intent"`
+	CompletionSignal string   `json:"completion_signal"`
+	Constraints      []string `json:"constraints"`
+	DependsOn        []string `json:"depends_on"`
+	MilestoneID      string   `json:"milestone_id"`
+}
+
+func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("plan generate", stderr)
+	goal := flags.String("goal", "", "High-level goal for AI-assisted Plan generation")
+	actor := flags.String("actor", "ai-plan-generator", "Actor recorded in planning metadata")
+	preview := flags.Bool("preview", false, "Print the generated Plan without writing it")
+	responseFile := flags.String("response-file", "", "Read structured generation response from a local file")
+	runnerCommand := flags.String("runner-command", "", "Shell command used to generate structured Plan JSON")
+	if !parsePlanningFlags(flags, args, stderr) {
+		return 1
+	}
+	if strings.TrimSpace(*goal) == "" && flags.NArg() > 0 {
+		*goal = strings.Join(flags.Args(), " ")
+	}
+	if strings.TrimSpace(*goal) == "" {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone plan generate --goal <goal> [--preview] [--actor <actor>] [--runner-command <command>] [--response-file <path>]")
+		return 1
+	}
+	ctx, ok := loadWritablePlanningContext(configPath, stderr)
+	if !ok {
+		return 1
+	}
+
+	var responseText string
+	if strings.TrimSpace(*responseFile) != "" {
+		data, err := os.ReadFile(*responseFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: reading generation response: %v\n", err)
+			return 1
+		}
+		responseText = string(data)
+	} else {
+		prompt := buildPlanGenerationPrompt(configPath, *goal)
+		text, err := runPlanGenerationRunner(*runnerCommand, prompt)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: generating Plan: %v\n", err)
+			return 1
+		}
+		responseText = text
+	}
+
+	generated, err := parseGeneratedPlanResponse(responseText)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", err)
+		return 1
+	}
+	plan, err := convertGeneratedPlan(*goal, generated, strings.TrimSpace(*actor), planningTimestamp())
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", err)
+		return 1
+	}
+	if _, exists := findPlan(ctx.state, plan.ID); exists {
+		fmt.Fprintf(stderr, "Error: generated Plan %q already exists\n", plan.ID)
+		return 1
+	}
+	if _, err := os.Stat(planFilePath(ctx.plansDir, plan.ID)); err == nil {
+		fmt.Fprintf(stderr, "Error: Plan file for generated Plan %q already exists\n", plan.ID)
+		return 1
+	} else if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "Error: inspecting generated Plan file: %v\n", err)
+		return 1
+	}
+
+	milestoneIDs := planningMilestoneIDs(ctx)
+	validation := config.ValidatePlan(plan, planFilePath(ctx.plansDir, plan.ID), config.WithKnownMilestoneIDs(milestoneIDs))
+	printPlanningMessages(stderr, validation)
+	if validation.HasErrors() {
+		fmt.Fprintln(stderr, "Error: generated Plan validation failed; no changes were written")
+		return 1
+	}
+	if *preview {
+		fmt.Fprintf(stdout, "Generated Plan %q preview\n", plan.ID)
+		printPlan(stdout, plan, ctx.milestoneIDs)
+		return 0
+	}
+	if !savePlanForCommand(ctx, plan, stderr) {
+		return 1
+	}
+	fmt.Fprintf(stdout, "Plan %q generated\n", plan.ID)
+	printPlan(stdout, plan, ctx.milestoneIDs)
 	return 0
 }
 
@@ -636,6 +758,252 @@ func runBriefingDelete(args []string, configPath string, stdout, stderr io.Write
 	return 0
 }
 
+type briefingSplitPartFile struct {
+	Parts []briefingPartInput `json:"parts"`
+}
+
+type briefingPartInput struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	Objective        string   `json:"objective"`
+	Intent           string   `json:"intent"`
+	Status           string   `json:"status"`
+	CompletionSignal string   `json:"completion_signal"`
+	Constraints      []string `json:"constraints"`
+	DependsOn        []string `json:"depends_on"`
+}
+
+func runBriefingSplit(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("briefing split", stderr)
+	partsFile := flags.String("parts-file", "", "JSON file containing {\"parts\":[...]}")
+	milestoneLink := flags.String("milestone-link", "", "Part ID that keeps the source milestone link, or none")
+	actor := flags.String("actor", "manual", "Actor recorded in planning metadata")
+	if !parsePlanningFlags(flags, args, stderr) || flags.NArg() != 2 {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing split <plan-id> <briefing-id> --parts-file <path> [--milestone-link <part-id|none>] [--actor <actor>]")
+		return 1
+	}
+	parts, ok := readBriefingPartsFile(*partsFile, stderr)
+	if !ok {
+		return 1
+	}
+	if len(parts) < 2 {
+		fmt.Fprintln(stderr, "Error: briefing split requires at least two parts")
+		return 1
+	}
+	ctx, ok := loadWritablePlanningContext(configPath, stderr)
+	if !ok {
+		return 1
+	}
+	plan, sourceIndex, ok := findPlanBriefing(ctx.state, flags.Arg(0), flags.Arg(1))
+	if !ok {
+		fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", flags.Arg(1), flags.Arg(0))
+		return 1
+	}
+	source := plan.Briefings[sourceIndex]
+	if source.MilestoneID != "" && strings.TrimSpace(*milestoneLink) == "" {
+		fmt.Fprintf(stderr, "Error: splitting linked Briefing %q requires --milestone-link <part-id|none>\n", source.ID)
+		return 1
+	}
+
+	partIDs := make([]string, 0, len(parts))
+	partIDSet := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		partID := strings.TrimSpace(part.ID)
+		if partID == "" {
+			fmt.Fprintln(stderr, "Error: split part id is required")
+			return 1
+		}
+		if partID == source.ID {
+			fmt.Fprintf(stderr, "Error: split part ID %q must differ from source Briefing ID\n", partID)
+			return 1
+		}
+		if partIDSet[partID] {
+			fmt.Fprintf(stderr, "Error: duplicate split part ID %q\n", partID)
+			return 1
+		}
+		if _, exists := findBriefing(plan, partID); exists {
+			fmt.Fprintf(stderr, "Error: Briefing %q already exists in Plan %q\n", partID, plan.ID)
+			return 1
+		}
+		partIDs = append(partIDs, partID)
+		partIDSet[partID] = true
+	}
+	linkPartID := strings.TrimSpace(*milestoneLink)
+	if source.MilestoneID != "" && linkPartID != "none" && !partIDSet[linkPartID] {
+		fmt.Fprintf(stderr, "Error: --milestone-link must be one of the split part IDs or none\n")
+		return 1
+	}
+
+	now := planningTimestamp()
+	newBriefings := make([]config.Briefing, 0, len(parts))
+	for index, part := range parts {
+		status := strings.TrimSpace(part.Status)
+		if status == "" {
+			status = "active"
+		}
+		dependsOn := cleanStringList(part.DependsOn)
+		if len(dependsOn) == 0 {
+			if index == 0 {
+				dependsOn = removeAnyString(cleanStringList(source.DependsOn), append(partIDs, source.ID)...)
+			} else {
+				dependsOn = []string{partIDs[index-1]}
+			}
+		}
+		briefing := config.Briefing{
+			ID:               strings.TrimSpace(part.ID),
+			Title:            strings.TrimSpace(part.Title),
+			Objective:        strings.TrimSpace(part.Objective),
+			Intent:           strings.TrimSpace(part.Intent),
+			Status:           status,
+			CompletionSignal: strings.TrimSpace(part.CompletionSignal),
+			CreatedAt:        now,
+			CreatedBy:        strings.TrimSpace(*actor),
+			UpdatedAt:        now,
+			UpdatedBy:        strings.TrimSpace(*actor),
+			Constraints:      cleanStringList(part.Constraints),
+			DependsOn:        dependsOn,
+		}
+		if source.MilestoneID != "" && linkPartID == briefing.ID {
+			briefing.MilestoneID = source.MilestoneID
+		}
+		newBriefings = append(newBriefings, briefing)
+	}
+
+	plan.Briefings = append(plan.Briefings[:sourceIndex], plan.Briefings[sourceIndex+1:]...)
+	plan.Briefings = append(plan.Briefings, newBriefings...)
+	plan.BriefingOrder = replaceOrderID(plan.BriefingOrder, source.ID, activeBriefingIDs(newBriefings)...)
+	for _, id := range activeBriefingIDs(newBriefings) {
+		plan.BriefingOrder = appendMissing(plan.BriefingOrder, id)
+	}
+	rewriteBriefingDependency(&plan, source.ID, partIDs[len(partIDs)-1], partIDSet)
+	touchPlan(&plan, *actor)
+	if !savePlanForCommand(ctx, plan, stderr) {
+		return 1
+	}
+	fmt.Fprintf(stdout, "Briefing %q split into %d Briefings in Plan %q\n", source.ID, len(newBriefings), plan.ID)
+	return 0
+}
+
+func runBriefingMerge(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("briefing merge", stderr)
+	title := flags.String("title", "", "Merged Briefing title")
+	objective := flags.String("objective", "", "Merged Briefing objective")
+	intent := flags.String("intent", "", "Merged Briefing intent")
+	completionSignal := flags.String("completion-signal", "", "Merged Briefing completion signal")
+	status := flags.String("status", "", "Merged Briefing status")
+	milestoneLink := flags.String("milestone-link", "", "Briefing ID whose milestone link is kept, or none")
+	actor := flags.String("actor", "manual", "Actor recorded in planning metadata")
+	if !parsePlanningFlags(flags, args, stderr) || flags.NArg() < 3 {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing merge <plan-id> <target-briefing-id> <merged-briefing-id> [<merged-briefing-id>...] --title <title> --objective <objective> --intent <intent> --completion-signal <signal> [--status <status>] [--milestone-link <briefing-id|none>] [--actor <actor>]")
+		return 1
+	}
+	if strings.TrimSpace(*title) == "" || strings.TrimSpace(*objective) == "" || strings.TrimSpace(*intent) == "" || strings.TrimSpace(*completionSignal) == "" {
+		fmt.Fprintln(stderr, "Error: briefing merge requires --title, --objective, --intent, and --completion-signal")
+		return 1
+	}
+	ctx, ok := loadWritablePlanningContext(configPath, stderr)
+	if !ok {
+		return 1
+	}
+	planID := flags.Arg(0)
+	mergeIDs := flags.Args()[1:]
+	plan, ok := findPlan(ctx.state, planID)
+	if !ok {
+		fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
+		return 1
+	}
+	mergedSet := make(map[string]bool, len(mergeIDs))
+	var merged []config.Briefing
+	for _, id := range mergeIDs {
+		if mergedSet[id] {
+			fmt.Fprintf(stderr, "Error: duplicate Briefing ID %q in merge arguments\n", id)
+			return 1
+		}
+		briefing, exists := findBriefing(plan, id)
+		if !exists {
+			fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", id, plan.ID)
+			return 1
+		}
+		mergedSet[id] = true
+		merged = append(merged, briefing)
+	}
+
+	linkByBriefing := make(map[string]string)
+	for _, briefing := range merged {
+		if briefing.MilestoneID != "" {
+			linkByBriefing[briefing.ID] = briefing.MilestoneID
+		}
+	}
+	linkChoice := strings.TrimSpace(*milestoneLink)
+	if len(linkByBriefing) > 1 && linkChoice == "" {
+		fmt.Fprintln(stderr, "Error: merging multiple linked Briefings requires --milestone-link <briefing-id|none>")
+		return 1
+	}
+	keptMilestoneID := ""
+	if linkChoice == "none" {
+		keptMilestoneID = ""
+	} else if linkChoice != "" {
+		var exists bool
+		keptMilestoneID, exists = linkByBriefing[linkChoice]
+		if !exists {
+			fmt.Fprintln(stderr, "Error: --milestone-link must name a merged Briefing with a milestone link or none")
+			return 1
+		}
+	} else {
+		for _, milestoneID := range linkByBriefing {
+			keptMilestoneID = milestoneID
+		}
+	}
+
+	targetID := mergeIDs[0]
+	targetIndex := -1
+	for index, briefing := range plan.Briefings {
+		if briefing.ID == targetID {
+			targetIndex = index
+			break
+		}
+	}
+	if targetIndex < 0 {
+		fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", targetID, plan.ID)
+		return 1
+	}
+	mergedStatus := strings.TrimSpace(*status)
+	if mergedStatus == "" {
+		mergedStatus = plan.Briefings[targetIndex].Status
+	}
+	plan.Briefings[targetIndex].Title = strings.TrimSpace(*title)
+	plan.Briefings[targetIndex].Objective = strings.TrimSpace(*objective)
+	plan.Briefings[targetIndex].Intent = strings.TrimSpace(*intent)
+	plan.Briefings[targetIndex].CompletionSignal = strings.TrimSpace(*completionSignal)
+	plan.Briefings[targetIndex].Status = mergedStatus
+	plan.Briefings[targetIndex].MilestoneID = keptMilestoneID
+	plan.Briefings[targetIndex].Constraints = mergedConstraints(merged)
+	plan.Briefings[targetIndex].DependsOn = mergedDependencies(merged, mergedSet, targetID)
+	touchBriefing(&plan, &plan.Briefings[targetIndex], *actor)
+
+	filtered := plan.Briefings[:0]
+	for _, briefing := range plan.Briefings {
+		if briefing.ID != targetID && mergedSet[briefing.ID] {
+			continue
+		}
+		filtered = append(filtered, briefing)
+	}
+	plan.Briefings = filtered
+	plan.BriefingOrder = removeAnyString(plan.BriefingOrder, mergeIDs[1:]...)
+	if mergedStatus == "archived" {
+		plan.BriefingOrder = removeString(plan.BriefingOrder, targetID)
+	} else {
+		plan.BriefingOrder = appendMissing(plan.BriefingOrder, targetID)
+	}
+	rewriteBriefingDependency(&plan, "", targetID, mergedSet)
+	touchPlan(&plan, *actor)
+	if !savePlanForCommand(ctx, plan, stderr) {
+		return 1
+	}
+	fmt.Fprintf(stdout, "Merged %d Briefings into %q in Plan %q\n", len(mergeIDs), targetID, plan.ID)
+	return 0
+}
+
 func runBriefingDependency(args []string, configPath string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing dependency add|remove <plan-id> <briefing-id> <dependency-id>")
@@ -824,10 +1192,7 @@ func loadWritablePlanningContext(configPath string, stderr io.Writer) (planningC
 }
 
 func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.Writer) bool {
-	milestoneIDs := make([]string, 0, len(ctx.milestoneIDs))
-	for id := range ctx.milestoneIDs {
-		milestoneIDs = append(milestoneIDs, id)
-	}
+	milestoneIDs := planningMilestoneIDs(ctx)
 	validation, err := config.SavePlan(ctx.plansDir, plan, config.WithKnownMilestoneIDs(milestoneIDs))
 	printPlanningMessages(stderr, validation)
 	if err != nil {
@@ -835,6 +1200,293 @@ func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.
 		return false
 	}
 	return true
+}
+
+func planningMilestoneIDs(ctx planningCommandContext) []string {
+	milestoneIDs := make([]string, 0, len(ctx.milestoneIDs))
+	for id := range ctx.milestoneIDs {
+		milestoneIDs = append(milestoneIDs, id)
+	}
+	sort.Strings(milestoneIDs)
+	return milestoneIDs
+}
+
+func parseGeneratedPlanResponse(text string) (generatedPlanResponse, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return generatedPlanResponse{}, fmt.Errorf("response is empty")
+	}
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+			text = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end < start {
+		return generatedPlanResponse{}, fmt.Errorf("response must contain one JSON object")
+	}
+	var response generatedPlanResponse
+	decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil {
+		return generatedPlanResponse{}, err
+	}
+	return response, nil
+}
+
+func convertGeneratedPlan(goal string, response generatedPlanResponse, actor, now string) (config.Plan, error) {
+	if actor == "" {
+		actor = "ai-plan-generator"
+	}
+	title := strings.TrimSpace(response.Title)
+	if title == "" {
+		title = strings.TrimSpace(goal)
+	}
+	planID := planningSlug(title)
+	if planID == "" {
+		return config.Plan{}, fmt.Errorf("title cannot produce a valid Plan ID")
+	}
+	objective := strings.TrimSpace(response.Objective)
+	if objective == "" {
+		return config.Plan{}, fmt.Errorf("objective is required")
+	}
+	plan := config.Plan{
+		SchemaVersion: config.PlanningSchemaVersion,
+		ID:            planID,
+		Title:         title,
+		Objective:     objective,
+		Status:        "active",
+		CreatedAt:     now,
+		CreatedBy:     actor,
+		UpdatedAt:     now,
+		UpdatedBy:     actor,
+		Constraints:   cleanStringList(response.Constraints),
+		BriefingOrder: []string{},
+		Briefings:     []config.Briefing{},
+	}
+	if len(response.Briefings) == 0 {
+		return config.Plan{}, fmt.Errorf("at least one briefing is required")
+	}
+
+	usedIDs := map[string]bool{}
+	dependencyAliases := map[string]string{}
+	for _, generated := range response.Briefings {
+		briefingTitle := strings.TrimSpace(generated.Title)
+		if briefingTitle == "" {
+			return config.Plan{}, fmt.Errorf("briefing title is required")
+		}
+		briefingID := uniquePlanningSlug(briefingTitle, usedIDs)
+		if briefingID == "" {
+			return config.Plan{}, fmt.Errorf("briefing title %q cannot produce a valid ID", briefingTitle)
+		}
+		usedIDs[briefingID] = true
+		dependencyAliases[briefingID] = briefingID
+		dependencyAliases[strings.ToLower(briefingTitle)] = briefingID
+		dependencyAliases[planningSlug(briefingTitle)] = briefingID
+		plan.Briefings = append(plan.Briefings, config.Briefing{
+			ID:               briefingID,
+			Title:            briefingTitle,
+			Objective:        strings.TrimSpace(generated.Objective),
+			Intent:           strings.TrimSpace(generated.Intent),
+			Status:           "active",
+			CompletionSignal: strings.TrimSpace(generated.CompletionSignal),
+			CreatedAt:        now,
+			CreatedBy:        actor,
+			UpdatedAt:        now,
+			UpdatedBy:        actor,
+			Constraints:      cleanStringList(generated.Constraints),
+			MilestoneID:      strings.TrimSpace(generated.MilestoneID),
+		})
+		plan.BriefingOrder = append(plan.BriefingOrder, briefingID)
+	}
+
+	for index, generated := range response.Briefings {
+		if strings.TrimSpace(generated.MilestoneID) != "" {
+			return config.Plan{}, fmt.Errorf("briefing %q must not include milestone_id", plan.Briefings[index].Title)
+		}
+		for _, dependency := range cleanStringList(generated.DependsOn) {
+			key := dependency
+			if mapped, ok := dependencyAliases[key]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			if mapped, ok := dependencyAliases[strings.ToLower(key)]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			if mapped, ok := dependencyAliases[planningSlug(key)]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			return config.Plan{}, fmt.Errorf("briefing %q depends on unknown Briefing %q", plan.Briefings[index].Title, dependency)
+		}
+	}
+	return plan, nil
+}
+
+func cleanStringList(values []string) []string {
+	var cleaned []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
+}
+
+func uniquePlanningSlug(title string, used map[string]bool) string {
+	base := planningSlug(title)
+	if base == "" {
+		return ""
+	}
+	if !used[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
+func planningSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			continue
+		default:
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func buildPlanGenerationPrompt(configPath, goal string) string {
+	root := filepath.Dir(filepath.Dir(configPath))
+	var sb strings.Builder
+	sb.WriteString("# Cyclestone Plan Generation\n\n")
+	sb.WriteString("Generate one reviewable Cyclestone Plan from the user goal. Return only one JSON object matching this contract:\n\n")
+	sb.WriteString(`{"title":"Plan title","objective":"Plan objective","constraints":["optional"],"briefings":[{"title":"Briefing title","objective":"Briefing objective","intent":"Why this matters","completion_signal":"Observable done signal","constraints":["optional"],"depends_on":["same Plan briefing title or id"]}]}`)
+	sb.WriteString("\n\nRules:\n")
+	sb.WriteString("- Do not include `milestone_id` on any Briefing.\n")
+	sb.WriteString("- Do not create Milestone specs, compact index entries, reports, state, temp files, branches, or runtime artifacts.\n")
+	sb.WriteString("- Dependencies must reference only Briefings in the same generated Plan.\n")
+	sb.WriteString("- Keep Briefings ordered for future execution and use concise, concrete titles.\n\n")
+	sb.WriteString("## User Goal\n\n")
+	sb.WriteString(strings.TrimSpace(goal))
+	sb.WriteString("\n\n")
+	appendGenerationContextFile(&sb, root, "AGENTS.md")
+	appendGenerationContextFile(&sb, root, filepath.Join(".cyclestone", "DECISIONS.md"))
+	appendGenerationContextFile(&sb, root, filepath.Join("docs", "architecture.md"))
+	appendGenerationContextFile(&sb, root, filepath.Join("docs", "planning-data-models.md"))
+	appendGenerationTrackedStructure(&sb, root)
+	return limitPlanGenerationContext(sb.String())
+}
+
+func appendGenerationContextFile(sb *strings.Builder, root, rel string) {
+	data, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		return
+	}
+	sb.WriteString("## " + rel + "\n\n```text\n")
+	sb.Write(data)
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("```\n\n")
+}
+
+func appendGenerationTrackedStructure(sb *strings.Builder, root string) {
+	sb.WriteString("## Tracked Repository Structure\n\n```text\n")
+	cmd := exec.Command("git", "-C", root, "ls-files")
+	if out, err := cmd.Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, ".cyclestone/reports/") || strings.HasPrefix(line, ".cyclestone/temp/") {
+				continue
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+	sb.WriteString("```\n\n")
+}
+
+func limitPlanGenerationContext(text string) string {
+	if len([]rune(text)) <= maxPlanGenerationContextChars {
+		return text
+	}
+	runes := []rune(text)
+	head := maxPlanGenerationContextChars / 2
+	tail := maxPlanGenerationContextChars - head
+	return string(runes[:head]) + "\n\n[...plan generation context truncated...]\n\n" + string(runes[len(runes)-tail:])
+}
+
+func executePlanGenerationRunner(runnerCommand, prompt string) (string, error) {
+	runnerCommand = strings.TrimSpace(runnerCommand)
+	if runnerCommand == "" {
+		settings := config.LoadMergedSettings()
+		command, err := defaultPlanGenerationRunnerCommand(settings)
+		if err != nil {
+			return "", err
+		}
+		runnerCommand = command
+	}
+	if runnerCommand == "" {
+		return "", fmt.Errorf("no generation runner configured; pass --response-file or --runner-command")
+	}
+	cmd := exec.Command("bash", "-c", runnerCommand)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errText := strings.TrimSpace(stderr.String())
+		if errText != "" {
+			return "", fmt.Errorf("%w: %s", err, errText)
+		}
+		return "", err
+	}
+	if strings.TrimSpace(stdout.String()) == "" && strings.TrimSpace(stderr.String()) != "" {
+		return stderr.String(), nil
+	}
+	return stdout.String(), nil
+}
+
+func defaultPlanGenerationRunnerCommand(settings config.Settings) (string, error) {
+	switch settings.DefaultLLM {
+	case "", "codex":
+		return "codex --sandbox read-only --ask-for-approval never exec --cd . --skip-git-repo-check -- -", nil
+	case "ollama-codex":
+		model := strings.TrimSpace(settings.OllamaCodexModel)
+		if model == "" {
+			return "", fmt.Errorf("ollama-codex generation requires an ollama_codex_model setting or --runner-command")
+		}
+		return fmt.Sprintf("ollama launch codex --model %s -- --sandbox read-only --ask-for-approval never exec --cd . --skip-git-repo-check -- -", shellQuote(model)), nil
+	default:
+		return "", fmt.Errorf("default runner %q is not supported for Plan generation; pass --runner-command or --response-file", settings.DefaultLLM)
+	}
+}
+
+var safeShellWordPattern = regexp.MustCompile(`^[A-Za-z0-9._:/@%+=,-]+$`)
+
+func shellQuote(value string) string {
+	if safeShellWordPattern.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func planFilePath(plansDir, planID string) string {
@@ -910,6 +1562,113 @@ func removeString(values []string, remove string) []string {
 		}
 	}
 	return filtered
+}
+
+func removeAnyString(values []string, remove ...string) []string {
+	removeSet := make(map[string]bool, len(remove))
+	for _, value := range remove {
+		removeSet[value] = true
+	}
+	filtered := values[:0]
+	for _, value := range values {
+		if !removeSet[value] {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func replaceOrderID(order []string, oldID string, replacement ...string) []string {
+	var replaced []string
+	inserted := false
+	for _, id := range order {
+		if id != oldID {
+			replaced = append(replaced, id)
+			continue
+		}
+		if inserted {
+			continue
+		}
+		replaced = append(replaced, replacement...)
+		inserted = true
+	}
+	return replaced
+}
+
+func activeBriefingIDs(briefings []config.Briefing) []string {
+	var ids []string
+	for _, briefing := range briefings {
+		if briefing.Status != "archived" {
+			ids = append(ids, briefing.ID)
+		}
+	}
+	return ids
+}
+
+func readBriefingPartsFile(path string, stderr io.Writer) ([]briefingPartInput, bool) {
+	if strings.TrimSpace(path) == "" {
+		fmt.Fprintln(stderr, "Error: briefing split requires --parts-file <path>")
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: reading split parts file: %v\n", err)
+		return nil, false
+	}
+	var object briefingSplitPartFile
+	if err := json.Unmarshal(data, &object); err == nil && len(object.Parts) > 0 {
+		return object.Parts, true
+	}
+	if err := json.Unmarshal(data, &object); err == nil && object.Parts != nil {
+		return object.Parts, true
+	}
+	var parts []briefingPartInput
+	if err := json.Unmarshal(data, &parts); err != nil {
+		fmt.Fprintf(stderr, "Error: parsing split parts file: %v\n", err)
+		return nil, false
+	}
+	return parts, true
+}
+
+func mergedConstraints(briefings []config.Briefing) []string {
+	var constraints []string
+	for _, briefing := range briefings {
+		for _, constraint := range briefing.Constraints {
+			constraints = appendMissing(constraints, constraint)
+		}
+	}
+	return constraints
+}
+
+func mergedDependencies(briefings []config.Briefing, mergedSet map[string]bool, targetID string) []string {
+	var dependencies []string
+	for _, briefing := range briefings {
+		for _, dependencyID := range briefing.DependsOn {
+			if dependencyID == targetID || mergedSet[dependencyID] {
+				continue
+			}
+			dependencies = appendMissing(dependencies, dependencyID)
+		}
+	}
+	return dependencies
+}
+
+func rewriteBriefingDependency(plan *config.Plan, sourceID, replacementID string, rewrittenIDs map[string]bool) {
+	for index := range plan.Briefings {
+		briefing := &plan.Briefings[index]
+		if briefing.ID == replacementID || rewrittenIDs[briefing.ID] {
+			continue
+		}
+		var dependencies []string
+		for _, dependencyID := range briefing.DependsOn {
+			if dependencyID == sourceID || rewrittenIDs[dependencyID] {
+				dependencies = appendMissing(dependencies, replacementID)
+				continue
+			}
+			dependencies = appendMissing(dependencies, dependencyID)
+		}
+		briefing.DependsOn = dependencies
+	}
 }
 
 func containsString(values []string, want string) bool {
