@@ -430,6 +430,51 @@ func AddMilestone(configPath string, ms Milestone) error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
+// AddMilestoneWithSpec writes supplied milestone spec Markdown and indexes the
+// milestone through the same compact milestone.yml behavior as AddMilestone.
+func AddMilestoneWithSpec(configPath string, ms Milestone, specMarkdown string) error {
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	for _, existing := range cfg.Milestones {
+		if existing.ID == ms.ID {
+			return fmt.Errorf("milestone ID %s already exists", ms.ID)
+		}
+	}
+
+	specPath := ms.SpecPath
+	if specPath == "" {
+		specPath = filepath.Join("milestones", ms.ID+".md")
+	}
+	writePath := specPath
+	if !filepath.IsAbs(writePath) {
+		writePath = filepath.Join(filepath.Dir(configPath), writePath)
+	}
+	if _, err := os.Stat(writePath); err == nil {
+		return fmt.Errorf("milestone spec %s already exists", specPath)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect milestone spec: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
+		return fmt.Errorf("failed to create milestone spec directory: %w", err)
+	}
+	if err := os.WriteFile(writePath, []byte(specMarkdown), 0644); err != nil {
+		return fmt.Errorf("failed to write milestone spec: %w", err)
+	}
+
+	ms.SpecPath = specPath
+	cfg.Milestones = append(cfg.Milestones, compactMilestoneIndex(ms, specPath))
+	if err := compactMilestoneConfig(configPath, cfg); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0644)
+}
+
 func compactMilestoneConfig(configPath string, cfg *Config) error {
 	for i := range cfg.Milestones {
 		ms := cfg.Milestones[i]

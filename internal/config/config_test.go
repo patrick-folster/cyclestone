@@ -394,6 +394,59 @@ Keep generated content.
 	}
 }
 
+func TestAddMilestoneWithSpecWritesSuppliedSpecAndCompactIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "supplied_spec_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	if err := os.WriteFile(configPath, []byte("milestones: []\n"), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	spec := `# Milestone Spec: generated - Generated
+
+## Goal
+Use supplied spec content.
+
+## Acceptance Criteria
+- [ ] Supplied criterion
+
+## Extra
+Keep long-form context.
+`
+	ms := Milestone{ID: "generated", Title: "Generated", SpecPath: filepath.Join("milestones", "generated.md")}
+	if err := AddMilestoneWithSpec(configPath, ms, spec); err != nil {
+		t.Fatalf("AddMilestoneWithSpec failed: %v", err)
+	}
+	specBytes, err := os.ReadFile(filepath.Join(tmpDir, "milestones", "generated.md"))
+	if err != nil {
+		t.Fatalf("expected supplied spec to be written: %v", err)
+	}
+	if string(specBytes) != spec {
+		t.Fatalf("expected supplied spec to be preserved, got:\n%s", string(specBytes))
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg.Milestones) != 1 || cfg.Milestones[0].Goal != "Use supplied spec content." || len(cfg.Milestones[0].AcceptanceCriteria) != 1 {
+		t.Fatalf("expected generated milestone to hydrate from supplied spec, got %+v", cfg.Milestones)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	configText := string(configBytes)
+	if stringsContains(configText, "goal:") || stringsContains(configText, "acceptance_criteria:") {
+		t.Fatalf("expected compact config to omit spec fields, got:\n%s", configText)
+	}
+	if err := AddMilestoneWithSpec(configPath, ms, spec); err == nil {
+		t.Fatal("expected duplicate milestone ID to fail")
+	}
+}
+
 func TestMigrateMilestoneStorage(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "migrate_storage_test")
 	if err != nil {

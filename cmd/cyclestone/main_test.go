@@ -544,6 +544,239 @@ func TestBriefingLinkUnlinkAndDeletesPreserveMilestoneStorage(t *testing.T) {
 	}
 }
 
+func TestBriefingGenerateMilestoneCreatesOrdinaryMilestoneAndLink(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	assertCommandSucceeds(t, configPath, []string{"briefing", "approve", "delivery-plan", "no-milestone", "--actor", "reviewer"}, "approved")
+	before := snapshotFiles(t,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"briefing", "generate-milestone", "delivery-plan", "no-milestone", "--actor", "generator"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("briefing generate-milestone returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `Milestone "delivery-plan-no-milestone" generated`) {
+		t.Fatalf("unexpected stdout:\n%s", stdout.String())
+	}
+	assertFilesUnchanged(t, before)
+
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	briefing, ok := findBriefing(plan, "no-milestone")
+	if !ok || briefing.MilestoneID != "delivery-plan-no-milestone" || briefing.UpdatedBy != "generator" {
+		t.Fatalf("expected source Briefing to persist generated link, got %+v ok=%v", briefing, ok)
+	}
+
+	specPath := filepath.Join(root, ".cyclestone", "milestones", "delivery-plan-no-milestone.md")
+	specBytes, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("expected generated spec: %v", err)
+	}
+	spec := string(specBytes)
+	for _, want := range []string{
+		"# Milestone Spec: delivery-plan-no-milestone - No Milestone",
+		"## Goal",
+		"## Implementation Prompt",
+		"## Explicit Exclusions",
+		"## Acceptance Criteria",
+		"## Repository Context",
+		"## Testing Expectations",
+		"Plan `delivery-plan`",
+		"Briefing `no-milestone`",
+		"cmd/cyclestone/main_test.go",
+	} {
+		if !strings.Contains(spec, want) {
+			t.Fatalf("expected generated spec to contain %q, got:\n%s", want, spec)
+		}
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	var generated config.Milestone
+	var foundStandalone bool
+	for _, milestone := range cfg.Milestones {
+		if milestone.ID == "delivery-plan-no-milestone" {
+			generated = milestone
+		}
+		if milestone.ID == "standalone-milestone" {
+			foundStandalone = true
+		}
+	}
+	if generated.ID == "" || generated.SpecPath != filepath.Join("milestones", "delivery-plan-no-milestone.md") || !strings.Contains(generated.Goal, "Exercise no milestone display.") {
+		t.Fatalf("expected generated ordinary milestone to hydrate from spec, got %+v", generated)
+	}
+	if !foundStandalone {
+		t.Fatalf("expected standalone milestone to remain indexed, cfg=%+v", cfg.Milestones)
+	}
+
+	if err := os.Remove(filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml")); err != nil {
+		t.Fatalf("failed to remove source Plan: %v", err)
+	}
+	cfgAfterPlanRemoval, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig should not require source Plan: %v", err)
+	}
+	if len(cfgAfterPlanRemoval.Milestones) != len(cfg.Milestones) {
+		t.Fatalf("expected milestone index to survive Plan removal, got %+v", cfgAfterPlanRemoval.Milestones)
+	}
+}
+
+func TestBriefingGenerateMilestonePreviewDoesNotWrite(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	assertCommandSucceeds(t, configPath, []string{"briefing", "approve", "delivery-plan", "no-milestone"}, "approved")
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
+	)
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"briefing", "generate-milestone", "delivery-plan", "no-milestone", "--preview"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("preview returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Generated Milestone \"delivery-plan-no-milestone\" preview") || !strings.Contains(stdout.String(), "Briefing Link: Plan \"delivery-plan\" Briefing \"no-milestone\"") {
+		t.Fatalf("unexpected preview stdout:\n%s", stdout.String())
+	}
+	assertFilesUnchanged(t, before)
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "delivery-plan-no-milestone.md"))
+}
+
+func TestBriefingGenerateMilestoneRefusesInvalidInputsWithoutWrites(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		prepare   func(t *testing.T, root, configPath string)
+		args      []string
+		wantError string
+	}{
+		{
+			name:      "active briefing",
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "no-milestone"},
+			wantError: "must be completed",
+		},
+		{
+			name: "incomplete dependency",
+			prepare: func(t *testing.T, root, configPath string) {
+				assertCommandSucceeds(t, configPath, []string{"briefing", "approve", "delivery-plan", "blocked-missing"}, "approved")
+			},
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "blocked-missing", "--replace-link"},
+			wantError: "incomplete dependencies: no-milestone",
+		},
+		{
+			name:      "missing briefing",
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "missing"},
+			wantError: "not found",
+		},
+		{
+			name:      "existing link",
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "linked-existing"},
+			wantError: "already linked",
+		},
+		{
+			name: "foreign active link to generated id",
+			prepare: func(t *testing.T, root, configPath string) {
+				assertCommandSucceeds(t, configPath, []string{"briefing", "approve", "delivery-plan", "no-milestone"}, "approved")
+				writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "other-plan.yml"), `schema_version: 1
+id: other-plan
+title: Other Plan
+objective: Keep duplicate links guarded.
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - foreign-link
+briefings:
+  - id: foreign-link
+    title: Foreign Link
+    objective: Hold a duplicate generated milestone ID.
+    intent: Validate link uniqueness.
+    status: active
+    milestone_id: delivery-plan-no-milestone
+    completion_signal: Duplicate link is rejected.
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`)
+			},
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "no-milestone"},
+			wantError: "already linked by Briefing",
+		},
+		{
+			name: "malformed planning data",
+			prepare: func(t *testing.T, root, configPath string) {
+				writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "bad.yml"), "schema_version: [\n")
+			},
+			args:      []string{"briefing", "generate-milestone", "delivery-plan", "linked-existing", "--replace-link"},
+			wantError: "planning files contain validation errors",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, configPath, statePath := writePlanningCommandFixture(t)
+			if tc.prepare != nil {
+				tc.prepare(t, root, configPath)
+			}
+			before := snapshotFiles(t,
+				configPath,
+				statePath,
+				filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml"),
+				filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+				filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
+			)
+			var stdout, stderr bytes.Buffer
+			code := runPlanningCommand(tc.args, configPath, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("command unexpectedly succeeded, stdout:\n%s", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tc.wantError) {
+				t.Fatalf("expected stderr to contain %q, got:\n%s", tc.wantError, stderr.String())
+			}
+			assertFilesUnchanged(t, before)
+			assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "delivery-plan-no-milestone.md"))
+			assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "delivery-plan-blocked-missing.md"))
+		})
+	}
+}
+
+func TestBriefingGenerateMilestoneReplaceLinkDoesNotDeleteOldMilestone(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, _ := writePlanningCommandFixture(t)
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"briefing", "generate-milestone", "delivery-plan", "linked-existing", "--replace-link", "--milestone-id", "replacement-milestone"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("replace-link generate returned %d, stderr:\n%s", code, stderr.String())
+	}
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	briefing, _ := findBriefing(plan, "linked-existing")
+	if briefing.MilestoneID != "replacement-milestone" {
+		t.Fatalf("expected Briefing link to be replaced, got %+v", briefing)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")); err != nil {
+		t.Fatalf("expected old linked Milestone spec to remain: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones", "replacement-milestone.md")); err != nil {
+		t.Fatalf("expected replacement Milestone spec: %v", err)
+	}
+}
+
 func TestPlanAndBriefingReviewAliasesOnlyUpdatePlanFile(t *testing.T) {
 	t.Parallel()
 

@@ -22,6 +22,7 @@ import (
 )
 
 const maxPlanGenerationContextChars = 120000
+const maxBriefingMilestoneContextChars = 120000
 
 var runPlanGenerationRunner = executePlanGenerationRunner
 
@@ -316,6 +317,8 @@ func runBriefingMutatingCommand(args []string, configPath string, stdout, stderr
 		return runBriefingLink(args[1:], configPath, stdout, stderr)
 	case "unlink":
 		return runBriefingUnlink(args[1:], configPath, stdout, stderr)
+	case "generate-milestone":
+		return runBriefingGenerateMilestone(args[1:], configPath, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "Error: unsupported command %q\n", "briefing "+strings.Join(args, " "))
 		return 1
@@ -1131,6 +1134,85 @@ func runBriefingUnlink(args []string, configPath string, stdout, stderr io.Write
 	return 0
 }
 
+func runBriefingGenerateMilestone(args []string, configPath string, stdout, stderr io.Writer) int {
+	flags := newPlanningFlagSet("briefing generate-milestone", stderr)
+	milestoneID := flags.String("milestone-id", "", "Milestone ID to create; defaults to <plan-id>-<briefing-id>")
+	preview := flags.Bool("preview", false, "Print the generated Milestone without writing it")
+	replaceLink := flags.Bool("replace-link", false, "Replace an existing Briefing milestone link without deleting the old Milestone")
+	actor := flags.String("actor", "briefing-milestone-generator", "Actor recorded in planning metadata")
+	if !parsePlanningFlags(flags, args, stderr) || flags.NArg() != 2 {
+		fmt.Fprintln(stderr, "Error: usage: cyclestone briefing generate-milestone <plan-id> <briefing-id> [--milestone-id <id>] [--preview] [--replace-link] [--actor <actor>]")
+		return 1
+	}
+	ctx, ok := loadWritablePlanningContext(configPath, stderr)
+	if !ok {
+		return 1
+	}
+	planID, briefingID := flags.Arg(0), flags.Arg(1)
+	plan, briefingIndex, ok := findPlanBriefing(ctx.state, planID, briefingID)
+	if !ok {
+		fmt.Fprintf(stderr, "Error: Briefing %q not found in Plan %q\n", briefingID, planID)
+		return 1
+	}
+	briefing := plan.Briefings[briefingIndex]
+	if briefing.Status != "completed" {
+		fmt.Fprintf(stderr, "Error: Briefing %q must be completed before generating a Milestone\n", briefingID)
+		return 1
+	}
+	if blockedBy := incompleteBriefingDependencies(plan, briefing); len(blockedBy) > 0 {
+		fmt.Fprintf(stderr, "Error: Briefing %q has incomplete dependencies: %s\n", briefingID, strings.Join(blockedBy, ", "))
+		return 1
+	}
+
+	targetID := strings.TrimSpace(*milestoneID)
+	if targetID == "" {
+		targetID = uniquePlanningSlug(plan.ID+"-"+briefing.ID, map[string]bool{})
+	}
+	if !milestoneIDPattern.MatchString(targetID) {
+		fmt.Fprintf(stderr, "Error: Milestone ID %q must use lowercase letters, numbers, and hyphens\n", targetID)
+		return 1
+	}
+	if ctx.milestoneIDs[targetID] {
+		fmt.Fprintf(stderr, "Error: Milestone %q already exists\n", targetID)
+		return 1
+	}
+	if linkedPlanID, linkedBriefingID, exists := findActiveMilestoneLink(ctx.state, targetID, planID, briefingID); exists {
+		fmt.Fprintf(stderr, "Error: Milestone %q is already linked by Briefing %q in Plan %q\n", targetID, linkedBriefingID, linkedPlanID)
+		return 1
+	}
+	if briefing.MilestoneID != "" && briefing.MilestoneID != targetID && !*replaceLink {
+		fmt.Fprintf(stderr, "Error: Briefing %q is already linked to Milestone %q; pass --replace-link to replace only the Briefing link\n", briefingID, briefing.MilestoneID)
+		return 1
+	}
+
+	spec := buildBriefingMilestoneSpec(configPath, ctx, plan, briefing, targetID)
+	ms := config.Milestone{
+		ID:       targetID,
+		Title:    briefing.Title,
+		SpecPath: filepath.Join("milestones", targetID+".md"),
+	}
+	if *preview {
+		fmt.Fprintf(stdout, "Generated Milestone %q preview\n", targetID)
+		fmt.Fprintf(stdout, "Title: %s\n", ms.Title)
+		fmt.Fprintf(stdout, "Spec Path: %s\n", ms.SpecPath)
+		fmt.Fprintf(stdout, "Briefing Link: Plan %q Briefing %q -> Milestone %q\n\n", plan.ID, briefing.ID, targetID)
+		fmt.Fprint(stdout, spec)
+		return 0
+	}
+	if err := config.AddMilestoneWithSpec(configPath, ms, spec); err != nil {
+		fmt.Fprintf(stderr, "Error: creating Milestone: %v\n", err)
+		return 1
+	}
+	ctx.milestoneIDs[targetID] = true
+	plan.Briefings[briefingIndex].MilestoneID = targetID
+	touchBriefing(&plan, &plan.Briefings[briefingIndex], *actor)
+	if !savePlanForCommand(ctx, plan, stderr) {
+		return 1
+	}
+	fmt.Fprintf(stdout, "Milestone %q generated from Briefing %q in Plan %q\n", targetID, briefing.ID, plan.ID)
+	return 0
+}
+
 func newPlanningFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -1481,12 +1563,193 @@ func defaultPlanGenerationRunnerCommand(settings config.Settings) (string, error
 }
 
 var safeShellWordPattern = regexp.MustCompile(`^[A-Za-z0-9._:/@%+=,-]+$`)
+var milestoneIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 func shellQuote(value string) string {
 	if safeShellWordPattern.MatchString(value) {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func incompleteBriefingDependencies(plan config.Plan, briefing config.Briefing) []string {
+	byID := make(map[string]config.Briefing, len(plan.Briefings))
+	for _, candidate := range plan.Briefings {
+		byID[candidate.ID] = candidate
+	}
+	var incomplete []string
+	for _, dependencyID := range briefing.DependsOn {
+		dependency, ok := byID[dependencyID]
+		if !ok || dependency.Status != "completed" {
+			incomplete = append(incomplete, dependencyID)
+		}
+	}
+	return incomplete
+}
+
+func buildBriefingMilestoneSpec(configPath string, ctx planningCommandContext, plan config.Plan, briefing config.Briefing, milestoneID string) string {
+	root := filepath.Dir(filepath.Dir(configPath))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Milestone Spec: %s - %s\n\n", milestoneID, briefing.Title)
+	sb.WriteString("## Goal\n")
+	sb.WriteString(strings.TrimSpace(briefing.Objective))
+	sb.WriteString("\n\n")
+
+	sb.WriteString("## Implementation Prompt\n")
+	fmt.Fprintf(&sb, "Implement the work prepared by Briefing `%s` in Plan `%s`.\n\n", briefing.ID, plan.ID)
+	appendLabeledParagraph(&sb, "Plan Objective", plan.Objective)
+	appendLabeledParagraph(&sb, "Briefing Intent", briefing.Intent)
+	appendLabeledParagraph(&sb, "Completion Signal", briefing.CompletionSignal)
+
+	sb.WriteString("## Scope\n")
+	writeBulletList(&sb, append([]string{
+		"Make the repository changes needed to satisfy the selected Briefing.",
+		"Use the repository context and existing architecture summarized below.",
+	}, cleanStringList(append(plan.Constraints, briefing.Constraints...))...))
+	sb.WriteString("\n")
+
+	sb.WriteString("## Explicit Exclusions\n")
+	writeBulletList(&sb, []string{
+		"Do not make Milestone execution depend on Plans, Briefings, or `.cyclestone/plans/*.yml`.",
+		"Do not start a runner cycle, mutate reports, edit runtime state, or change git branches as part of creation.",
+		"Do not auto-link unrelated standalone Milestones to this Briefing.",
+	})
+	sb.WriteString("\n")
+
+	sb.WriteString("## Acceptance Criteria\n")
+	writeChecklist(&sb, []string{
+		briefing.CompletionSignal,
+		"The implementation remains consistent with `AGENTS.md`, `.cyclestone/DECISIONS.md`, and the documented architecture.",
+		"Relevant automated tests are added or updated and pass with the narrowest useful Go test command.",
+		"Existing standalone Milestones and runtime artifacts remain unrelated to this generated Milestone unless explicitly changed by the implementation work.",
+	})
+	sb.WriteString("\n")
+
+	sb.WriteString("## Repository Context\n")
+	fmt.Fprintf(&sb, "- Source Plan: `%s` (%s)\n", plan.ID, plan.Title)
+	fmt.Fprintf(&sb, "- Source Briefing: `%s` (%s)\n", briefing.ID, briefing.Title)
+	fmt.Fprintf(&sb, "- Briefing Status At Generation: `%s`\n", briefing.Status)
+	printInlineList(&sb, "- Dependencies", briefing.DependsOn)
+	printInlineList(&sb, "- Plan Constraints", plan.Constraints)
+	printInlineList(&sb, "- Briefing Constraints", briefing.Constraints)
+	sb.WriteString("\n")
+
+	appendCompletedMilestoneContext(&sb, configPath)
+	appendGenerationContextFile(&sb, root, "AGENTS.md")
+	appendGenerationContextFile(&sb, root, filepath.Join(".cyclestone", "DECISIONS.md"))
+	appendGenerationContextFile(&sb, root, filepath.Join("docs", "architecture.md"))
+	appendGenerationContextFile(&sb, root, filepath.Join("docs", "planning-data-models.md"))
+	appendRelevantTestContext(&sb, root)
+	appendGenerationTrackedStructure(&sb, root)
+
+	sb.WriteString("## Testing Expectations\n")
+	writeBulletList(&sb, []string{
+		"Run targeted Go tests for touched packages first.",
+		"Run `git diff --check` before handoff.",
+		"Broaden to `go test ./... -count=1` when changes span shared behavior.",
+	})
+	return limitBriefingMilestoneContext(sb.String())
+}
+
+func appendLabeledParagraph(sb *strings.Builder, label, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	fmt.Fprintf(sb, "**%s:** %s\n\n", label, value)
+}
+
+func writeBulletList(sb *strings.Builder, values []string) {
+	wrote := false
+	for _, value := range cleanStringList(values) {
+		fmt.Fprintf(sb, "- %s\n", value)
+		wrote = true
+	}
+	if !wrote {
+		sb.WriteString("- None.\n")
+	}
+}
+
+func writeChecklist(sb *strings.Builder, values []string) {
+	wrote := false
+	for _, value := range cleanStringList(values) {
+		fmt.Fprintf(sb, "- [ ] %s\n", value)
+		wrote = true
+	}
+	if !wrote {
+		sb.WriteString("- [ ] Implementation behavior is complete and verified.\n")
+	}
+}
+
+func printInlineList(sb *strings.Builder, label string, values []string) {
+	cleaned := cleanStringList(values)
+	if len(cleaned) == 0 {
+		fmt.Fprintf(sb, "%s: none\n", label)
+		return
+	}
+	fmt.Fprintf(sb, "%s: %s\n", label, strings.Join(cleaned, ", "))
+}
+
+func appendCompletedMilestoneContext(sb *strings.Builder, configPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return
+	}
+	state, _ := config.LoadState(filepath.Join(filepath.Dir(configPath), "state.json"))
+	sb.WriteString("## Existing And Completed Milestones\n\n")
+	if len(cfg.Milestones) == 0 {
+		sb.WriteString("- none\n\n")
+		return
+	}
+	for _, milestone := range cfg.Milestones {
+		status := ""
+		if state != nil {
+			status = state.GetMilestoneStatus(milestone.ID)
+		}
+		if status == "" {
+			status = "Todo"
+		}
+		fmt.Fprintf(sb, "- %s | %s | status: %s\n", milestone.ID, milestone.Title, status)
+	}
+	sb.WriteString("\n")
+}
+
+func appendRelevantTestContext(sb *strings.Builder, root string) {
+	sb.WriteString("## Existing Test Files\n\n```text\n")
+	wrote := false
+	cmd := exec.Command("git", "-C", root, "ls-files", "*_test.go")
+	if out, err := cmd.Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				sb.WriteString(line + "\n")
+				wrote = true
+			}
+		}
+	}
+	if !wrote {
+		for _, rel := range []string{
+			filepath.Join("cmd", "cyclestone", "main_test.go"),
+			filepath.Join("internal", "config", "config_test.go"),
+			filepath.Join("internal", "config", "planning_test.go"),
+		} {
+			sb.WriteString(rel + "\n")
+		}
+	}
+	sb.WriteString("```\n\n")
+	appendGenerationContextFile(sb, root, filepath.Join("cmd", "cyclestone", "main_test.go"))
+	appendGenerationContextFile(sb, root, filepath.Join("internal", "config", "config_test.go"))
+	appendGenerationContextFile(sb, root, filepath.Join("internal", "config", "planning_test.go"))
+}
+
+func limitBriefingMilestoneContext(text string) string {
+	if len([]rune(text)) <= maxBriefingMilestoneContextChars {
+		return text
+	}
+	runes := []rune(text)
+	head := maxBriefingMilestoneContextChars / 2
+	tail := maxBriefingMilestoneContextChars - head
+	return string(runes[:head]) + "\n\n[...briefing milestone context truncated...]\n\n" + string(runes[len(runes)-tail:])
 }
 
 func planFilePath(plansDir, planID string) string {
