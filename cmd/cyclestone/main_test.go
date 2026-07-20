@@ -1690,3 +1690,161 @@ func TestPlanReevaluateCLI(t *testing.T) {
 	// Verify existing milestones, index, state, reports remain unchanged
 	assertFilesUnchanged(t, beforeOther)
 }
+
+func TestCLILifecycleSafetyPlanAndDeleteConfirmationAndWarnings(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	milestonePaths := map[string]string{
+		configPath: filepath.Join(root, ".cyclestone", "milestone.yml"),
+		statePath:  filepath.Join(root, ".cyclestone", "state.json"),
+		"spec":     filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		"report":   filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	}
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		milestonePaths["spec"],
+		milestonePaths["report"],
+	)
+
+	// Test 1: plan delete without --confirm fails
+	assertCommandFails(t, configPath,
+		[]string{"plan", "delete", "delivery-plan"},
+		`deleting Plan "delivery-plan" requires --confirm delivery-plan`,
+	)
+
+	// Test 2: briefing delete without --confirm fails
+	assertCommandFails(t, configPath,
+		[]string{"briefing", "delete", "delivery-plan", "linked-existing"},
+		`deleting Briefing "linked-existing" requires --confirm linked-existing`,
+	)
+	assertFilesUnchanged(t, before)
+
+	// Test 3: briefing delete with --confirm removes only briefing YAML entry
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "delete", "delivery-plan", "linked-existing", "--confirm", "linked-existing"},
+		`Briefing "linked-existing" deleted`,
+	)
+	assertFilesUnchanged(t, before)
+
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	if _, ok := findBriefing(plan, "linked-existing"); ok {
+		t.Fatalf("expected linked-existing briefing to be removed from plan record")
+	}
+
+	// Test 4: plan delete with --confirm removes only plan YAML file
+	assertCommandSucceeds(t, configPath,
+		[]string{"plan", "delete", "delivery-plan", "--confirm", "delivery-plan"},
+		`Plan "delivery-plan" deleted`,
+	)
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "plans", "delivery-plan.yml"))
+
+	// All milestone specs, index entries, runtime state, and reports MUST remain 100% unchanged
+	assertFilesUnchanged(t, before)
+}
+
+func TestCLILifecycleSafetyMissingMilestoneDisplay(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	_ = statePath
+
+	// Delete the existing milestone file and remove from milestone.yml to simulate milestone deletion
+	milestoneSpecPath := filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")
+	if err := os.Remove(milestoneSpecPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("failed to remove milestone spec: %v", err)
+	}
+	writeMainTestFile(t, configPath, "milestones: []\n")
+
+	var stdout, stderr bytes.Buffer
+
+	// 1. plan list should run with exit 0 and surface missing milestone warnings
+	code := runReadOnlyCommand([]string{"plan", "list"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan list returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "references missing Milestone \"existing-milestone\"") {
+		t.Fatalf("expected dangling milestone warning on stderr, got:\n%s", stderr.String())
+	}
+
+	// 2. plan show should show missing milestone status cleanly
+	stdout.Reset()
+	stderr.Reset()
+	code = runReadOnlyCommand([]string{"plan", "show", "delivery-plan"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan show returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "missing existing-milestone") {
+		t.Fatalf("expected missing milestone label in plan show, got:\n%s", stdout.String())
+	}
+
+	// 3. briefing show should show missing milestone status cleanly
+	stdout.Reset()
+	stderr.Reset()
+	code = runReadOnlyCommand([]string{"briefing", "show", "delivery-plan", "linked-existing"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("briefing show returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Milestone: missing existing-milestone") {
+		t.Fatalf("expected missing milestone in briefing show, got:\n%s", stdout.String())
+	}
+
+	// 4. plan tree should render [missing: existing-milestone] cleanly
+	stdout.Reset()
+	stderr.Reset()
+	code = runReadOnlyCommand([]string{"plan", "tree", "delivery-plan"}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan tree returned %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "[missing: existing-milestone]") {
+		t.Fatalf("expected [missing: existing-milestone] in plan tree output, got:\n%s", stdout.String())
+	}
+
+	// 5. Unrelated briefing (no-milestone) should still be executable
+	ctx, ok := loadWritablePlanningContext(configPath, &stderr)
+	if !ok {
+		t.Fatalf("failed to load writable planning context")
+	}
+	res, err := prepareBriefingMilestone(ctx, configPath, briefingMilestoneRequest{
+		planID:      "delivery-plan",
+		briefingID:  "no-milestone",
+		actor:       "test-runner",
+		allowActive: true,
+		allowLinked: true,
+	})
+	if err != nil {
+		t.Fatalf("unrelated briefing execution prep failed: %v", err)
+	}
+	if res.Milestone.ID != "delivery-plan-no-milestone" {
+		t.Fatalf("unexpected generated milestone ID for unrelated briefing: %s", res.Milestone.ID)
+	}
+}
+
+func TestCLILifecycleSafetyUnlinkPreservesMilestoneStorage(t *testing.T) {
+	t.Parallel()
+
+	root, configPath, statePath := writePlanningCommandFixture(t)
+	before := snapshotFiles(t,
+		configPath,
+		statePath,
+		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
+		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+	)
+
+	// Unlink linked-existing Briefing
+	assertCommandSucceeds(t, configPath,
+		[]string{"briefing", "unlink", "delivery-plan", "linked-existing"},
+		`Briefing "linked-existing" unlinked`,
+	)
+
+	// Verify Milestone storage remains untouched
+	assertFilesUnchanged(t, before)
+
+	// Verify milestone_id is cleared on the Briefing record in the Plan YAML
+	plan := loadMainTestPlan(t, root, "delivery-plan")
+	briefing, ok := findBriefing(plan, "linked-existing")
+	if !ok || briefing.MilestoneID != "" {
+		t.Fatalf("expected briefing milestone_id to be empty after unlink, got %+v", briefing)
+	}
+}

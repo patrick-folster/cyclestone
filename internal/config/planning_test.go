@@ -600,3 +600,202 @@ func TestPlanReevaluationProposalValidationAndDiff(t *testing.T) {
 		t.Fatalf("failed to apply proposal cleanly: %+v", applied)
 	}
 }
+
+func TestLifecycleSafetyPlanDeletionPreservesMilestones(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	statePath := filepath.Join(tmpDir, "state.json")
+	plansDir := filepath.Join(tmpDir, "plans")
+	specPath := filepath.Join(tmpDir, "milestones", "linked-ms.md")
+	reportPath := filepath.Join(tmpDir, "reports", "linked-ms", "summary.md")
+
+	writeFile(t, configPath, "milestones:\n  - id: linked-ms\n    title: Linked MS\n    spec_path: milestones/linked-ms.md\n")
+	writeFile(t, specPath, "# Milestone Spec: linked-ms - Linked MS\n\n## Goal\nLinked milestone goal.\n")
+	writeFile(t, statePath, `{"active_milestone_id":"linked-ms","milestone_statuses":{"linked-ms":"Approved"},"milestone_cycles":{"linked-ms":1},"history":{}}`)
+	writeFile(t, reportPath, "cycle 1 summary report\n")
+
+	plan := representativePlan()
+	plan.Briefings[1].MilestoneID = "linked-ms"
+	if validation, err := SavePlan(plansDir, plan, WithKnownMilestoneIDs([]string{"linked-ms"})); err != nil || validation.HasErrors() {
+		t.Fatalf("SavePlan failed: %v %+v", err, validation)
+	}
+
+	beforeStorage := readFiles(t, configPath, statePath, specPath, reportPath)
+
+	// Simulate plan file deletion
+	planPath := filepath.Join(plansDir, plan.ID+".yml")
+	if err := os.Remove(planPath); err != nil {
+		t.Fatalf("failed to remove plan file: %v", err)
+	}
+
+	// Verify milestone storage remains 100% intact
+	afterStorage := readFiles(t, configPath, statePath, specPath, reportPath)
+	for path, beforeContent := range beforeStorage {
+		if afterStorage[path] != beforeContent {
+			t.Fatalf("expected %s to remain unchanged after Plan deletion", path)
+		}
+	}
+
+	// Verify config and state load cleanly without planning files
+	cfg, err := LoadConfig(configPath)
+	if err != nil || len(cfg.Milestones) != 1 || cfg.Milestones[0].ID != "linked-ms" {
+		t.Fatalf("LoadConfig failed after Plan deletion: %v %+v", err, cfg)
+	}
+	st, err := LoadState(statePath)
+	if err != nil || st.GetMilestoneStatus("linked-ms") != "Approved" {
+		t.Fatalf("LoadState failed after Plan deletion: %v %+v", err, st)
+	}
+}
+
+func TestLifecycleSafetyBriefingUnlinkPreservesMilestones(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	statePath := filepath.Join(tmpDir, "state.json")
+	plansDir := filepath.Join(tmpDir, "plans")
+	specPath := filepath.Join(tmpDir, "milestones", "linked-ms.md")
+	reportPath := filepath.Join(tmpDir, "reports", "linked-ms", "summary.md")
+
+	writeFile(t, configPath, "milestones:\n  - id: linked-ms\n    title: Linked MS\n    spec_path: milestones/linked-ms.md\n")
+	writeFile(t, specPath, "# Milestone Spec: linked-ms - Linked MS\n\n## Goal\nGoal.\n")
+	writeFile(t, statePath, `{"active_milestone_id":"linked-ms","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
+	writeFile(t, reportPath, "report\n")
+
+	plan := representativePlan()
+	plan.Briefings[1].MilestoneID = "linked-ms"
+	if validation, err := SavePlan(plansDir, plan, WithKnownMilestoneIDs([]string{"linked-ms"})); err != nil || validation.HasErrors() {
+		t.Fatalf("SavePlan failed: %v %+v", err, validation)
+	}
+
+	beforeStorage := readFiles(t, configPath, statePath, specPath, reportPath)
+
+	// Unlink Briefing
+	plan.Briefings[1].MilestoneID = ""
+	if validation, err := SavePlan(plansDir, plan, WithKnownMilestoneIDs([]string{"linked-ms"})); err != nil || validation.HasErrors() {
+		t.Fatalf("SavePlan unlinking failed: %v %+v", err, validation)
+	}
+
+	// Verify Briefing milestone_id is cleared
+	reloaded, val := LoadPlanningState(plansDir, WithKnownMilestoneIDs([]string{"linked-ms"}))
+	if val.HasErrors() || len(reloaded.Plans) != 1 || reloaded.Plans[0].Briefings[1].MilestoneID != "" {
+		t.Fatalf("expected unlinked briefing in reloaded plan: %+v", reloaded)
+	}
+
+	// Verify Milestone storage remains untouched
+	afterStorage := readFiles(t, configPath, statePath, specPath, reportPath)
+	for path, beforeContent := range beforeStorage {
+		if afterStorage[path] != beforeContent {
+			t.Fatalf("expected %s to remain unchanged after Briefing unlink", path)
+		}
+	}
+}
+
+func TestLifecycleSafetyMilestoneDeletionLeavesBriefingInMissingState(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	plansDir := filepath.Join(tmpDir, "plans")
+
+	plan := representativePlan()
+	plan.Briefings[1].MilestoneID = "deleted-ms"
+	if validation, err := SavePlan(plansDir, plan, WithKnownMilestoneIDs([]string{"deleted-ms"})); err != nil || validation.HasErrors() {
+		t.Fatalf("SavePlan failed: %v %+v", err, validation)
+	}
+
+	// Load planning state with NO known milestone IDs (simulating milestone deletion)
+	state, result := LoadPlanningState(plansDir, WithKnownMilestoneIDs([]string{}))
+
+	if result.HasErrors() {
+		t.Fatalf("expected non-fatal warnings for missing milestone reference, got errors: %+v", result.Messages)
+	}
+	if !result.HasWarnings() {
+		t.Fatal("expected warning for missing milestone reference")
+	}
+	if len(result.UnresolvedReferences) != 1 || result.UnresolvedReferences[0].Kind != "milestone" || result.UnresolvedReferences[0].MilestoneID != "deleted-ms" {
+		t.Fatalf("unexpected unresolved references: %+v", result.UnresolvedReferences)
+	}
+	if len(state.Plans) != 1 || state.Plans[0].Briefings[1].MilestoneID != "deleted-ms" {
+		t.Fatalf("plan should remain loaded with briefing pointing to missing milestone: %+v", state)
+	}
+}
+
+func TestLifecycleSafetyStaleProvenanceResolution(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	plansDir := filepath.Join(tmpDir, "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(plansDir, "existing-plan.yml"), validPlanYAML("existing-plan"))
+
+	// Advisory provenance referencing non-existent plan and non-existent briefing
+	state, result := LoadPlanningState(plansDir, WithMilestoneSourceReferences([]MilestoneSourceReference{
+		{MilestoneID: "ms-1", Type: "briefing", PlanID: "ghost-plan", BriefingID: "ghost-briefing"},
+		{MilestoneID: "ms-2", Type: "briefing", PlanID: "existing-plan", BriefingID: "ghost-briefing"},
+	}))
+
+	if result.HasErrors() {
+		t.Fatalf("stale provenance should yield non-fatal warnings, got errors: %+v", result.Messages)
+	}
+	if !result.HasWarnings() || len(result.UnresolvedReferences) != 2 {
+		t.Fatalf("expected 2 unresolved provenance references, got result=%+v", result)
+	}
+	if len(state.Plans) != 1 {
+		t.Fatalf("plan loading should succeed despite stale provenance: %+v", state.Plans)
+	}
+}
+
+func TestLifecycleSafetyGeneratedMilestoneStandaloneExecutionAfterSourceRemoval(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "milestone.yml")
+	statePath := filepath.Join(tmpDir, "state.json")
+	plansDir := filepath.Join(tmpDir, "plans")
+
+	writeFile(t, configPath, "milestones: []\n")
+	writeFile(t, statePath, `{"active_milestone_id":"","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
+
+	// Create a Plan and Briefing
+	plan := representativePlan()
+	plan.Briefings[0].Status = "completed"
+	if validation, err := SavePlan(plansDir, plan); err != nil || validation.HasErrors() {
+		t.Fatalf("SavePlan failed: %v %+v", err, validation)
+	}
+
+	// Add milestone generated from briefing
+	genMS := Milestone{
+		ID:       "onboarding-improvements-setup-copy-review",
+		Title:    "Review setup copy",
+		SpecPath: "milestones/onboarding-improvements-setup-copy-review.md",
+	}
+	spec := "# Milestone Spec: onboarding-improvements-setup-copy-review - Review setup copy\n\n## Goal\nGenerated goal.\n"
+	if err := AddMilestoneWithSpec(configPath, genMS, spec); err != nil {
+		t.Fatalf("AddMilestoneWithSpec failed: %v", err)
+	}
+
+	// Remove source Plan file
+	if err := os.Remove(filepath.Join(plansDir, plan.ID+".yml")); err != nil {
+		t.Fatalf("failed to remove plan file: %v", err)
+	}
+
+	// Verify generated milestone functions as first-class entity
+	cfg, err := LoadConfig(configPath)
+	if err != nil || len(cfg.Milestones) != 1 || cfg.Milestones[0].ID != genMS.ID {
+		t.Fatalf("generated milestone should be readable from index: %v %+v", err, cfg)
+	}
+
+	st, err := LoadState(statePath)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	st.SetMilestoneStatus(genMS.ID, "Approved")
+	st.SetMilestoneCycles(genMS.ID, 1)
+	if err := SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState failed for generated milestone: %v", err)
+	}
+}

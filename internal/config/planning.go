@@ -15,6 +15,9 @@ import (
 
 const PlanningSchemaVersion = 1
 
+// PlanningMetadataOnlyWarning is the explicit warning text clarifying that planning operations affect planning metadata only.
+const PlanningMetadataOnlyWarning = "Planning operations affect planning metadata only. Linked milestone specs, compact index entries, runtime state, reports, and branch snapshots are never modified or deleted."
+
 const (
 	PlanExecutionModeOnce       = "once"
 	PlanExecutionModeContinuous = "continuous"
