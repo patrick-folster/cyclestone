@@ -570,11 +570,7 @@ func (m CreateMilestoneModel) View() string {
 			sb.WriteString(m.Form.RenderError() + "\n" + spacing)
 		}
 
-		type blockItem struct {
-			focusIndices []int
-			content      string
-		}
-		var allBlocks []blockItem
+		var allBlocks []FormBlock
 
 		// Block 0: Goal Input
 		{
@@ -591,7 +587,7 @@ func (m CreateMilestoneModel) View() string {
 				blockSb.WriteString(labelStyle.Render("Description / Goal *") + "\n")
 			}
 			blockSb.WriteString(m.GoalInput.View())
-			allBlocks = append(allBlocks, blockItem{focusIndices: []int{0}, content: blockSb.String()})
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{0}, Content: blockSb.String()})
 		}
 
 		// Block 1: Title Input
@@ -620,7 +616,7 @@ func (m CreateMilestoneModel) View() string {
 				}
 				blockSb.WriteString(m.TitleInput.View())
 			}
-			allBlocks = append(allBlocks, blockItem{focusIndices: []int{1}, content: blockSb.String()})
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{1}, Content: blockSb.String()})
 		}
 
 		// Block 2: Runner Selection
@@ -641,7 +637,7 @@ func (m CreateMilestoneModel) View() string {
 				blockSb.WriteString(labelStyle.Render("Runner Selection (Left/Right or H/L to choose)") + "\n")
 				blockSb.WriteString(renderedOpts)
 			}
-			allBlocks = append(allBlocks, blockItem{focusIndices: []int{2}, content: blockSb.String()})
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{2}, Content: blockSb.String()})
 		}
 
 		// Block 3: Create Git Branch Selection
@@ -659,22 +655,15 @@ func (m CreateMilestoneModel) View() string {
 			if prefix == "" {
 				prefix = "cyclestone/milestones/"
 			}
-			var yesOpt, noOpt string
-			if m.CreateBranch {
-				yesOpt = m.Styles.SuccessText.Render("(•) Yes (create branch: " + prefix + m.NextID + "-...)")
-				noOpt = m.Styles.HelpStyle.Render("( ) No (stay on current branch)")
-			} else {
-				yesOpt = m.Styles.HelpStyle.Render("( ) Yes (create branch: " + prefix + m.NextID + "-...)")
-				noOpt = m.Styles.SuccessText.Render("(•) No (stay on current branch)")
-			}
+			branchOpts := renderBranchOptions(m.Styles, m.CreateBranch, prefix, m.NextID, m.Height < 20)
 
 			if m.Height < 20 {
-				blockSb.WriteString(labelStyle.Render("Git Branch:") + " " + fmt.Sprintf("%s    %s", yesOpt, noOpt))
+				blockSb.WriteString(labelStyle.Render("Git Branch:") + " " + branchOpts)
 			} else {
 				blockSb.WriteString(labelStyle.Render("Create Milestone Git Branch (Left/Right or H/L to choose)") + "\n")
-				blockSb.WriteString(fmt.Sprintf("%s    %s", yesOpt, noOpt))
+				blockSb.WriteString(branchOpts)
 			}
-			allBlocks = append(allBlocks, blockItem{focusIndices: []int{3}, content: blockSb.String()})
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{3}, Content: blockSb.String()})
 		}
 
 		// Block 4: Confirm Buttons
@@ -683,23 +672,7 @@ func (m CreateMilestoneModel) View() string {
 			submitBtn := m.Form.RenderButtonWithStyles(4, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
 			cancelBtn := m.Form.RenderButtonWithStyles(5, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 			blockSb.WriteString(fmt.Sprintf("%s    %s", submitBtn, cancelBtn))
-			allBlocks = append(allBlocks, blockItem{focusIndices: []int{4, 5}, content: blockSb.String()})
-		}
-
-		focusedBlockIdx := 0
-		for idx, blk := range allBlocks {
-			for _, fIdx := range blk.focusIndices {
-				if fIdx == m.FocusIndex {
-					focusedBlockIdx = idx
-					break
-				}
-			}
-		}
-
-		var rootOverhead = 3
-		boxHeight := m.Height - rootOverhead - 2
-		if boxHeight < 2 {
-			boxHeight = 2
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{4, 5}, Content: blockSb.String()})
 		}
 
 		var helpKeys []string
@@ -709,54 +682,15 @@ func (m CreateMilestoneModel) View() string {
 			helpKeys = []string{"Tab Focus", "Shift+Tab Back", "Left/Right Change", "Enter Select/Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}
 		}
 		helpText := m.Form.RenderHelp(helpKeys)
-		helpLines := strings.Count(helpText, "\n") + 1
 
-		spacingLen := len(spacing)
-		nonBlockLines := 2 + spacingLen
-		if m.ErrorMsg != "" {
-			nonBlockLines += 1 + spacingLen
-		}
-		nonBlockLines += 1 + helpLines
-
-		blocksCapacity := boxHeight - nonBlockLines
-		if blocksCapacity < 1 {
-			blocksCapacity = 1
+		var rootOverhead = 3
+		boxHeight := m.Height - rootOverhead - 2
+		if boxHeight < 2 {
+			boxHeight = 2
 		}
 
-		startIdx := focusedBlockIdx
-		endIdx := focusedBlockIdx
-		currentHeight := strings.Count(allBlocks[focusedBlockIdx].content, "\n") + 1
-
-		for {
-			expanded := false
-			if startIdx > 0 {
-				h := strings.Count(allBlocks[startIdx-1].content, "\n") + spacingLen
-				if currentHeight+h <= blocksCapacity {
-					startIdx--
-					currentHeight += h
-					expanded = true
-				}
-			}
-			if endIdx < len(allBlocks)-1 {
-				h := strings.Count(allBlocks[endIdx+1].content, "\n") + spacingLen
-				if currentHeight+h <= blocksCapacity {
-					endIdx++
-					currentHeight += h
-					expanded = true
-				}
-			}
-			if !expanded {
-				break
-			}
-		}
-
-		var visibleBlocks []string
-		for i := startIdx; i <= endIdx; i++ {
-			visibleBlocks = append(visibleBlocks, allBlocks[i].content)
-		}
-		sb.WriteString(strings.Join(visibleBlocks, spacing) + "\n")
-
-		sb.WriteString(helpText)
+		body := RenderBoundedBlocks(allBlocks, m.FocusIndex, boxHeight, spacing, helpText, m.ErrorMsg)
+		sb.WriteString(body)
 	}
 
 	var rootOverhead = 3

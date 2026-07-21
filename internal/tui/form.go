@@ -364,3 +364,19 @@ func RenderBoundedBlocks(blocks []FormBlock, focusedIndex int, boxHeight int, sp
 	return sb.String()
 }
 
+// renderBranchOptions returns formatted radio-button choices for git branch creation.
+func renderBranchOptions(styles Styles, createBranch bool, branchPrefix string, id string, compact bool) string {
+	if branchPrefix == "" {
+		branchPrefix = "cyclestone/milestones/"
+	}
+	var yesOpt, noOpt string
+	if createBranch {
+		yesOpt = styles.SuccessText.Render("(•) Yes (create branch: " + branchPrefix + id + "-...)")
+		noOpt = styles.HelpStyle.Render("( ) No (stay on current branch)")
+	} else {
+		yesOpt = styles.HelpStyle.Render("( ) Yes (create branch: " + branchPrefix + id + "-...)")
+		noOpt = styles.SuccessText.Render("(•) No (stay on current branch)")
+	}
+	return fmt.Sprintf("%s    %s", yesOpt, noOpt)
+}
+

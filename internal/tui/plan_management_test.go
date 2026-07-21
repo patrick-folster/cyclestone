@@ -31,7 +31,7 @@ func TestCreatePlanModelKeyboardValidationAndCancellation(t *testing.T) {
 		t.Fatalf("Shift+Tab did not reverse focus: %d", model.FocusIndex)
 	}
 	model.ObjectiveInput.SetValue("Test Objective")
-	model.FocusIndex = 3
+	model.FocusIndex = 5
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected submit command")
@@ -51,7 +51,7 @@ func TestCreatePlanModelMultiLineObjective(t *testing.T) {
 	model.TitleInput.SetValue("Multi-line Plan")
 	model.ObjectiveInput.SetValue("First line of objective.\nSecond line of objective.")
 
-	model.FocusIndex = 3 // Submit button
+	model.FocusIndex = 5 // Submit button
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected submit command")
@@ -473,7 +473,7 @@ func TestCreatePlanModelLayoutAndHeader(t *testing.T) {
 	}
 
 	// Test field focus updates and submit/cancel button layout
-	model.FocusIndex = 3 // Create button
+	model.FocusIndex = 5 // Submit button
 	viewStr = model.View()
 	if !strings.Contains(viewStr, "[ Submit ]") || !strings.Contains(viewStr, "[ Cancel ]") {
 		t.Fatalf("expected styled action buttons in view:\n%s", viewStr)

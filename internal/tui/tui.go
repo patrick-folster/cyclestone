@@ -564,6 +564,15 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.CreatePlan = NewCreatePlanModel(m.Styles)
 			m.CreatePlan.NextID = generateNextPlanID(m.Plans.Planning)
 			m.CreatePlan.Width, m.CreatePlan.Height = m.Width, m.Height
+			settings := config.LoadMergedSettings()
+			defaultRunner := normalizeMilestoneRunner(settings.DefaultLLM)
+			m.CreatePlan.DefaultLLM = settings.DefaultLLM
+			m.CreatePlan.RunnerType = defaultRunner
+			createBranch := false
+			if settings.CreateMilestoneBranch != nil {
+				createBranch = *settings.CreateMilestoneBranch
+			}
+			m.CreatePlan.CreateBranch = createBranch
 			m.CreatePlan.recalcHeights()
 			return m, m.CreatePlan.Init()
 		}
@@ -608,6 +617,19 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.CreatePlan.ErrorMsg = fmt.Sprintf("Failed to save Plan: %v", err)
 			}
 			return m, nil
+		}
+
+		if msg.CreateBranch {
+			settings := config.LoadMergedSettings()
+			prefix := settings.DefaultGitBranchPrefix
+			if prefix == "" {
+				prefix = "cyclestone/plans/"
+			}
+			branchName := prefix + msg.ID
+			repos := git.GetTrackedRepos()
+			for _, repo := range repos {
+				_ = git.CheckoutOrCreateBranchInDir(repo.Path, branchName)
+			}
 		}
 		planning, reloadValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
 		if reloadValidation.HasErrors() {

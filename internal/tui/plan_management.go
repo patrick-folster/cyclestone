@@ -13,9 +13,11 @@ import (
 
 // CreatePlanMsg requests persistence of the currently completed Plan form.
 type CreatePlanMsg struct {
-	ID        string
-	Title     string
-	Objective string
+	ID           string
+	Title        string
+	Objective    string
+	RunnerType   string
+	CreateBranch bool
 }
 
 // ShowDeletePlanMsg opens a confirmation screen for one selected Plan.
@@ -36,6 +38,9 @@ type CreatePlanModel struct {
 	IDInput        textinput.Model
 	TitleInput     textinput.Model
 	ObjectiveInput textarea.Model
+	RunnerType     string
+	DefaultLLM    string
+	CreateBranch   bool
 	Form           FormModel
 	FocusIndex     int
 	Width          int
@@ -77,17 +82,22 @@ func NewCreatePlanModel(styles Styles) CreatePlanModel {
 	idInput := newInput("Plan ID (optional, auto-generated if empty)", 80)
 
 	form := NewFormModel(styles)
-	form.FocusOrder = []int{0, 1, 2, 3, 4}
+	form.FocusOrder = []int{0, 1, 2, 3, 4, 5, 6}
 	form.BindTextArea(0)
 	form.BindTextInput(1)
 	form.BindTextInput(2)
-	form.BindButton(3)
-	form.BindButton(4)
+	form.BindCustom(3)
+	form.BindCustom(4)
+	form.BindButton(5)
+	form.BindButton(6)
 
 	m := CreatePlanModel{
 		IDInput:        idInput,
 		TitleInput:     titleInput,
 		ObjectiveInput: obj,
+		RunnerType:     normalizeMilestoneRunner(""),
+		DefaultLLM:     "",
+		CreateBranch:   false,
 		Form:           form,
 		FocusIndex:     0,
 		Width:          80,
@@ -100,6 +110,16 @@ func NewCreatePlanModel(styles Styles) CreatePlanModel {
 
 func (m CreatePlanModel) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, textarea.Blink)
+}
+
+func (m CreatePlanModel) effectivePlanID() string {
+	if idVal := strings.TrimSpace(m.IDInput.Value()); idVal != "" {
+		return idVal
+	}
+	if m.NextID != "" {
+		return m.NextID
+	}
+	return "plan"
 }
 
 func (m *CreatePlanModel) recalcHeights() {
@@ -202,12 +222,12 @@ func (m CreatePlanModel) Update(msg tea.Msg) (CreatePlanModel, tea.Cmd) {
 			return m, changeScreenCmd(ScreenPlans, nil)
 
 		case "tab":
-			m.Form.NextFocusForOrder([]int{0, 1, 2, 3, 4})
+			m.Form.NextFocusForOrder([]int{0, 1, 2, 3, 4, 5, 6})
 			m.FocusIndex = m.Form.FocusIndex
 			return m, m.updateFocus()
 
 		case "shift+tab":
-			m.Form.PreviousFocusForOrder([]int{0, 1, 2, 3, 4})
+			m.Form.PreviousFocusForOrder([]int{0, 1, 2, 3, 4, 5, 6})
 			m.FocusIndex = m.Form.FocusIndex
 			return m, m.updateFocus()
 
@@ -223,22 +243,67 @@ func (m CreatePlanModel) Update(msg tea.Msg) (CreatePlanModel, tea.Cmd) {
 
 		case "down":
 			if m.FocusIndex != 0 {
-				m.FocusIndex = (m.FocusIndex + 1) % 5
+				m.FocusIndex = (m.FocusIndex + 1) % 7
 				return m, m.updateFocus()
 			}
 
 		case "up":
 			if m.FocusIndex != 0 {
-				m.FocusIndex = (m.FocusIndex - 1 + 5) % 5
+				m.FocusIndex = (m.FocusIndex - 1 + 7) % 7
 				return m, m.updateFocus()
 			}
 
-		case "left", "h", "right", "l":
+		case "left", "h":
 			if m.FocusIndex == 3 {
-				m.FocusIndex = 4
-				return m, m.updateFocus()
+				opts := getMilestoneRunnerOptions()
+				curIdx := -1
+				for i, opt := range opts {
+					if opt == m.RunnerType {
+						curIdx = i
+						break
+					}
+				}
+				if curIdx == -1 {
+					curIdx = 0
+				}
+				newIdx := (curIdx - 1 + len(opts)) % len(opts)
+				m.RunnerType = opts[newIdx]
+				return m, nil
 			} else if m.FocusIndex == 4 {
-				m.FocusIndex = 3
+				m.CreateBranch = !m.CreateBranch
+				return m, nil
+			} else if m.FocusIndex == 5 {
+				m.FocusIndex = 6
+				return m, m.updateFocus()
+			} else if m.FocusIndex == 6 {
+				m.FocusIndex = 5
+				return m, m.updateFocus()
+			}
+
+		case "right", "l":
+			if m.FocusIndex == 3 {
+				opts := getMilestoneRunnerOptions()
+				curIdx := -1
+				for i, opt := range opts {
+					if opt == m.RunnerType {
+						curIdx = i
+						break
+					}
+				}
+				if curIdx == -1 {
+					curIdx = 0
+				}
+				newIdx := (curIdx + 1) % len(opts)
+				m.RunnerType = opts[newIdx]
+				return m, nil
+			} else if m.FocusIndex == 4 {
+				m.CreateBranch = !m.CreateBranch
+				return m, nil
+			} else if m.FocusIndex == 5 {
+				m.FocusIndex = 6
+				return m, m.updateFocus()
+			} else if m.FocusIndex == 6 {
+				m.FocusIndex = 5
 				return m, m.updateFocus()
 			}
 
@@ -250,8 +315,14 @@ func (m CreatePlanModel) Update(msg tea.Msg) (CreatePlanModel, tea.Cmd) {
 				m.FocusIndex = 3
 				return m, m.updateFocus()
 			} else if m.FocusIndex == 3 {
-				return m.handleSubmit()
+				m.FocusIndex = 4
+				return m, m.updateFocus()
 			} else if m.FocusIndex == 4 {
+				m.FocusIndex = 5
+				return m, m.updateFocus()
+			} else if m.FocusIndex == 5 {
+				return m.handleSubmit()
+			} else if m.FocusIndex == 6 {
 				m.ErrorMsg = ""
 				m.Form.ErrorMsg = ""
 				return m, changeScreenCmd(ScreenPlans, nil)
@@ -340,9 +411,11 @@ func (m CreatePlanModel) handleSubmit() (CreatePlanModel, tea.Cmd) {
 	m.Form.ErrorMsg = ""
 	return m, func() tea.Msg {
 		return CreatePlanMsg{
-			ID:        id,
-			Title:     title,
-			Objective: objective,
+			ID:           id,
+			Title:        title,
+			Objective:    objective,
+			RunnerType:   m.RunnerType,
+			CreateBranch: m.CreateBranch,
 		}
 	}
 }
@@ -376,14 +449,14 @@ func (m CreatePlanModel) View() string {
 
 	if useWizard {
 		stepNum := m.FocusIndex + 1
-		if stepNum > 4 {
-			stepNum = 4
+		if stepNum > 6 {
+			stepNum = 6
 		}
-		headerText := fmt.Sprintf("CREATE PLAN %s (Step %d/4)", m.NextID, stepNum)
+		headerText := fmt.Sprintf("CREATE PLAN %s (Step %d/6)", m.NextID, stepNum)
 		if idVal := strings.TrimSpace(m.IDInput.Value()); idVal != "" {
-			headerText = fmt.Sprintf("CREATE PLAN %s (Step %d/4)", idVal, stepNum)
+			headerText = fmt.Sprintf("CREATE PLAN %s (Step %d/6)", idVal, stepNum)
 		} else if m.NextID == "" {
-			headerText = fmt.Sprintf("CREATE NEW PLAN (Step %d/4)", stepNum)
+			headerText = fmt.Sprintf("CREATE NEW PLAN (Step %d/6)", stepNum)
 		}
 		sb.WriteString(m.Styles.DetailHeader.Render(headerText) + "\n" + spacing)
 
@@ -410,10 +483,25 @@ func (m CreatePlanModel) View() string {
 			sb.WriteString(m.IDInput.View() + "\n")
 			sb.WriteString(m.Form.RenderHelp([]string{"Tab Next", "Esc Cancel", "Ctrl+C Cancel"}))
 
-		case 3, 4:
+		case 3:
+			sb.WriteString(m.Styles.DetailLabel.Render("Runner Selection:") + "\n")
+			sb.WriteString(renderRunnerOptions(m.Styles, m.RunnerType) + "\n")
+			sb.WriteString(m.Form.RenderHelp([]string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
+
+		case 4:
+			sb.WriteString(m.Styles.DetailLabel.Render("Create new Git branch for plan?") + "\n")
+			settings := config.LoadMergedSettings()
+			prefix := settings.DefaultGitBranchPrefix
+			if prefix == "" {
+				prefix = "cyclestone/plans/"
+			}
+			sb.WriteString(renderBranchOptions(m.Styles, m.CreateBranch, prefix, m.effectivePlanID(), true) + "\n")
+			sb.WriteString(m.Form.RenderHelp([]string{"Left/Right Choose", "h/l Choose", "Tab Next", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
+
+		case 5, 6:
 			sb.WriteString(m.Styles.DetailValue.Render("Ready to create plan?") + "\n\n")
-			submitBtn := m.Form.RenderButtonWithStyles(3, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
-			cancelBtn := m.Form.RenderButtonWithStyles(4, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
+			submitBtn := m.Form.RenderButtonWithStyles(5, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
+			cancelBtn := m.Form.RenderButtonWithStyles(6, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 			sb.WriteString(fmt.Sprintf("%s    %s\n", submitBtn, cancelBtn))
 			sb.WriteString(m.Form.RenderHelp([]string{"Tab Toggle", "Enter Confirm", "Esc Cancel", "q Quit", "Ctrl+C Quit"}))
 		}
@@ -492,13 +580,59 @@ func (m CreatePlanModel) View() string {
 			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{2}, Content: blockSb.String()})
 		}
 
-		// Block 3: Action Buttons
+		// Block 3: Runner Selection
 		{
 			var blockSb strings.Builder
-			submitBtn := m.Form.RenderButtonWithStyles(3, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
-			cancelBtn := m.Form.RenderButtonWithStyles(4, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
+			var labelStyle lipgloss.Style
+			if m.FocusIndex == 3 {
+				labelStyle = m.Styles.DetailLabel.Underline(true)
+			} else {
+				labelStyle = m.Styles.DetailValue.Bold(!m.Styles.NoBold)
+			}
+
+			renderedOpts := renderRunnerOptions(m.Styles, m.RunnerType)
+			if m.Height < 20 {
+				blockSb.WriteString(labelStyle.Render("Runner:") + " " + renderedOpts)
+			} else {
+				blockSb.WriteString(labelStyle.Render("Runner Selection (Left/Right or H/L to choose)") + "\n")
+				blockSb.WriteString(renderedOpts)
+			}
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{3}, Content: blockSb.String()})
+		}
+
+		// Block 4: Create Plan Git Branch Selection
+		{
+			var blockSb strings.Builder
+			var labelStyle lipgloss.Style
+			if m.FocusIndex == 4 {
+				labelStyle = m.Styles.DetailLabel.Underline(true)
+			} else {
+				labelStyle = m.Styles.DetailValue.Bold(!m.Styles.NoBold)
+			}
+
+			settings := config.LoadMergedSettings()
+			prefix := settings.DefaultGitBranchPrefix
+			if prefix == "" {
+				prefix = "cyclestone/plans/"
+			}
+			renderedBranchOpts := renderBranchOptions(m.Styles, m.CreateBranch, prefix, m.effectivePlanID(), m.Height < 20)
+
+			if m.Height < 20 {
+				blockSb.WriteString(labelStyle.Render("Git Branch:") + " " + renderedBranchOpts)
+			} else {
+				blockSb.WriteString(labelStyle.Render("Create Plan Git Branch (Left/Right or H/L to choose)") + "\n")
+				blockSb.WriteString(renderedBranchOpts)
+			}
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{4}, Content: blockSb.String()})
+		}
+
+		// Block 5: Action Buttons
+		{
+			var blockSb strings.Builder
+			submitBtn := m.Form.RenderButtonWithStyles(5, "Submit", m.Styles.TableSelectedRow, m.Styles.SuccessText)
+			cancelBtn := m.Form.RenderButtonWithStyles(6, "Cancel", m.Styles.TableSelectedRow, m.Styles.HelpStyle)
 			blockSb.WriteString(fmt.Sprintf("%s    %s", submitBtn, cancelBtn))
-			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{3, 4}, Content: blockSb.String()})
+			allBlocks = append(allBlocks, FormBlock{FocusIndices: []int{5, 6}, Content: blockSb.String()})
 		}
 
 		var helpKeys []string
