@@ -444,6 +444,9 @@ func (m SettingsModel) rowsForGroup(groupIdx int) []int {
 	}
 	rows := make([]int, 0, len(group.Rows))
 	for _, row := range group.Rows {
+		if m.Scope == settingsScopeProject && row == settingAuthorPrefix {
+			continue
+		}
 		rows = append(rows, row)
 	}
 	if len(rows) == 0 {
@@ -603,7 +606,9 @@ func (m *SettingsModel) applyTextFieldValue(field settingsTextField) {
 	case fieldDefaultGitBranchPrefix:
 		draft.DefaultGitBranchPrefix = m.DefaultGitBranchPrefixInput.Value()
 	case fieldAuthorPrefix:
-		draft.AuthorPrefix = m.AuthorPrefixInput.Value()
+		if m.Scope == settingsScopeGlobal {
+			m.GlobalDraft.AuthorPrefix = m.AuthorPrefixInput.Value()
+		}
 	}
 }
 
@@ -632,7 +637,7 @@ func (m *SettingsModel) syncCustomInput() {
 	setIntInput(&m.MaxRetainedConversationMsgInput, draft.MaxRetainedConversationMessages)
 	m.OllamaCodexModelInput.SetValue(draft.OllamaCodexModel)
 	m.DefaultGitBranchPrefixInput.SetValue(draft.DefaultGitBranchPrefix)
-	m.AuthorPrefixInput.SetValue(draft.AuthorPrefix)
+	m.AuthorPrefixInput.SetValue(m.GlobalDraft.AuthorPrefix)
 }
 
 func (m *SettingsModel) updatePlaceholders() {
@@ -682,7 +687,7 @@ func setIntInput(input *textinput.Model, val int) {
 func (m *SettingsModel) syncInputValuesToDraft() {
 	for _, field := range []settingsTextField{
 		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars,
-		fieldOllamaCodexModel, fieldDefaultGitBranchPrefix,
+		fieldOllamaCodexModel, fieldDefaultGitBranchPrefix, fieldAuthorPrefix,
 	} {
 		m.applyTextFieldValue(field)
 	}
@@ -868,6 +873,7 @@ func (m SettingsModel) handleSave() (SettingsModel, tea.Cmd) {
 			m.GlobalOriginal = m.GlobalDraft
 		}
 	} else {
+		m.ProjectDraft.AuthorPrefix = ""
 		err = config.SaveProjectSettings(m.ProjectDraft)
 		if err == nil {
 			m.ProjectOriginal = m.ProjectDraft
@@ -1408,6 +1414,9 @@ func settingsEqual(a, b config.Settings) bool {
 		return false
 	}
 	if a.DefaultGitBranchPrefix != b.DefaultGitBranchPrefix {
+		return false
+	}
+	if a.AuthorPrefix != b.AuthorPrefix {
 		return false
 	}
 	if a.AiderModel != b.AiderModel {

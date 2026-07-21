@@ -19,6 +19,7 @@ const (
 	setupFieldSafetyMode
 	setupFieldUnrestrictedAck
 	setupFieldBranchBehavior
+	setupFieldAuthorPrefix
 	setupFieldAgentInstructions
 	setupFieldAgentInstructionsPreview
 	setupFieldCreateFirstMilestone
@@ -44,6 +45,7 @@ type SetupWizardModel struct {
 	// GlobalSettings holds the resolved global settings used to preview the
 	// effective value of any field set to "inherit" on the init screen.
 	GlobalSettings      config.Settings
+	AuthorPrefixInput   textinput.Model
 	MilestoneIDInput    textinput.Model
 	MilestoneTitleInput textinput.Model
 	MilestoneGoalInput  textarea.Model
@@ -106,10 +108,15 @@ func NewSetupWizardModel(configPath, statePath string, styles Styles) SetupWizar
 
 	runners := detectSetupRunnerAvailability()
 	global, _ := config.LoadGlobalSettings()
+	authorPrefixVal := global.AuthorPrefix
+	if authorPrefixVal == "" {
+		authorPrefixVal = config.GetDefaultAuthorPrefix(global)
+	}
 	m := SetupWizardModel{
 		ConfigPath:          configPath,
 		StatePath:           statePath,
 		GlobalSettings:      global,
+		AuthorPrefixInput:   newInput(authorPrefixVal, 16, 20),
 		MilestoneIDInput:    newInput("0001-first-milestone", 36, 100),
 		MilestoneTitleInput: newInput("First milestone", 56, 160),
 		MilestoneGoalInput:  goal,
@@ -182,6 +189,8 @@ func (m SetupWizardModel) Update(msg tea.Msg) (SetupWizardModel, tea.Cmd) {
 	}
 
 	switch m.FocusIndex {
+	case setupFieldAuthorPrefix:
+		m.AuthorPrefixInput, cmd = m.AuthorPrefixInput.Update(msg)
 	case setupFieldAgentInstructionsPreview:
 		m.AgentInstructions, cmd = m.AgentInstructions.Update(msg)
 	case setupFieldMilestoneID:
@@ -232,6 +241,9 @@ func (m SetupWizardModel) nextFocusable(delta int) int {
 }
 
 func (m SetupWizardModel) fieldVisible(idx int) bool {
+	if idx == setupFieldAuthorPrefix {
+		return m.GlobalSettings.AuthorPrefix == ""
+	}
 	if idx == setupFieldUnrestrictedAck {
 		return m.Unrestricted
 	}
@@ -364,7 +376,7 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 	if !m.fieldVisible(m.FocusIndex) {
 		m.FocusIndex = m.nextFocusable(1)
 	}
-	for _, input := range []*textinput.Model{&m.MilestoneIDInput, &m.MilestoneTitleInput} {
+	for _, input := range []*textinput.Model{&m.MilestoneIDInput, &m.MilestoneTitleInput, &m.AuthorPrefixInput} {
 		input.Blur()
 		input.TextStyle = m.Styles.BlurredInput
 	}
@@ -373,6 +385,9 @@ func (m *SetupWizardModel) updateFocus() tea.Cmd {
 	m.AgentInstructions.Blur()
 
 	switch m.FocusIndex {
+	case setupFieldAuthorPrefix:
+		cmds = append(cmds, m.AuthorPrefixInput.Focus())
+		m.AuthorPrefixInput.TextStyle = m.Styles.FocusedInput
 	case setupFieldMilestoneID:
 		cmds = append(cmds, m.MilestoneIDInput.Focus())
 		m.MilestoneIDInput.TextStyle = m.Styles.FocusedInput
@@ -460,6 +475,20 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 		m.ErrorMsg = fmt.Sprintf("Error saving settings: %v", err)
 		return m, nil
 	}
+
+	authorPrefix := strings.TrimSpace(m.AuthorPrefixInput.Value())
+	if authorPrefix == "" {
+		authorPrefix = config.GetDefaultAuthorPrefix(m.GlobalSettings)
+	}
+	globalSettings, err := config.LoadGlobalSettings()
+	if err != nil {
+		globalSettings = config.LoadDefaultSettings()
+	}
+	globalSettings.AuthorPrefix = authorPrefix
+	if err := config.SaveGlobalSettings(globalSettings); err != nil {
+		m.ErrorMsg = fmt.Sprintf("Error saving global author prefix: %v", err)
+		return m, nil
+	}
 	if m.CreateAgentInstructions {
 		rootDir := filepath.Dir(filepath.Dir(configPath))
 		agentsPath := filepath.Join(rootDir, "AGENTS.md")
@@ -545,6 +574,9 @@ func (m SetupWizardModel) View() string {
 		sb.WriteString(m.renderChoice(setupFieldUnrestrictedAck, "Confirm", boolLabel(m.UnrestrictedAck, "I understand unrestricted mode", "Required before save")) + "\n")
 	}
 	sb.WriteString(m.renderChoice(setupFieldBranchBehavior, "Branches", m.branchesSummary()) + "\n")
+	if m.fieldVisible(setupFieldAuthorPrefix) {
+		sb.WriteString(m.renderInput(setupFieldAuthorPrefix, "Author prefix (global setting)", m.AuthorPrefixInput.View()) + "\n")
+	}
 	sb.WriteString(m.renderChoice(setupFieldAgentInstructions, "AGENTS.md", boolLabel(m.CreateAgentInstructions, "Create from preview", "Skip")) + "\n")
 	if m.CreateAgentInstructions && m.Height >= 24 {
 		sb.WriteString(m.renderInput(setupFieldAgentInstructionsPreview, "AGENTS.md preview", m.AgentInstructions.View()) + "\n")

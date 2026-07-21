@@ -362,9 +362,6 @@ func LoadMergedSettings() Settings {
 				if projectSettings.DefaultGitBranchPrefix != "" {
 					s.DefaultGitBranchPrefix = projectSettings.DefaultGitBranchPrefix
 				}
-				if projectSettings.AuthorPrefix != "" {
-					s.AuthorPrefix = projectSettings.AuthorPrefix
-				}
 				if projectSettings.DefaultPlanExecutionMode != "" {
 					s.DefaultPlanExecutionMode = projectSettings.DefaultPlanExecutionMode
 				}
@@ -600,6 +597,8 @@ func SaveProjectSettingsAt(path string, s Settings) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("project settings path cannot be empty")
 	}
+	// AuthorPrefix is global only and must not be saved to project settings.
+	s.AuthorPrefix = ""
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create project config directory: %w", err)

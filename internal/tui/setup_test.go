@@ -286,6 +286,7 @@ func TestSetupWizardDisplaysPathsReadOnlyAndStartsAtRunner(t *testing.T) {
 }
 
 func TestSetupWizardNavigationSkipsStaticPathRows(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	model := NewSetupWizardModel(".cyclestone/milestone.yml", ".cyclestone/state.json", DefaultStyles(true, true))
 	model.Runners = []runnerAvailability{{ID: "codex", Label: "Codex CLI", Available: true}}
 
@@ -295,7 +296,7 @@ func TestSetupWizardNavigationSkipsStaticPathRows(t *testing.T) {
 		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 		model = updated
 	}
-	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
+	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldAuthorPrefix, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
 		if !seen[want] {
 			t.Fatalf("expected tab navigation to reach field %d, seen %#v", want, seen)
 		}
@@ -308,10 +309,82 @@ func TestSetupWizardNavigationSkipsStaticPathRows(t *testing.T) {
 		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 		model = updated
 	}
-	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
+	for _, want := range []int{setupFieldRunner, setupFieldSafetyMode, setupFieldBranchBehavior, setupFieldAuthorPrefix, setupFieldCreateFirstMilestone, setupFieldConfirm, setupFieldCancel} {
 		if !seen[want] {
 			t.Fatalf("expected shift-tab navigation to reach field %d, seen %#v", want, seen)
 		}
+	}
+}
+
+func TestSetupWizardAsksAndSavesGlobalAuthorPrefix(t *testing.T) {
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", oldHome)
+		_ = os.Setenv("USERPROFILE", oldUserProfile)
+	})
+	home := t.TempDir()
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("USERPROFILE", home)
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+
+	model := NewSetupWizardModel(configPath, statePath, DefaultStyles(true, true))
+	model.AuthorPrefixInput.SetValue("myprefix")
+	model.FocusIndex = setupFieldConfirm
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("expected setup completion command, error=%q", updated.ErrorMsg)
+	}
+
+	globalPath := filepath.Join(home, ".config", "cyclestone", "settings.yml")
+	globalData, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatalf("failed to read global settings.yml: %v", err)
+	}
+	if !strings.Contains(string(globalData), "author_prefix: myprefix") {
+		t.Fatalf("expected global settings.yml to contain author_prefix: myprefix, got:\n%s", string(globalData))
+	}
+
+	projectPath := filepath.Join(root, ".cyclestone", "settings.yml")
+	projectData, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("failed to read project settings.yml: %v", err)
+	}
+	if strings.Contains(string(projectData), "author_prefix") {
+		t.Fatalf("expected project settings.yml NOT to contain author_prefix, got:\n%s", string(projectData))
+	}
+}
+
+func TestSetupWizardSkipsAuthorPrefixWhenGlobalSettingsExist(t *testing.T) {
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", oldHome)
+		_ = os.Setenv("USERPROFILE", oldUserProfile)
+	})
+	home := t.TempDir()
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("USERPROFILE", home)
+
+	globalCfgDir := filepath.Join(home, ".config", "cyclestone")
+	if err := os.MkdirAll(globalCfgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalCfgDir, "settings.yml"), []byte("author_prefix: existing-prefix\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+
+	model := NewSetupWizardModel(configPath, statePath, DefaultStyles(true, true))
+	if model.fieldVisible(setupFieldAuthorPrefix) {
+		t.Fatal("expected setupFieldAuthorPrefix to NOT be visible when global author_prefix exists")
 	}
 }
 

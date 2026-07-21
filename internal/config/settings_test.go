@@ -734,17 +734,31 @@ func TestPlanReevaluationSettingsSerializeAndMerge(t *testing.T) {
 	})
 }
 
-func TestAuthorPrefixProjectSettingsMerge(t *testing.T) {
+func TestAuthorPrefixIsGlobalOnly(t *testing.T) {
 	withIsolatedSettingsEnvironment(t, func() {
+		if err := SaveGlobalSettings(Settings{
+			AuthorPrefix: "global-pf",
+		}); err != nil {
+			t.Fatalf("failed to save global settings: %v", err)
+		}
 		if err := SaveProjectSettings(Settings{
-			AuthorPrefix: "pf",
+			AuthorPrefix: "proj-pf",
 		}); err != nil {
 			t.Fatalf("failed to save project settings: %v", err)
 		}
 
 		merged := LoadMergedSettings()
-		if merged.AuthorPrefix != "pf" {
-			t.Fatalf("expected project override AuthorPrefix 'pf', got %q", merged.AuthorPrefix)
+		if merged.AuthorPrefix != "global-pf" {
+			t.Fatalf("expected global AuthorPrefix 'global-pf', got %q", merged.AuthorPrefix)
+		}
+
+		// Ensure author_prefix was stripped when saving project settings
+		projData, err := os.ReadFile(filepath.Join(".cyclestone", "settings.yml"))
+		if err != nil {
+			t.Fatalf("failed to read project settings: %v", err)
+		}
+		if strings.Contains(string(projData), "author_prefix") {
+			t.Fatalf("project settings should not contain author_prefix: %s", string(projData))
 		}
 	})
 }
