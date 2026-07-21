@@ -791,8 +791,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				absRoot = "."
 			}
 
-			idParts := strings.Split(msg.ID, "-")
-			idPrefix := idParts[0]
+			idPrefix := m.CreateMilestone.NextID
+			if idPrefix == "" {
+				idPrefix = msg.ID
+			}
 
 			prompt := resources.CreatorPrompt
 			prompt = strings.ReplaceAll(prompt, "{{ID_PREFIX}}", idPrefix)
@@ -1253,22 +1255,75 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			finalID = fmt.Sprintf("%s-%s", m.CreateMilestone.NextID, slug)
 		}
 
-		var matchedFile string
+		var matchedName string
+		var matchedIsDir bool
 		milestonesDir := filepath.Join(".cyclestone", "milestones")
 		files, err := os.ReadDir(milestonesDir)
 		if err == nil {
 			prefix := m.CreateMilestone.NextID + "-"
+			exactID := m.CreateMilestone.NextID
 			for _, f := range files {
-				if !f.IsDir() && strings.HasPrefix(f.Name(), prefix) && strings.HasSuffix(f.Name(), ".md") {
-					matchedFile = f.Name()
-					break
+				name := f.Name()
+				if f.IsDir() {
+					if name == exactID || strings.HasPrefix(name, prefix) {
+						matchedName = name
+						matchedIsDir = true
+						break
+					}
+				} else {
+					if strings.HasSuffix(name, ".md") && (strings.HasPrefix(name, prefix) || name == exactID+".md") {
+						matchedName = name
+						matchedIsDir = false
+						break
+					}
 				}
 			}
-			if matchedFile != "" {
-				slugPart := strings.TrimPrefix(matchedFile, prefix)
-				slugPart = strings.TrimSuffix(slugPart, ".md")
-				if slugPart != "" {
-					filePath := filepath.Join(milestonesDir, matchedFile)
+
+			if matchedName != "" {
+				if matchedIsDir {
+					dirPath := filepath.Join(milestonesDir, matchedName)
+					finalID = matchedName
+					if loadedMS, err := config.LoadMilestoneFromDir(dirPath); err == nil && loadedMS != nil {
+						if loadedMS.Title != "" {
+							title = loadedMS.Title
+						}
+						if loadedMS.Goal != "" {
+							goal = loadedMS.Goal
+						}
+					} else {
+						subFiles, _ := os.ReadDir(dirPath)
+						var specContent string
+						for _, sf := range subFiles {
+							if !sf.IsDir() && strings.HasSuffix(sf.Name(), ".md") {
+								data, err := os.ReadFile(filepath.Join(dirPath, sf.Name()))
+								if err == nil {
+									specContent = string(data)
+									break
+								}
+							}
+						}
+						if specContent != "" {
+							lines := strings.Split(specContent, "\n")
+							for _, line := range lines {
+								trimmed := strings.TrimSpace(line)
+								if strings.HasPrefix(trimmed, "# ") {
+									tLine := strings.TrimPrefix(trimmed, "# ")
+									if idx := strings.Index(tLine, " - "); idx != -1 {
+										title = strings.TrimSpace(tLine[idx+3:])
+									} else if idx := strings.LastIndex(tLine, ": "); idx != -1 {
+										title = strings.TrimSpace(tLine[idx+2:])
+									} else {
+										title = strings.TrimSpace(tLine)
+									}
+									break
+								}
+							}
+						}
+					}
+				} else {
+					slugPart := strings.TrimPrefix(matchedName, prefix)
+					slugPart = strings.TrimSuffix(slugPart, ".md")
+					filePath := filepath.Join(milestonesDir, matchedName)
 					contentBytes, err := os.ReadFile(filePath)
 					if err == nil {
 						lines := strings.Split(string(contentBytes), "\n")
@@ -1281,7 +1336,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 						if firstLine != "" {
-							expectedID := m.CreateMilestone.NextID + "-" + slugPart
+							expectedID := m.CreateMilestone.NextID
+							if slugPart != "" && slugPart != matchedName {
+								expectedID = m.CreateMilestone.NextID + "-" + slugPart
+							}
 							idx := strings.Index(firstLine, expectedID)
 							if idx != -1 {
 								titlePart := firstLine[idx+len(expectedID):]
@@ -1299,7 +1357,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if matchedFile == "" {
+		if matchedName == "" {
 			m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error creating milestone: generator runner %s did not create milestone specification file in %s", m.CreateMilestone.RunnerType, milestonesDir)
 			return m, nil
 		}

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -361,6 +362,9 @@ func LoadMergedSettings() Settings {
 				if projectSettings.DefaultGitBranchPrefix != "" {
 					s.DefaultGitBranchPrefix = projectSettings.DefaultGitBranchPrefix
 				}
+				if projectSettings.AuthorPrefix != "" {
+					s.AuthorPrefix = projectSettings.AuthorPrefix
+				}
 				if projectSettings.DefaultPlanExecutionMode != "" {
 					s.DefaultPlanExecutionMode = projectSettings.DefaultPlanExecutionMode
 				}
@@ -613,6 +617,19 @@ func GetDefaultAuthorPrefix(s Settings) string {
 	if prefix != "" {
 		return prefix
 	}
+	if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+		name := strings.TrimSpace(string(out))
+		if name != "" {
+			words := strings.Fields(name)
+			if len(words) >= 2 {
+				w1 := strings.ToLower(words[0])
+				w2 := strings.ToLower(words[len(words)-1])
+				if len(w1) > 0 && len(w2) > 0 {
+					return string(w1[0]) + string(w2[0])
+				}
+			}
+		}
+	}
 	u := strings.TrimSpace(os.Getenv("USER"))
 	if u == "" {
 		u = strings.TrimSpace(os.Getenv("LOGNAME"))
@@ -623,6 +640,21 @@ func GetDefaultAuthorPrefix(s Settings) string {
 		parts := strings.FieldsFunc(u, func(r rune) bool {
 			return r == '_' || r == '-' || r == '.' || r == ' '
 		})
+		var filtered []string
+		for _, p := range parts {
+			if p != "dev" && p != "developer" {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) >= 2 {
+			return string(filtered[0][0]) + string(filtered[len(filtered)-1][0])
+		}
+		if len(filtered) == 1 {
+			if len(filtered[0]) > 6 {
+				return filtered[0][:6]
+			}
+			return filtered[0]
+		}
 		if len(parts) >= 2 {
 			return string(parts[0][0]) + string(parts[1][0])
 		}

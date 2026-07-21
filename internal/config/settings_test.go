@@ -733,3 +733,37 @@ func TestPlanReevaluationSettingsSerializeAndMerge(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthorPrefixProjectSettingsMerge(t *testing.T) {
+	withIsolatedSettingsEnvironment(t, func() {
+		if err := SaveProjectSettings(Settings{
+			AuthorPrefix: "pf",
+		}); err != nil {
+			t.Fatalf("failed to save project settings: %v", err)
+		}
+
+		merged := LoadMergedSettings()
+		if merged.AuthorPrefix != "pf" {
+			t.Fatalf("expected project override AuthorPrefix 'pf', got %q", merged.AuthorPrefix)
+		}
+	})
+}
+
+func TestGetDefaultAuthorPrefixFallback(t *testing.T) {
+	withIsolatedSettingsEnvironment(t, func() {
+		// When AuthorPrefix is explicitly set, return it.
+		s := Settings{AuthorPrefix: "custom"}
+		if got := GetDefaultAuthorPrefix(s); got != "custom" {
+			t.Fatalf("expected 'custom', got %q", got)
+		}
+
+		// When AuthorPrefix is empty, verify fallback handles username suffixes like patrick_dev clean logic
+		t.Setenv("USER", "patrick_dev")
+		emptyS := Settings{}
+		got := GetDefaultAuthorPrefix(emptyS)
+		// Should return git config initials (e.g. "pf") or clean single part "patrick", but not "pd"
+		if got == "pd" {
+			t.Fatalf("GetDefaultAuthorPrefix(emptyS) should not return 'pd' for USER=patrick_dev, got %q", got)
+		}
+	})
+}

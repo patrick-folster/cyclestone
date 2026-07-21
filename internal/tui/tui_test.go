@@ -875,3 +875,68 @@ briefings:
 	}
 	return root, NewRootModel(cfg, state, configPath, statePath, true, false, true, true)
 }
+
+func TestCreateMilestoneFinishedMsgScansDirectoryMilestones(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	milestonesDir := filepath.Join(root, ".cyclestone", "milestones")
+	if err := os.MkdirAll(milestonesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _ := config.LoadConfig(configPath)
+	state := &config.State{
+		MilestoneStatuses: make(map[string]string),
+		MilestoneCycles:   make(map[string]int),
+		History:           make(map[string][]config.MilestoneCycleLog),
+	}
+	model := NewRootModel(cfg, state, configPath, statePath, true, false, true, true)
+	model.CreateMilestone.NextID = "ms-pf-0001"
+	model.CreateMilestone.RunnerType = "agy"
+
+	// Simulate AI milestone runner creating a folder-per-item milestone directory
+	targetDir := filepath.Join(root, ".cyclestone", "milestones", "ms-pf-0001-test-milestone-without-changes")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	metaData := `id: ms-pf-0001-test-milestone-without-changes
+title: Test Milestone Without Changes
+goal: Test goal
+status: Todo
+cycles: 0
+created_by: tui
+updated_by: tui
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "metadata.yml"), []byte(metaData), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "spec.md"), []byte("# Milestone Spec: Test Milestone Without Changes\n\n## Goal\nTest goal\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change working directory to root for relative path scanning
+	oldWd, _ := os.Getwd()
+	_ = os.Chdir(root)
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	updated, _ := model.Update(executor.CreateMilestoneFinishedMsg{Error: nil})
+	got := updated.(RootModel)
+
+	if got.CreateMilestone.ErrorMsg != "" {
+		t.Fatalf("unexpected error message: %s", got.CreateMilestone.ErrorMsg)
+	}
+	if got.ActiveScreen != ScreenDashboard {
+		t.Fatalf("expected ActiveScreen ScreenDashboard, got %v", got.ActiveScreen)
+	}
+	found := false
+	for _, ms := range got.Config.Milestones {
+		if ms.ID == "ms-pf-0001-test-milestone-without-changes" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected milestone ms-pf-0001-test-milestone-without-changes to be loaded into Config.Milestones")
+	}
+}
