@@ -290,6 +290,7 @@ func TestAssembleAgentInstructionsUpdateInputRepositoryContextIncludesChecksAndE
 		filepath.Join(".cyclestone", "reports"),
 		filepath.Join(".cyclestone", "temp"),
 		filepath.Join(".cyclestone", "milestones"),
+		filepath.Join(".cyclestone", "milestones", "MS-REPO-repo-checks"),
 		filepath.Join("docs"),
 		filepath.Join("resources", "agents"),
 		filepath.Join("internal", "tui"),
@@ -303,7 +304,9 @@ func TestAssembleAgentInstructionsUpdateInputRepositoryContextIncludesChecksAndE
 	files := map[string]string{
 		"AGENTS.md": "ROOT AGENTS CONTENT\n",
 		filepath.Join(".cyclestone", "DECISIONS.md"):               "DECISION CONTENT\n",
-		filepath.Join(".cyclestone", "milestone.yml"):              "repositories:\n  - service-a\nmilestones:\n  - id: MS-REPO\n    title: Repo checks\n    checks:\n      - frontend\n",
+		filepath.Join(".cyclestone", "milestone.yml"):                                  "repositories:\n  - service-a\n",
+		filepath.Join(".cyclestone", "milestones", "MS-REPO-repo-checks", "MS-REPO.yml"): "id: MS-REPO\ntitle: Repo checks\nchecks:\n  - frontend\n",
+		filepath.Join(".cyclestone", "milestones", "MS-REPO-repo-checks", "MS-REPO.md"):  "# Milestone Spec: MS-REPO - Repo checks\n\n## Goal\nRepo checks goal.\n",
 		filepath.Join(".cyclestone", "reports", "generated.yaml"):  "GENERATED REPORT CONTENT\n",
 		filepath.Join(".cyclestone", "temp", "draft.md"):           "TEMP DRAFT CONTENT\n",
 		filepath.Join(".cyclestone", "state.json"):                 `{"MS-REPO":"runtime state"}`,

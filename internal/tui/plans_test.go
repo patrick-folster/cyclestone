@@ -20,7 +20,6 @@ func TestPlansModel_RenderingAndNavigation(t *testing.T) {
 					{ID: "b1", Title: "Briefing 1", Status: "completed"},
 					{ID: "b2", Title: "Briefing 2", Status: "todo"},
 				},
-				Execution: &config.PlanExecution{State: "running"},
 			},
 			{
 				ID:     "plan-02",

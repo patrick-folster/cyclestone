@@ -33,11 +33,12 @@ type Settings struct {
 	CreateMilestoneBranch    *bool  `yaml:"create_milestone_branch,omitempty" json:"create_milestone_branch,omitempty"` // pointer to bool, nil if unset/inherit
 	DisableBold              *bool  `yaml:"disable_bold,omitempty" json:"disable_bold,omitempty"`                       // pointer to bool, nil if unset/inherit
 	DisableRoundedBorders    *bool  `yaml:"disable_rounded_borders,omitempty" json:"disable_rounded_borders,omitempty"` // pointer to bool, nil if unset/inherit
-	DefaultGitBranchPrefix   string `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
-	DefaultPlanExecutionMode string `yaml:"default_plan_execution_mode,omitempty" json:"default_plan_execution_mode,omitempty"`
-	EnablePlanReevaluation   *bool  `yaml:"enable_plan_reevaluation,omitempty" json:"enable_plan_reevaluation,omitempty"`
-	AutoApplyPlanReevaluation *bool `yaml:"auto_apply_plan_reevaluation,omitempty" json:"auto_apply_plan_reevaluation,omitempty"`
-	PlanReevaluationRunner   string `yaml:"plan_reevaluation_runner,omitempty" json:"plan_reevaluation_runner,omitempty"`
+	AuthorPrefix                    string                    `yaml:"author_prefix,omitempty" json:"author_prefix,omitempty"`
+	DefaultGitBranchPrefix          string                    `yaml:"default_git_branch_prefix,omitempty" json:"default_git_branch_prefix,omitempty"`
+	DefaultPlanExecutionMode        string                    `yaml:"default_plan_execution_mode,omitempty" json:"default_plan_execution_mode,omitempty"`
+	EnablePlanReevaluation          *bool                     `yaml:"enable_plan_reevaluation,omitempty" json:"enable_plan_reevaluation,omitempty"`
+	AutoApplyPlanReevaluation        *bool                     `yaml:"auto_apply_plan_reevaluation,omitempty" json:"auto_apply_plan_reevaluation,omitempty"`
+	PlanReevaluationRunner          string                    `yaml:"plan_reevaluation_runner,omitempty" json:"plan_reevaluation_runner,omitempty"`
 
 	AiderModel                      string                    `yaml:"aider_model,omitempty" json:"aider_model,omitempty"`
 	OllamaModel                     string                    `yaml:"ollama_model,omitempty" json:"ollama_model,omitempty"`
@@ -604,4 +605,31 @@ func SaveProjectSettingsAt(path string, s Settings) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// GetDefaultAuthorPrefix returns the configured AuthorPrefix or a clean system fallback (e.g. USER env or "dev").
+func GetDefaultAuthorPrefix(s Settings) string {
+	prefix := strings.ToLower(strings.TrimSpace(s.AuthorPrefix))
+	if prefix != "" {
+		return prefix
+	}
+	u := strings.TrimSpace(os.Getenv("USER"))
+	if u == "" {
+		u = strings.TrimSpace(os.Getenv("LOGNAME"))
+	}
+	if u != "" {
+		// Clean and shorten user name if needed (e.g. patrick_dev -> pf or patrick)
+		u = strings.ToLower(u)
+		parts := strings.FieldsFunc(u, func(r rune) bool {
+			return r == '_' || r == '-' || r == '.' || r == ' '
+		})
+		if len(parts) >= 2 {
+			return string(parts[0][0]) + string(parts[1][0])
+		}
+		if len(u) > 6 {
+			return u[:6]
+		}
+		return u
+	}
+	return "dev"
 }

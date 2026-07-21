@@ -21,6 +21,7 @@ const (
 
 const (
 	settingDefaultLLM = iota
+	settingAuthorPrefix
 	settingDefaultMode
 	settingAutoGitBranch
 	settingCreateMilestoneBranch
@@ -54,6 +55,7 @@ const (
 	fieldMaxRetainedConversationMessages
 	fieldOllamaCodexModel
 	fieldDefaultGitBranchPrefix
+	fieldAuthorPrefix
 )
 
 type settingsGroup struct {
@@ -63,7 +65,7 @@ type settingsGroup struct {
 
 var settingsGroups = []settingsGroup{
 	{Name: "Runner Selection", Rows: []int{settingDefaultLLM}},
-	{Name: "Execution Behavior", Rows: []int{settingDefaultMode, settingAutoGitBranch, settingCreateMilestoneBranch, settingDefaultGitBranchPrefix}},
+	{Name: "Execution Behavior", Rows: []int{settingDefaultMode, settingAuthorPrefix, settingAutoGitBranch, settingCreateMilestoneBranch, settingDefaultGitBranchPrefix}},
 	{Name: "UI Behavior", Rows: []int{settingDisableBold, settingDisableRoundedBorders}},
 	{Name: "Context/Cache Limits", Rows: []int{settingEnableContextCaching, settingEnableCompactPhaseHandoffs, settingEnableCodexSessionResume, settingCacheTTLMinutes, settingMaxHandoffChars, settingMaxModelCallsPerPhase, settingMaxTokenBudgetPerPhase, settingMaxLLMInputChars, settingMaxRetainedConversationMessages}},
 	{Name: "Ollama via Codex Settings", Rows: []int{settingOllamaCodexModel}},
@@ -101,6 +103,7 @@ type SettingsModel struct {
 
 	OllamaCodexModelInput       textinput.Model
 	DefaultGitBranchPrefixInput textinput.Model
+	AuthorPrefixInput           textinput.Model
 }
 
 // NewSettingsModel instantiates the settings model.
@@ -129,6 +132,7 @@ func NewSettingsModel(styles Styles) SettingsModel {
 		MaxRetainedConversationMsgInput: newInput("8", 10, 5),
 		OllamaCodexModelInput:           newInput(config.DefaultOllamaModel, 32, 120),
 		DefaultGitBranchPrefixInput:     newInput("cyclestone/milestones/", 32, 120),
+		AuthorPrefixInput:               newInput("pf", 16, 20),
 	}
 	m.loadSettingsDrafts()
 	return m
@@ -512,6 +516,8 @@ func (m SettingsModel) textFieldForFocus() settingsTextField {
 		return fieldOllamaCodexModel
 	case settingDefaultGitBranchPrefix:
 		return fieldDefaultGitBranchPrefix
+	case settingAuthorPrefix:
+		return fieldAuthorPrefix
 	default:
 		return -1
 	}
@@ -535,6 +541,8 @@ func (m *SettingsModel) inputForField(field settingsTextField) *textinput.Model 
 		return &m.OllamaCodexModelInput
 	case fieldDefaultGitBranchPrefix:
 		return &m.DefaultGitBranchPrefixInput
+	case fieldAuthorPrefix:
+		return &m.AuthorPrefixInput
 	default:
 		return nil
 	}
@@ -547,7 +555,7 @@ func (m *SettingsModel) updateTextInputFocus() {
 	}
 	for _, field := range []settingsTextField{
 		fieldCacheTTL, fieldMaxHandoffChars, fieldMaxCalls, fieldTokenBudget, fieldLLMInputChars, fieldMaxRetainedConversationMessages,
-		fieldOllamaCodexModel, fieldDefaultGitBranchPrefix,
+		fieldOllamaCodexModel, fieldDefaultGitBranchPrefix, fieldAuthorPrefix,
 	} {
 		input := m.inputForField(field)
 		if input == nil {
@@ -594,6 +602,8 @@ func (m *SettingsModel) applyTextFieldValue(field settingsTextField) {
 		draft.OllamaCodexModel = m.OllamaCodexModelInput.Value()
 	case fieldDefaultGitBranchPrefix:
 		draft.DefaultGitBranchPrefix = m.DefaultGitBranchPrefixInput.Value()
+	case fieldAuthorPrefix:
+		draft.AuthorPrefix = m.AuthorPrefixInput.Value()
 	}
 }
 
@@ -622,6 +632,7 @@ func (m *SettingsModel) syncCustomInput() {
 	setIntInput(&m.MaxRetainedConversationMsgInput, draft.MaxRetainedConversationMessages)
 	m.OllamaCodexModelInput.SetValue(draft.OllamaCodexModel)
 	m.DefaultGitBranchPrefixInput.SetValue(draft.DefaultGitBranchPrefix)
+	m.AuthorPrefixInput.SetValue(draft.AuthorPrefix)
 }
 
 func (m *SettingsModel) updatePlaceholders() {
@@ -649,6 +660,7 @@ func (m *SettingsModel) updatePlaceholders() {
 	}
 
 	m.DefaultGitBranchPrefixInput.Placeholder = getStringPlaceholder(m.GlobalDraft.DefaultGitBranchPrefix, defaults.DefaultGitBranchPrefix)
+	m.AuthorPrefixInput.Placeholder = getStringPlaceholder(m.GlobalDraft.AuthorPrefix, config.GetDefaultAuthorPrefix(m.GlobalDraft))
 	m.OllamaCodexModelInput.Placeholder = getStringPlaceholder(m.GlobalDraft.OllamaCodexModel, config.DefaultOllamaModel)
 
 	m.CacheTTLInput.Placeholder = getIntPlaceholder(m.GlobalDraft.CacheTTLMinutes, defaults.CacheTTLMinutes)
@@ -1150,6 +1162,8 @@ func (m SettingsModel) rowLabel(row int) string {
 	switch row {
 	case settingDefaultLLM:
 		return "Default LLM / Runner"
+	case settingAuthorPrefix:
+		return "Author Prefix (e.g. pf, js)"
 	case settingDefaultMode:
 		return "Default Execution Mode"
 	case settingAutoGitBranch:
@@ -1223,6 +1237,8 @@ func (m SettingsModel) rowValue(row int) string {
 		return m.renderBool(draft.CreateMilestoneBranch, boolValue(m.GlobalDraft.CreateMilestoneBranch, false))
 	case settingDefaultGitBranchPrefix:
 		return m.renderStringInputWithInherit(m.DefaultGitBranchPrefixInput.View(), defaultString(m.GlobalDraft.DefaultGitBranchPrefix, "cyclestone/milestones/"))
+	case settingAuthorPrefix:
+		return m.renderStringInputWithInherit(m.AuthorPrefixInput.View(), defaultString(m.GlobalDraft.AuthorPrefix, config.GetDefaultAuthorPrefix(m.GlobalDraft)))
 	case settingDisableBold:
 		return m.renderBool(draft.DisableBold, boolValue(m.GlobalDraft.DisableBold, true))
 	case settingDisableRoundedBorders:

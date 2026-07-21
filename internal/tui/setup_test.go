@@ -339,7 +339,6 @@ func TestSetupWizardConfirmUsesConstructorPaths(t *testing.T) {
 		t.Fatalf("expected static paths in completion, got config=%q state=%q", msg.ConfigPath, msg.StatePath)
 	}
 	for _, path := range []string{
-		configPath,
 		statePath,
 		filepath.Join(root, ".cyclestone", "settings.yml"),
 		filepath.Join(root, ".cyclestone", "milestones"),

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -404,12 +405,17 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 
 	var first config.Milestone
 	if m.CreateFirst {
+		now := time.Now().UTC().Format(time.RFC3339)
 		first = config.Milestone{
 			ID:                 strings.TrimSpace(m.MilestoneIDInput.Value()),
 			Title:              strings.TrimSpace(m.MilestoneTitleInput.Value()),
 			Goal:               strings.TrimSpace(m.MilestoneGoalInput.Value()),
 			AcceptanceCriteria: splitCriteria(m.MilestoneCriteria.Value()),
 			Status:             "Todo",
+			CreatedBy:          "tui",
+			UpdatedBy:          "tui",
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		}
 		if first.ID == "" || first.Title == "" || first.Goal == "" {
 			m.ErrorMsg = "First milestone ID, title, and goal are required when first milestone creation is enabled."
@@ -474,7 +480,8 @@ func (m SetupWizardModel) handleConfirm() (SetupWizardModel, tea.Cmd) {
 		History:                               map[string][]config.MilestoneCycleLog{},
 	}
 	if m.CreateFirst {
-		if err := config.AddMilestone(configPath, first); err != nil {
+		milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+		if _, err := config.SaveMilestoneToFolder(milestonesDir, first, ""); err != nil {
 			m.ErrorMsg = fmt.Sprintf("Error creating first milestone: %v", err)
 			return m, nil
 		}

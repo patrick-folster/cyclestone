@@ -1316,7 +1316,7 @@ func (m DetailsModel) renderDeleteMilestoneConfirmation() string {
 		"",
 		m.Styles.WarningText.Render("Are you sure you want to delete this milestone?"),
 		"This will permanently remove:",
-		fmt.Sprintf("  • The entry from %s", m.Styles.HelpStyle.Render(".cyclestone/milestone.yml")),
+		fmt.Sprintf("  • The entry from %s", m.Styles.HelpStyle.Render(".cyclestone/milestones/")),
 		fmt.Sprintf("  • Its specification file (%s)", m.Styles.HelpStyle.Render(m.Milestone.SpecPath)),
 		"  • All associated state tracking and history logs",
 		"  • All cycle reports and generated artifacts",

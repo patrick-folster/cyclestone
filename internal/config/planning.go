@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,20 +29,21 @@ const (
 var planningIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Plan is the persisted planning-layer record stored under .cyclestone/plans.
+// Runtime execution state is stored in state.json via State.PlanExecutions,
+// not in the Plan YAML.
 type Plan struct {
-	SchemaVersion int            `yaml:"schema_version" json:"schema_version"`
-	ID            string         `yaml:"id" json:"id"`
-	Title         string         `yaml:"title" json:"title"`
-	Objective     string         `yaml:"objective" json:"objective"`
-	Status        string         `yaml:"status" json:"status"`
-	CreatedAt     string         `yaml:"created_at" json:"created_at"`
-	CreatedBy     string         `yaml:"created_by" json:"created_by"`
-	UpdatedAt     string         `yaml:"updated_at" json:"updated_at"`
-	UpdatedBy     string         `yaml:"updated_by" json:"updated_by"`
-	Constraints   []string       `yaml:"constraints,omitempty" json:"constraints,omitempty"`
-	BriefingOrder []string       `yaml:"briefing_order" json:"briefing_order"`
-	Briefings     []Briefing     `yaml:"briefings" json:"briefings"`
-	Execution     *PlanExecution `yaml:"execution,omitempty" json:"execution,omitempty"`
+	SchemaVersion int        `yaml:"schema_version" json:"schema_version"`
+	ID            string     `yaml:"id" json:"id"`
+	Title         string     `yaml:"title" json:"title"`
+	Objective     string     `yaml:"objective" json:"objective"`
+	Status        string     `yaml:"status" json:"status"`
+	CreatedAt     string     `yaml:"created_at" json:"created_at"`
+	CreatedBy     string     `yaml:"created_by" json:"created_by"`
+	UpdatedAt     string     `yaml:"updated_at" json:"updated_at"`
+	UpdatedBy     string     `yaml:"updated_by" json:"updated_by"`
+	Constraints   []string   `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	BriefingOrder []string   `yaml:"briefing_order" json:"briefing_order"`
+	Briefings     []Briefing `yaml:"briefings" json:"briefings"`
 }
 
 // PlanExecution is the optional durable coordinator state for an explicitly
@@ -162,17 +162,25 @@ func LoadPlanningState(plansDir string, options ...PlanningValidationOption) (*P
 		return state, result
 	}
 
-	var files []string
+	seenPlanFiles := make(map[string]string)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yml" {
+		if entry.IsDir() {
+			planDir := filepath.Join(plansDir, entry.Name())
+			plan, valid := loadPlanningDir(planDir, &result, opts)
+			if valid && plan.ID != "" {
+				if firstFile, exists := seenPlanFiles[plan.ID]; exists {
+					result.addError(planDir, "id", fmt.Sprintf("duplicate Plan ID %q also appears in %s", plan.ID, firstFile))
+					continue
+				}
+				seenPlanFiles[plan.ID] = planDir
+				state.Plans = append(state.Plans, plan)
+			}
 			continue
 		}
-		files = append(files, filepath.Join(plansDir, entry.Name()))
-	}
-	sort.Strings(files)
-
-	seenPlanFiles := make(map[string]string)
-	for _, file := range files {
+		if filepath.Ext(entry.Name()) != ".yml" {
+			continue
+		}
+		file := filepath.Join(plansDir, entry.Name())
 		plan, valid := loadPlanningFile(file, &result, opts)
 		if !valid {
 			continue
@@ -208,6 +216,187 @@ func SavePlan(plansDir string, plan Plan, options ...PlanningValidationOption) (
 	return result, nil
 }
 
+// SavePlanToFolder validates and writes plan to a folder-per-item layout under plansDir.
+func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationOption) (string, PlanningValidationResult, error) {
+	// Use the plan ID as the stable directory name so title edits do not
+	// create orphan directories.
+	planDir := filepath.Join(plansDir, plan.ID)
+	if err := os.MkdirAll(planDir, 0755); err != nil {
+		var emptyRes PlanningValidationResult
+		return "", emptyRes, fmt.Errorf("failed to create plan directory: %w", err)
+	}
+
+	// Remove legacy flat .yml file if it exists to avoid duplicate Plan ID errors.
+	legacyFlatYML := filepath.Join(plansDir, plan.ID+".yml")
+	if _, err := os.Stat(legacyFlatYML); err == nil {
+		_ = os.Remove(legacyFlatYML)
+	}
+
+	metaPath := filepath.Join(planDir, plan.ID+".yml")
+	specPath := filepath.Join(planDir, plan.ID+".md")
+
+	result := ValidatePlan(plan, metaPath, options...)
+	if result.HasErrors() {
+		return planDir, result, errors.New("plan validation failed")
+	}
+
+	data, err := yaml.Marshal(plan)
+	if err != nil {
+		return planDir, result, fmt.Errorf("failed to marshal plan: %w", err)
+	}
+	if err := atomicWritePlanningFile(metaPath, data, 0644); err != nil {
+		return planDir, result, err
+	}
+	if err := os.WriteFile(specPath, []byte(plan.Objective), 0644); err != nil {
+		return planDir, result, err
+	}
+
+	// Save individual briefings into briefings/ subfolder and clean up stale entries.
+	briefingsDir := filepath.Join(planDir, "briefings")
+	activeBriefingIDs := make(map[string]bool, len(plan.Briefings))
+	for _, b := range plan.Briefings {
+		activeBriefingIDs[b.ID] = true
+		bDir := filepath.Join(briefingsDir, b.ID)
+		_ = os.MkdirAll(bDir, 0755)
+		bData, err := yaml.Marshal(b)
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(bDir, b.ID+".yml"), bData, 0644)
+		}
+		if strings.TrimSpace(b.Objective) != "" {
+			_ = os.WriteFile(filepath.Join(bDir, b.ID+".md"), []byte(b.Objective), 0644)
+		}
+	}
+	// Remove stale briefing subdirectories for briefings no longer in the Plan.
+	if entries, err := os.ReadDir(briefingsDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && !activeBriefingIDs[entry.Name()] {
+				_ = os.RemoveAll(filepath.Join(briefingsDir, entry.Name()))
+			}
+		}
+	}
+
+	return planDir, result, nil
+}
+
+func loadPlanningDir(planDir string, result *PlanningValidationResult, opts planningValidationOptions) (Plan, bool) {
+	entries, err := os.ReadDir(planDir)
+	if err != nil {
+		return Plan{}, false
+	}
+
+	var planMetaPath, planSpecPath string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			planMetaPath = filepath.Join(planDir, name)
+		} else if strings.HasSuffix(name, ".md") {
+			planSpecPath = filepath.Join(planDir, name)
+		}
+	}
+
+	if planMetaPath == "" {
+		return Plan{}, false
+	}
+
+	plan, valid := loadPlanningFile(planMetaPath, result, opts)
+	if !valid {
+		return Plan{}, false
+	}
+
+	if planSpecPath != "" {
+		if specBytes, err := os.ReadFile(planSpecPath); err == nil && len(specBytes) > 0 {
+			plan.Objective = string(specBytes)
+		}
+	}
+
+	// Read briefings from briefings/ subfolder if present
+	briefingsDir := filepath.Join(planDir, "briefings")
+	if briefingEntries, err := os.ReadDir(briefingsDir); err == nil {
+		var dirBriefings []Briefing
+		for _, bEntry := range briefingEntries {
+			if !bEntry.IsDir() {
+				continue
+			}
+			bDir := filepath.Join(briefingsDir, bEntry.Name())
+			bEntries, err := os.ReadDir(bDir)
+			if err != nil {
+				continue
+			}
+			var bMetaPath, bSpecPath string
+			for _, be := range bEntries {
+				if be.IsDir() {
+					continue
+				}
+				if strings.HasSuffix(be.Name(), ".yml") || strings.HasSuffix(be.Name(), ".yaml") {
+					bMetaPath = filepath.Join(bDir, be.Name())
+				} else if strings.HasSuffix(be.Name(), ".md") {
+					bSpecPath = filepath.Join(bDir, be.Name())
+				}
+			}
+			if bMetaPath != "" {
+				bData, err := os.ReadFile(bMetaPath)
+				if err == nil {
+					var b Briefing
+					if err := yaml.Unmarshal(bData, &b); err == nil && b.ID != "" {
+						if bSpecPath != "" {
+							if bSpecBytes, err := os.ReadFile(bSpecPath); err == nil && len(bSpecBytes) > 0 {
+								b.Objective = string(bSpecBytes)
+							}
+						}
+						dirBriefings = append(dirBriefings, b)
+					}
+				}
+			}
+		}
+		if len(dirBriefings) > 0 {
+			// Track which briefing IDs were in the inline Plan YAML so we
+			// don't re-add archived briefings back into BriefingOrder.
+			inlineIDs := make(map[string]bool, len(plan.Briefings))
+			for _, b := range plan.Briefings {
+				inlineIDs[b.ID] = true
+			}
+			bMap := make(map[string]Briefing)
+			for _, b := range plan.Briefings {
+				bMap[b.ID] = b
+			}
+			for _, db := range dirBriefings {
+				bMap[db.ID] = db
+			}
+			var merged []Briefing
+			for _, id := range plan.BriefingOrder {
+				if b, ok := bMap[id]; ok {
+					merged = append(merged, b)
+					delete(bMap, id)
+				}
+			}
+			// Only add directory-only briefings that are truly new (not in the
+			// inline Plan YAML). Briefings that were in the inline YAML but
+			// removed from BriefingOrder (e.g. archived) stay in Briefings but
+			// are not re-added to BriefingOrder.
+			for _, b := range dirBriefings {
+				if _, remaining := bMap[b.ID]; remaining && !inlineIDs[b.ID] {
+					merged = append(merged, b)
+					plan.BriefingOrder = append(plan.BriefingOrder, b.ID)
+					delete(bMap, b.ID)
+				}
+			}
+			// Preserve any inline-only briefings not in directory and not in order.
+			for _, b := range plan.Briefings {
+				if _, remaining := bMap[b.ID]; remaining {
+					merged = append(merged, b)
+					delete(bMap, b.ID)
+				}
+			}
+			plan.Briefings = merged
+		}
+	}
+
+	return plan, true
+}
+
 // DeletePlan removes exactly one persisted Plan record. Planning IDs are
 // validated before constructing the path so callers cannot escape plansDir.
 func DeletePlan(plansDir, planID string) error {
@@ -215,6 +404,15 @@ func DeletePlan(plansDir, planID string) error {
 	validatePlanningID(planID, "", "id", "Plan ID", &result)
 	if result.HasErrors() {
 		return errors.New("invalid Plan ID")
+	}
+	// Try deleting folder if it exists
+	entries, err := os.ReadDir(plansDir)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), planID) {
+				return os.RemoveAll(filepath.Join(plansDir, entry.Name()))
+			}
+		}
 	}
 	path := filepath.Join(plansDir, planID+".yml")
 	if err := os.Remove(path); err != nil {
@@ -315,28 +513,12 @@ func validatePlan(plan Plan, file string, result *PlanningValidationResult, opts
 	validatePlanExecution(plan, briefingsByID, file, result)
 }
 
+// validatePlanExecution is retained for compatibility but no longer reads
+// plan.Execution (which has been removed). Plan execution state is validated
+// centrally through State.PlanExecutions at runtime, not during Plan file
+// validation.
 func validatePlanExecution(plan Plan, briefingsByID map[string]Briefing, file string, result *PlanningValidationResult) {
-	if plan.Execution == nil {
-		return
-	}
-	execution := plan.Execution
-	if !IsValidPlanExecutionMode(execution.Mode) {
-		result.addError(file, "execution.mode", fmt.Sprintf("invalid Plan execution mode %q", execution.Mode))
-	}
-	switch execution.State {
-	case "running", "paused", "stopped", "blocked", "completed":
-	default:
-		result.addError(file, "execution.state", fmt.Sprintf("invalid Plan execution state %q", execution.State))
-	}
-	validatePlanningTimestamp(execution.UpdatedAt, file, "execution.updated_at", result)
-	if execution.CurrentBriefingID != "" {
-		if _, ok := briefingsByID[execution.CurrentBriefingID]; !ok {
-			result.addWarning(file, "execution.current_briefing_id", fmt.Sprintf("execution references missing Briefing %q; Plan execution must stop for explicit repair", execution.CurrentBriefingID))
-		}
-	}
-	if execution.CurrentMilestoneID != "" && !planningIDPattern.MatchString(execution.CurrentMilestoneID) {
-		result.addError(file, "execution.current_milestone_id", "Milestone ID must use lowercase ASCII letters, numbers, and hyphens")
-	}
+	// No-op: execution state lives in state.json, not in the Plan YAML.
 }
 
 func validateBriefing(plan Plan, briefing Briefing, file string, result *PlanningValidationResult, opts planningValidationOptions) {
@@ -1126,4 +1308,93 @@ func appendMissing(list []string, item string) []string {
 		}
 	}
 	return append(list, item)
+}
+
+// ExtractAuthorPrefix extracts the author prefix from a formatted ID (e.g. "p-pf-0001" -> "pf").
+func ExtractAuthorPrefix(id string) string {
+	parts := strings.Split(id, "-")
+	if len(parts) >= 2 {
+		p0 := strings.ToLower(parts[0])
+		if p0 == "p" || p0 == "b" || p0 == "ms" {
+			return strings.ToLower(parts[1])
+		}
+	}
+	return ""
+}
+
+// AllocatePlanID generates an ID like "p-pf-0001" based on author prefix and existing IDs.
+func AllocatePlanID(authorPrefix string, existingIDs []string) string {
+	if authorPrefix == "" {
+		authorPrefix = "dev"
+	}
+	authorPrefix = strings.ToLower(authorPrefix)
+	pattern := fmt.Sprintf("p-%s-", authorPrefix)
+	maxSeq := 0
+	for _, id := range existingIDs {
+		if strings.HasPrefix(id, pattern) {
+			numStr := strings.TrimPrefix(id, pattern)
+			if idx := strings.IndexByte(numStr, '-'); idx != -1 {
+				numStr = numStr[:idx]
+			}
+			var seq int
+			if _, err := fmt.Sscanf(numStr, "%d", &seq); err == nil && seq > maxSeq {
+				maxSeq = seq
+			}
+		}
+	}
+	return fmt.Sprintf("p-%s-%04d", authorPrefix, maxSeq+1)
+}
+
+// AllocateBriefingID generates a briefing ID like "b-js-0001", inheriting the parent Plan's author prefix.
+func AllocateBriefingID(parentPlanID string, defaultAuthorPrefix string, existingIDs []string) string {
+	prefix := ExtractAuthorPrefix(parentPlanID)
+	if prefix == "" {
+		prefix = defaultAuthorPrefix
+	}
+	if prefix == "" {
+		prefix = "dev"
+	}
+	prefix = strings.ToLower(prefix)
+	pattern := fmt.Sprintf("b-%s-", prefix)
+	maxSeq := 0
+	for _, id := range existingIDs {
+		if strings.HasPrefix(id, pattern) {
+			numStr := strings.TrimPrefix(id, pattern)
+			if idx := strings.IndexByte(numStr, '-'); idx != -1 {
+				numStr = numStr[:idx]
+			}
+			var seq int
+			if _, err := fmt.Sscanf(numStr, "%d", &seq); err == nil && seq > maxSeq {
+				maxSeq = seq
+			}
+		}
+	}
+	return fmt.Sprintf("b-%s-%04d", prefix, maxSeq+1)
+}
+
+// AllocateMilestoneID generates a milestone ID like "ms-js-0001", inheriting parent Plan/Briefing prefix if present.
+func AllocateMilestoneID(parentPlanID string, defaultAuthorPrefix string, existingIDs []string) string {
+	prefix := ExtractAuthorPrefix(parentPlanID)
+	if prefix == "" {
+		prefix = defaultAuthorPrefix
+	}
+	if prefix == "" {
+		prefix = "dev"
+	}
+	prefix = strings.ToLower(prefix)
+	pattern := fmt.Sprintf("ms-%s-", prefix)
+	maxSeq := 0
+	for _, id := range existingIDs {
+		if strings.HasPrefix(id, pattern) {
+			numStr := strings.TrimPrefix(id, pattern)
+			if idx := strings.IndexByte(numStr, '-'); idx != -1 {
+				numStr = numStr[:idx]
+			}
+			var seq int
+			if _, err := fmt.Sscanf(numStr, "%d", &seq); err == nil && seq > maxSeq {
+				maxSeq = seq
+			}
+		}
+	}
+	return fmt.Sprintf("ms-%s-%04d", prefix, maxSeq+1)
 }

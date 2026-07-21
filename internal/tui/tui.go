@@ -29,7 +29,7 @@ var terminalSize = func() (int, int, error) {
 
 var executeCycle = executor.ExecuteCycle
 var loadPlanningState = config.LoadPlanningState
-var savePlanningPlan = config.SavePlan
+var savePlanningPlan = config.SavePlanToFolder
 var deletePlanningPlan = config.DeletePlan
 
 // Screen identifies the currently active UI view.
@@ -667,6 +667,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.CreatePlan.ErrorMsg = "Fix existing Plan files before creating another Plan: " + firstPlanningError(existingValidation)
 			return m, nil
 		}
+		// Check for duplicate Plan ID in both flat .yml and folder-per-item layouts.
 		planPath := filepath.Join(plansDir, msg.ID+".yml")
 		if _, err := os.Stat(planPath); err == nil {
 			m.CreatePlan.ErrorMsg = fmt.Sprintf("Plan ID %q already exists.", msg.ID)
@@ -675,7 +676,15 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.CreatePlan.ErrorMsg = fmt.Sprintf("Cannot inspect Plan target: %v", err)
 			return m, nil
 		}
-		validation, err := savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		if entries, err := os.ReadDir(plansDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() && strings.HasPrefix(entry.Name(), msg.ID) {
+					m.CreatePlan.ErrorMsg = fmt.Sprintf("Plan ID %q already exists.", msg.ID)
+					return m, nil
+				}
+			}
+		}
+		_, validation, err := savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
 		if err != nil {
 			if validation.HasErrors() {
 				m.CreatePlan.ErrorMsg = firstPlanningError(validation)
@@ -737,6 +746,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case CreateMilestoneMsg:
+		now := time.Now().UTC().Format(time.RFC3339)
 		newMilestone := config.Milestone{
 			ID:                 msg.ID,
 			Title:              msg.Title,
@@ -745,6 +755,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Status:             "Todo",
 			Cycles:             0,
 			Checks:             msg.Checks,
+			CreatedBy:          "tui",
+			UpdatedBy:          "tui",
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		}
 
 		// Handle CreateMilestoneBranch option
@@ -843,21 +857,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		replaced = strings.ReplaceAll(replaced, "{{ACCEPTANCE_CRITERIA}}", acFormatted)
 		replaced = strings.ReplaceAll(replaced, "{{DATE}}", time.Now().Format("2006-01-02"))
 
-		// 3. Write markdown file to .cyclestone/milestones/<id>.md.
-		milestonesDir := filepath.Join(".cyclestone", "milestones")
-		if err := os.MkdirAll(milestonesDir, 0755); err != nil {
-			m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error creating milestones directory: %v", err)
-			return m, nil
-		}
-
-		mdPath := filepath.Join(milestonesDir, fmt.Sprintf("%s.md", msg.ID))
-		if err := os.WriteFile(mdPath, []byte(replaced), 0644); err != nil {
-			m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error writing markdown file: %v", err)
-			return m, nil
-		}
-
-		// 4. Call config.AddMilestone.
-		if err := config.AddMilestone(m.ConfigPath, newMilestone); err != nil {
+		// 3. Persist milestone via folder-per-item layout.
+		milestonesDir := filepath.Join(filepath.Dir(m.ConfigPath), "milestones")
+		if _, err := config.SaveMilestoneToFolder(milestonesDir, newMilestone, replaced); err != nil {
 			m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error adding milestone: %v", err)
 			return m, nil
 		}
@@ -1163,7 +1165,41 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if targetPlanID != "" {
 						plan.ID = targetPlanID
 					}
-					savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+					// Rewrite generated briefing IDs from title slugs to the
+					// b-<author>-NNNN form, mirroring the CLI plan generate path.
+					authorPref := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+					existingBriefingIDs := make([]string, 0)
+					for _, p := range planning.Plans {
+						for _, b := range p.Briefings {
+							existingBriefingIDs = append(existingBriefingIDs, b.ID)
+						}
+					}
+					oldToNew := map[string]string{}
+					for i := range plan.Briefings {
+						bSlug := config.PlanningSlug(plan.Briefings[i].Title)
+						newBID := config.AllocateBriefingID(plan.ID, authorPref, existingBriefingIDs)
+						if bSlug != "" {
+							newBID = newBID + "-" + bSlug
+						}
+						oldToNew[plan.Briefings[i].ID] = newBID
+						existingBriefingIDs = append(existingBriefingIDs, newBID)
+						plan.Briefings[i].ID = newBID
+					}
+					// Update BriefingOrder and DependsOn to reference the new IDs.
+					plan.BriefingOrder = make([]string, 0, len(plan.Briefings))
+					for i := range plan.Briefings {
+						plan.BriefingOrder = append(plan.BriefingOrder, plan.Briefings[i].ID)
+						updatedDeps := make([]string, 0, len(plan.Briefings[i].DependsOn))
+						for _, dep := range plan.Briefings[i].DependsOn {
+							if newID, ok := oldToNew[dep]; ok {
+								updatedDeps = append(updatedDeps, newID)
+							} else {
+								updatedDeps = append(updatedDeps, dep)
+							}
+						}
+						plan.Briefings[i].DependsOn = updatedDeps
+					}
+					savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs())) // returns (_, _, _) – best-effort
 					planning, _ = loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
 				}
 			}
@@ -1269,6 +1305,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// On success, add to config
+		now := time.Now().UTC().Format(time.RFC3339)
 		newMilestone := config.Milestone{
 			ID:                 finalID,
 			Title:              title,
@@ -1277,9 +1314,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Status:             "Todo",
 			Cycles:             0,
 			Checks:             nil,
+			CreatedBy:          "tui",
+			UpdatedBy:          "tui",
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		}
 
-		if err := config.AddMilestone(m.ConfigPath, newMilestone); err != nil {
+		milestonesDir2 := filepath.Join(filepath.Dir(m.ConfigPath), "milestones")
+		if _, err := config.SaveMilestoneToFolder(milestonesDir2, newMilestone, ""); err != nil {
 			if !strings.Contains(err.Error(), "already exists") {
 				m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error adding milestone: %v", err)
 				return m, nil
@@ -1773,7 +1815,7 @@ func (m *RootModel) finishBriefingExecution(msg executor.CycleFinishedMsg) tea.C
 			briefing.UpdatedBy = "briefing-executor"
 			plan.UpdatedAt = now
 			plan.UpdatedBy = "briefing-executor"
-			if validation, err := config.SavePlan(plansDir, *plan, config.WithKnownMilestoneIDs(milestoneIDs)); err != nil || validation.HasErrors() {
+			if _, validation, err := savePlanningPlan(plansDir, *plan, config.WithKnownMilestoneIDs(milestoneIDs)); err != nil || validation.HasErrors() {
 				if err == nil {
 					err = fmt.Errorf("updated Plan did not pass validation")
 				}
@@ -1910,43 +1952,31 @@ func (m *RootModel) handleLogCycleResult(msg LogCycleResultMsg) {
 }
 
 func generateNextID(cfg *config.Config) string {
-	maxVal := 0
+	// Always resolve the author prefix from merged (global+project) settings so
+	// the configured author_prefix (e.g. "pf") reaches AllocateMilestoneID even
+	// when only the global settings.yml carries it.
+	authorPrefix := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+	var existingIDs []string
 	if cfg != nil {
 		for _, ms := range cfg.Milestones {
-			parts := strings.Split(ms.ID, "-")
-			if len(parts) > 0 {
-				var val int
-				_, err := fmt.Sscanf(parts[0], "%d", &val)
-				if err == nil {
-					if val > maxVal {
-						maxVal = val
-					}
-				}
-			}
+			existingIDs = append(existingIDs, ms.ID)
 		}
 	}
-	return fmt.Sprintf("%04d", maxVal+1)
+	return config.AllocateMilestoneID("", authorPrefix, existingIDs)
 }
 
 func generateNextPlanID(planning *config.PlanningState) string {
-	maxVal := 0
+	// Always resolve the author prefix from merged (global+project) settings so
+	// the configured author_prefix (e.g. "pf") reaches AllocatePlanID even when
+	// only the global settings.yml carries it.
+	authorPrefix := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+	var existingIDs []string
 	if planning != nil {
 		for _, p := range planning.Plans {
-			id := p.ID
-			id = strings.TrimPrefix(id, "p")
-			parts := strings.Split(id, "-")
-			if len(parts) > 0 {
-				var val int
-				_, err := fmt.Sscanf(parts[0], "%d", &val)
-				if err == nil {
-					if val > maxVal {
-						maxVal = val
-					}
-				}
-			}
+			existingIDs = append(existingIDs, p.ID)
 		}
 	}
-	return fmt.Sprintf("p%03d", maxVal+1)
+	return config.AllocatePlanID(authorPrefix, existingIDs)
 }
 
 func resolveStartCyclePipeline(agents []config.Agent, group config.AgentGroup, singleAgentID string) ([]config.Agent, []string) {

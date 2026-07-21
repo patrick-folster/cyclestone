@@ -143,32 +143,51 @@ Optimize stuff.`,
 	}
 }
 
-func TestGenerateNextIDUsesFourDigitPrefix(t *testing.T) {
+func TestGenerateNextIDUsesAuthorPrefixedMilestoneID(t *testing.T) {
+	// Isolate the global settings directory so LoadMergedSettings resolves a
+	// deterministic author_prefix instead of reading the real user config.
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", oldHome)
+		_ = os.Setenv("USERPROFILE", oldUserProfile)
+	})
+	root := t.TempDir()
+	_ = os.Setenv("HOME", root)
+	_ = os.Setenv("USERPROFILE", root)
+	globalCfgDir := filepath.Join(root, ".config", "cyclestone")
+	if err := os.MkdirAll(globalCfgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalCfgDir, "settings.yml"), []byte("author_prefix: pf\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name string
 		cfg  *config.Config
 		want string
 	}{
 		{
-			name: "empty config starts at 0001",
+			name: "empty config starts at ms-pf-0001",
 			cfg:  &config.Config{},
-			want: "0001",
+			want: "ms-pf-0001",
 		},
 		{
-			name: "increments numeric milestone prefixes",
+			name: "increments author-prefixed milestone IDs",
 			cfg: &config.Config{Milestones: []config.Milestone{
-				{ID: "0001-project-setup"},
-				{ID: "0009-release-readiness"},
+				{ID: "ms-pf-0001-project-setup"},
+				{ID: "ms-pf-0009-release-readiness"},
 			}},
-			want: "0010",
+			want: "ms-pf-0010",
 		},
 		{
-			name: "ignores legacy nonnumeric prefixes",
+			name: "ignores legacy non-prefixed IDs",
 			cfg: &config.Config{Milestones: []config.Milestone{
 				{ID: "MS-1"},
 				{ID: "0002-current-convention"},
 			}},
-			want: "0003",
+			want: "ms-pf-0001",
 		},
 	}
 
@@ -244,15 +263,31 @@ func TestMissingConfigRoutesToSetupWizardAndConfirmCreatesProject(t *testing.T) 
 	if got.InitConfigError != "" {
 		t.Fatalf("unexpected init error: %s", got.InitConfigError)
 	}
-	if _, err := os.Stat(configPath); err != nil {
-		t.Fatalf("milestone.yml was not created: %v", err)
-	}
 	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones")); err != nil {
 		t.Fatalf("milestones directory was not created: %v", err)
 	}
-	specData, err := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "0001-first-run.md"))
+	// The first milestone is saved in folder-per-item layout: milestones/0001-first-run/0001-first-run.md
+	specDir := filepath.Join(root, ".cyclestone", "milestones", "0001-first-run")
+	specData, err := os.ReadFile(filepath.Join(specDir, "0001-first-run.md"))
 	if err != nil {
-		t.Fatalf("first milestone spec was not created: %v", err)
+		// Try to find the spec by scanning the milestones directory.
+		entries, dirErr := os.ReadDir(filepath.Join(root, ".cyclestone", "milestones"))
+		if dirErr != nil {
+			t.Fatalf("failed to read milestones dir: %v", dirErr)
+		}
+		found := false
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "0001") {
+				specData, err = os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", e.Name(), "0001-first-run.md"))
+				if err == nil {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("first milestone spec was not created: %v", err)
+		}
 	}
 	specText := string(specData)
 	for _, want := range []string{"# Milestone Spec: 0001-first-run - First Run", "Create the first setup milestone.", "- [ ] Config exists", "- [ ] Dashboard shows milestone"} {

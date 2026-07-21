@@ -133,11 +133,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 		appendFileContent("QA Checklist", "QA_CHECKLIST.md")
 	}
 
-	activeMilestonePath := filepath.Join(".cyclestone", "milestones", milestone.ID+".md")
-	appendFileContent("Active Milestone Specs", activeMilestonePath)
-	if _, err := os.Stat(activeMilestonePath); os.IsNotExist(err) {
-		appendFileContent("Active Milestone Specs", filepath.Join("_old", "milestones", milestone.ID+".md"))
-	}
+	appendMilestoneSpecToBuilder(&sb, milestone)
 
 	if cycleNum > 1 && previousReportPath != "" {
 		appendPreviousCycleSummary(previousReportPath)
@@ -342,11 +338,28 @@ func appendScopedMilestoneContextToBuilder(sb *strings.Builder, milestone config
 }
 
 func appendMilestoneSpecToBuilder(sb *strings.Builder, milestone config.Milestone) {
-	activeMilestonePath := filepath.Join(".cyclestone", "milestones", milestone.ID+".md")
-	appendFileContentToBuilder(sb, "Active Milestone Specs", activeMilestonePath)
-	if _, err := os.Stat(activeMilestonePath); os.IsNotExist(err) {
-		appendFileContentToBuilder(sb, "Active Milestone Specs", filepath.Join("_old", "milestones", milestone.ID+".md"))
+	// Try folder-per-item layout first: .cyclestone/milestones/<id>-<slug>/<id>.md
+	milestonesDir := filepath.Join(".cyclestone", "milestones")
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), milestone.ID) {
+				continue
+			}
+			candidate := filepath.Join(milestonesDir, entry.Name(), milestone.ID+".md")
+			if _, err := os.Stat(candidate); err == nil {
+				appendFileContentToBuilder(sb, "Active Milestone Specs", candidate)
+				return
+			}
+		}
 	}
+	// Legacy flat .md fallback
+	activeMilestonePath := filepath.Join(".cyclestone", "milestones", milestone.ID+".md")
+	if _, err := os.Stat(activeMilestonePath); err == nil {
+		appendFileContentToBuilder(sb, "Active Milestone Specs", activeMilestonePath)
+		return
+	}
+	// _old fallback
+	appendFileContentToBuilder(sb, "Active Milestone Specs", filepath.Join("_old", "milestones", milestone.ID+".md"))
 }
 
 func appendSafetyAndRolePrompt(sb *strings.Builder, absRoot, promptBody string) {
@@ -620,7 +633,7 @@ func appendRepositoryAgentInstructionsContext(sb *strings.Builder) {
 
 func appendConfiguredChecksContext(sb *strings.Builder) {
 	cfg, err := config.LoadConfig(filepath.Join(".cyclestone", "milestone.yml"))
-	if err != nil {
+	if err != nil || cfg == nil {
 		return
 	}
 	repos := append([]string(nil), cfg.Repositories...)

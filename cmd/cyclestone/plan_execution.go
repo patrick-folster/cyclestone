@@ -38,11 +38,11 @@ func runPlanExecution(args []string, opts briefingExecutionOptions, resume bool,
 	}
 
 	if !resume {
-		if err := initializePlanExecution(opts.configPath, req.planID, req.mode); err != nil {
+		if err := initializePlanExecution(opts.configPath, opts.statePath, req.planID, req.mode); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
-	} else if err := validatePlanResume(opts.configPath, req.planID, req.mode); err != nil {
+	} else if err := validatePlanResume(opts.configPath, opts.statePath, req.planID, req.mode); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -96,7 +96,7 @@ func planExecutionVerb(resume bool) string {
 	return "start"
 }
 
-func initializePlanExecution(configPath, planID, mode string) error {
+func initializePlanExecution(configPath, statePath, planID, mode string) error {
 	ctx, err := loadPlanningCommandContext(configPath)
 	if err != nil {
 		return err
@@ -111,19 +111,27 @@ func initializePlanExecution(configPath, planID, mode string) error {
 	if plan.Status != "completed" {
 		return fmt.Errorf("Plan %q must be approved (status completed) before execution", planID)
 	}
-	if plan.Execution != nil && (plan.Execution.State == "running" || plan.Execution.State == "paused" || plan.Execution.State == "stopped" || plan.Execution.State == "blocked") {
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	exec := state.GetPlanExecution(planID)
+	if exec != nil && (exec.State == "running" || exec.State == "paused" || exec.State == "stopped" || exec.State == "blocked") {
 		return fmt.Errorf("Plan %q already has resumable execution state; use plan resume", planID)
 	}
-	plan.Execution = &config.PlanExecution{Mode: mode, State: "running", Checkpoint: "queue-selection", UpdatedAt: planExecutionTimestamp(plan.CreatedAt)}
-	plan.UpdatedAt = plan.Execution.UpdatedAt
+	exec = &config.PlanExecution{Mode: mode, State: "running", Checkpoint: "queue-selection", UpdatedAt: planExecutionTimestamp(plan.CreatedAt)}
+	plan.UpdatedAt = exec.UpdatedAt
 	plan.UpdatedBy = "plan-executor"
 	if !savePlanForCommand(ctx, plan, io.Discard) {
-		return fmt.Errorf("failed to persist Plan execution start")
+		return fmt.Errorf("failed to persist Plan metadata")
+	}
+	if err := saveExecutionState(statePath, state, planID, exec); err != nil {
+		return fmt.Errorf("failed to persist Plan execution start: %w", err)
 	}
 	return nil
 }
 
-func validatePlanResume(configPath, planID, explicitMode string) error {
+func validatePlanResume(configPath, statePath, planID, explicitMode string) error {
 	ctx, err := loadPlanningCommandContext(configPath)
 	if err != nil {
 		return err
@@ -135,14 +143,19 @@ func validatePlanResume(configPath, planID, explicitMode string) error {
 	if !ok {
 		return fmt.Errorf("Plan %q not found", planID)
 	}
-	if plan.Execution == nil {
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	exec := state.GetPlanExecution(planID)
+	if exec == nil {
 		return fmt.Errorf("Plan %q has not been started; use plan start", planID)
 	}
-	if explicitMode != "" && explicitMode != plan.Execution.Mode {
-		plan.Execution.Mode = explicitMode
-		plan.Execution.UpdatedAt = planExecutionTimestamp(plan.CreatedAt)
-		if !savePlanForCommand(ctx, plan, io.Discard) {
-			return fmt.Errorf("failed to persist Plan execution mode")
+	if explicitMode != "" && explicitMode != exec.Mode {
+		exec.Mode = explicitMode
+		exec.UpdatedAt = planExecutionTimestamp(plan.CreatedAt)
+		if err := saveExecutionState(statePath, state, planID, exec); err != nil {
+			return fmt.Errorf("failed to persist Plan execution mode: %w", err)
 		}
 	}
 	return nil
@@ -158,70 +171,73 @@ func advancePlanExecution(configPath, statePath, planID string, approval bool) (
 			return planExecutionStep{}, fmt.Errorf("planning files contain validation errors")
 		}
 		plan, ok := findPlan(ctx.state, planID)
-		if !ok || plan.Execution == nil {
+		if !ok {
 			return planExecutionStep{}, fmt.Errorf("Plan %q execution state is unavailable", planID)
 		}
-		execution := plan.Execution
-		if execution.Checkpoint == "approval-required" {
-			if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan); identityErr != nil {
-				return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", identityErr.Error()+"; approval was not consumed and the Plan execution identity must be repaired")
+		state, err := config.LoadState(statePath)
+		if err != nil {
+			return planExecutionStep{}, err
+		}
+		exec := state.GetPlanExecution(planID)
+		if exec == nil {
+			return planExecutionStep{}, fmt.Errorf("Plan %q execution state is unavailable", planID)
+		}
+		if exec.Checkpoint == "approval-required" {
+			if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan, exec); identityErr != nil {
+				return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", identityErr.Error()+"; approval was not consumed and the Plan execution identity must be repaired")
 			}
 		}
 
-		if execution.Checkpoint == "cycle-running" {
-			_, _, identityErr := currentPlanExecutionIdentity(ctx, plan)
+		if exec.Checkpoint == "cycle-running" {
+			_, _, identityErr := currentPlanExecutionIdentity(ctx, plan, exec)
 			if identityErr != nil {
-				return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", identityErr.Error()+"; repair the Plan execution identity before resuming")
+				return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", identityErr.Error()+"; repair the Plan execution identity before resuming")
 			}
-			state, err := config.LoadState(statePath)
-			if err != nil {
-				return planExecutionStep{}, err
-			}
-			switch normalizeRuntimeStatus(state.GetMilestoneStatus(execution.CurrentMilestoneID)) {
+			switch normalizeRuntimeStatus(state.GetMilestoneStatus(exec.CurrentMilestoneID)) {
 			case "approved":
-				if err := completeCurrentPlanBriefing(ctx, &plan, execution.CurrentMilestoneID); err != nil {
+				if err := completeCurrentPlanBriefing(configPath, statePath, ctx, state, plan, exec, exec.CurrentMilestoneID); err != nil {
 					return planExecutionStep{}, err
 				}
-				if execution.Mode == config.PlanExecutionModeOnce {
-					return pausePlanAfterOne(ctx, plan)
+				if exec.Mode == config.PlanExecutionModeOnce {
+					return pausePlanAfterOne(configPath, statePath, ctx, state, plan, exec)
 				}
 				continue
 			case "failed", "blocked":
-				return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", "linked Milestone is "+normalizeRuntimeStatus(state.GetMilestoneStatus(execution.CurrentMilestoneID)))
+				return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", "linked Milestone is "+normalizeRuntimeStatus(state.GetMilestoneStatus(exec.CurrentMilestoneID)))
 			default:
-				return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", "cycle launch was recorded but no terminal Milestone result exists; inspect the cycle and resume after its state is reconciled")
+				return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", "cycle launch was recorded but no terminal Milestone result exists; inspect the cycle and resume after its state is reconciled")
 			}
 		}
 
-		if execution.CurrentBriefingID != "" && execution.Checkpoint == "cycle-pending" {
-			_, milestone, identityErr := currentPlanExecutionIdentity(ctx, plan)
+		if exec.CurrentBriefingID != "" && exec.Checkpoint == "cycle-pending" {
+			_, milestone, identityErr := currentPlanExecutionIdentity(ctx, plan, exec)
 			if identityErr != nil {
-				return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", identityErr.Error()+"; repair the Plan execution identity before resuming")
+				return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", identityErr.Error()+"; repair the Plan execution identity before resuming")
 			}
-			return planExecutionStep{milestone: &milestone, origin: planBriefingOrigin(plan, execution.CurrentBriefingID, milestone.ID), message: planExecutionSummary(plan)}, nil
+			return planExecutionStep{milestone: &milestone, origin: planBriefingOrigin(plan, exec, exec.CurrentBriefingID, milestone.ID), message: planExecutionSummary(plan, exec)}, nil
 		}
 
 		briefing, position, total, selection := selectNextPlanBriefing(plan)
 		if selection == "exhausted" {
-			execution.State, execution.Checkpoint, execution.StopReason = "completed", "exhausted", "all non-archived Briefings are completed"
-			execution.CurrentBriefingID, execution.CurrentMilestoneID, execution.PendingApproval = "", "", ""
-			if err := savePlanExecution(ctx, plan); err != nil {
+			exec.State, exec.Checkpoint, exec.StopReason = "completed", "exhausted", "all non-archived Briefings are completed"
+			exec.CurrentBriefingID, exec.CurrentMilestoneID, exec.PendingApproval = "", "", ""
+			if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 				return planExecutionStep{}, err
 			}
-			return planExecutionStep{message: planExecutionSummary(plan)}, nil
+			return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 		}
 		if selection == "blocked" {
-			execution.State, execution.Checkpoint, execution.StopReason = "blocked", "dependency-deadlock", "incomplete Briefings remain but none have completed dependencies"
-			execution.CurrentBriefingID, execution.CurrentMilestoneID, execution.PendingApproval = briefing.ID, briefing.MilestoneID, ""
-			if err := savePlanExecution(ctx, plan); err != nil {
+			exec.State, exec.Checkpoint, exec.StopReason = "blocked", "dependency-deadlock", "incomplete Briefings remain but none have completed dependencies"
+			exec.CurrentBriefingID, exec.CurrentMilestoneID, exec.PendingApproval = briefing.ID, briefing.MilestoneID, ""
+			if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 				return planExecutionStep{}, err
 			}
-			return planExecutionStep{message: planExecutionSummary(plan)}, nil
+			return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 		}
 
-		execution.State, execution.Checkpoint, execution.StopReason = "running", "briefing-selected", ""
-		execution.CurrentBriefingID, execution.CurrentMilestoneID = briefing.ID, briefing.MilestoneID
-		if err := savePlanExecution(ctx, plan); err != nil {
+		exec.State, exec.Checkpoint, exec.StopReason = "running", "briefing-selected", ""
+		exec.CurrentBriefingID, exec.CurrentMilestoneID = briefing.ID, briefing.MilestoneID
+		if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 			return planExecutionStep{}, err
 		}
 
@@ -236,14 +252,18 @@ func advancePlanExecution(configPath, statePath, planID string, approval bool) (
 			var exists bool
 			milestone, exists = milestoneByID(ctx, briefing.MilestoneID)
 			if !exists {
-				return stopPlanExecution(ctx, plan, "stopped", fmt.Sprintf("Briefing %q links missing Milestone %q; repair it explicitly, then resume", briefing.ID, briefing.MilestoneID))
+				return stopPlanExecution(configPath, statePath, ctx, state, plan, exec, "stopped", fmt.Sprintf("Briefing %q links missing Milestone %q; repair it explicitly, then resume", briefing.ID, briefing.MilestoneID))
 			}
 		} else {
 			result, err := prepareBriefingMilestone(ctx, configPath, briefingMilestoneRequest{planID: plan.ID, briefingID: briefing.ID, actor: "plan-executor", allowActive: true, allowLinked: true})
 			if err != nil {
 				fresh, _, loadErr := loadPlanningForExecution(configPath, planID)
 				if loadErr == nil {
-					_, _ = stopPlanExecution(fresh, planFromContext(fresh, planID), "stopped", err.Error()+"; repair the durable generation/link boundary and resume")
+					freshState, _ := config.LoadState(statePath)
+					freshExec := freshState.GetPlanExecution(planID)
+					if freshExec != nil {
+						_, _ = stopPlanExecution(configPath, statePath, fresh, freshState, planFromContext(fresh, planID), freshExec, "stopped", err.Error()+"; repair the durable generation/link boundary and resume")
+					}
 				}
 				return planExecutionStep{}, err
 			}
@@ -255,42 +275,42 @@ func advancePlanExecution(configPath, statePath, planID string, approval bool) (
 			plan, _ = findPlan(ctx.state, planID)
 		}
 
-		state, err := config.LoadState(statePath)
+		state, err = config.LoadState(statePath)
 		if err != nil {
 			return planExecutionStep{}, err
 		}
+		exec = state.GetPlanExecution(planID)
 		switch normalizeRuntimeStatus(state.GetMilestoneStatus(milestone.ID)) {
 		case "approved":
-			if err := completeCurrentPlanBriefing(ctx, &plan, milestone.ID); err != nil {
+			if err := completeCurrentPlanBriefing(configPath, statePath, ctx, state, plan, exec, milestone.ID); err != nil {
 				return planExecutionStep{}, err
 			}
-			if execution.Mode == config.PlanExecutionModeOnce {
-				return pausePlanAfterOne(ctx, plan)
+			if exec.Mode == config.PlanExecutionModeOnce {
+				return pausePlanAfterOne(configPath, statePath, ctx, state, plan, exec)
 			}
 			continue
 		case "failed", "blocked":
-			return stopPlanExecution(ctx, plan, "stopped", "linked Milestone is "+normalizeRuntimeStatus(state.GetMilestoneStatus(milestone.ID)))
+			return stopPlanExecution(configPath, statePath, ctx, state, plan, exec, "stopped", "linked Milestone is "+normalizeRuntimeStatus(state.GetMilestoneStatus(milestone.ID)))
 		}
 
-		execution = plan.Execution
-		execution.CurrentMilestoneID = milestone.ID
-		execution.Checkpoint = "milestone-linked"
+		exec.CurrentMilestoneID = milestone.ID
+		exec.Checkpoint = "milestone-linked"
 		gate := "before-cycle:" + briefing.ID + ":" + milestone.ID
-		if execution.Mode == config.PlanExecutionModeReview && (!approval || execution.PendingApproval != gate) {
-			execution.State, execution.Checkpoint, execution.PendingApproval = "paused", "approval-required", gate
-			execution.StopReason = "explicit approval is required before launching the Milestone cycle"
-			if err := savePlanExecution(ctx, plan); err != nil {
+		if exec.Mode == config.PlanExecutionModeReview && (!approval || exec.PendingApproval != gate) {
+			exec.State, exec.Checkpoint, exec.PendingApproval = "paused", "approval-required", gate
+			exec.StopReason = "explicit approval is required before launching the Milestone cycle"
+			if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 				return planExecutionStep{}, err
 			}
-			return planExecutionStep{message: planExecutionSummary(plan)}, nil
+			return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 		}
-		execution.State, execution.Checkpoint, execution.PendingApproval, execution.StopReason = "running", "cycle-pending", "", ""
-		if err := savePlanExecution(ctx, plan); err != nil {
+		exec.State, exec.Checkpoint, exec.PendingApproval, exec.StopReason = "running", "cycle-pending", "", ""
+		if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 			return planExecutionStep{}, err
 		}
-		origin := planBriefingOrigin(plan, briefing.ID, milestone.ID)
+		origin := planBriefingOrigin(plan, exec, briefing.ID, milestone.ID)
 		origin.QueuePosition, origin.QueueTotal = position, total
-		return planExecutionStep{milestone: &milestone, origin: origin, message: planExecutionSummary(plan)}, nil
+		return planExecutionStep{milestone: &milestone, origin: origin, message: planExecutionSummary(plan, exec)}, nil
 	}
 }
 
@@ -306,7 +326,7 @@ func launchPlanExecutionStep(step planExecutionStep, opts briefingExecutionOptio
 		return 1
 	}
 	root := tui.NewRootModel(cfg, state, opts.configPath, opts.statePath, opts.noBranchChange, opts.unrestricted, opts.disableBold, opts.disableRoundedBorders)
-	root.PlanCycleStarted = func(origin tui.BriefingOrigin) error { return markPlanCycleStarted(opts.configPath, origin) }
+	root.PlanCycleStarted = func(origin tui.BriefingOrigin) error { return markPlanCycleStarted(opts.configPath, opts.statePath, origin) }
 	root.PlanCycleFinished = func(origin tui.BriefingOrigin, milestoneID, status string, cycleErr error) (tui.PlanContinuation, error) {
 		next, err := finishPlanCycle(opts.configPath, opts.statePath, origin, milestoneID, status, cycleErr)
 		if err != nil {
@@ -322,24 +342,28 @@ func launchPlanExecutionStep(step planExecutionStep, opts briefingExecutionOptio
 	return 0
 }
 
-func markPlanCycleStarted(configPath string, origin tui.BriefingOrigin) error {
+func markPlanCycleStarted(configPath, statePath string, origin tui.BriefingOrigin) error {
 	ctx, plan, err := loadPlanningForExecution(configPath, origin.PlanID)
 	if err != nil {
 		return err
 	}
-	execution := plan.Execution
-	if execution == nil || execution.Checkpoint != "cycle-pending" || execution.CurrentBriefingID != origin.BriefingID || execution.CurrentMilestoneID != origin.MilestoneID {
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	exec := state.GetPlanExecution(origin.PlanID)
+	if exec == nil || exec.Checkpoint != "cycle-pending" || exec.CurrentBriefingID != origin.BriefingID || exec.CurrentMilestoneID != origin.MilestoneID {
 		return fmt.Errorf("Plan execution identity or checkpoint changed; resume to reconcile")
 	}
-	if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan); identityErr != nil {
-		_, stopErr := stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", identityErr.Error()+"; Milestone cycle was not launched")
+	if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan, exec); identityErr != nil {
+		_, stopErr := stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", identityErr.Error()+"; Milestone cycle was not launched")
 		if stopErr != nil {
 			return fmt.Errorf("%v (also failed to persist the stop: %w)", identityErr, stopErr)
 		}
 		return fmt.Errorf("%v; Milestone cycle was not launched", identityErr)
 	}
-	execution.Checkpoint = "cycle-running"
-	return savePlanExecution(ctx, plan)
+	exec.Checkpoint = "cycle-running"
+	return saveExecutionState(statePath, state, origin.PlanID, exec)
 }
 
 func finishPlanCycle(configPath, statePath string, origin tui.BriefingOrigin, terminalMilestoneID, status string, cycleErr error) (planExecutionStep, error) {
@@ -347,24 +371,24 @@ func finishPlanCycle(configPath, statePath string, origin tui.BriefingOrigin, te
 	if err != nil {
 		return planExecutionStep{}, err
 	}
-	execution := plan.Execution
-	if execution == nil {
+	state, err := config.LoadState(statePath)
+	if err != nil {
+		return planExecutionStep{}, err
+	}
+	exec := state.GetPlanExecution(origin.PlanID)
+	if exec == nil {
 		return planExecutionStep{}, fmt.Errorf("Plan execution state disappeared while Milestone %q ran; planning was not advanced", origin.MilestoneID)
 	}
 	if terminalMilestoneID != origin.MilestoneID {
-		return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", fmt.Sprintf("ignored stale terminal event for Milestone %q while Plan execution expected %q; inspect the active cycle before resuming", terminalMilestoneID, origin.MilestoneID))
+		return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", fmt.Sprintf("ignored stale terminal event for Milestone %q while Plan execution expected %q; inspect the active cycle before resuming", terminalMilestoneID, origin.MilestoneID))
 	}
-	if execution.CurrentBriefingID != origin.BriefingID || execution.CurrentMilestoneID != origin.MilestoneID || execution.Checkpoint != "cycle-running" {
-		return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", fmt.Sprintf("Plan execution identity changed while Milestone %q ran; planning was not advanced", origin.MilestoneID))
+	if exec.CurrentBriefingID != origin.BriefingID || exec.CurrentMilestoneID != origin.MilestoneID || exec.Checkpoint != "cycle-running" {
+		return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", fmt.Sprintf("Plan execution identity changed while Milestone %q ran; planning was not advanced", origin.MilestoneID))
 	}
-	if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan); identityErr != nil {
-		return stopPlanExecutionPreservingCheckpoint(ctx, plan, "stopped", identityErr.Error()+"; planning was not advanced")
+	if _, _, identityErr := currentPlanExecutionIdentity(ctx, plan, exec); identityErr != nil {
+		return stopPlanExecutionPreservingCheckpoint(configPath, statePath, ctx, state, plan, exec, "stopped", identityErr.Error()+"; planning was not advanced")
 	}
-	runtimeState, stateErr := config.LoadState(statePath)
-	if stateErr != nil {
-		return planExecutionStep{}, fmt.Errorf("reload Milestone state after cycle: %w", stateErr)
-	}
-	persistedStatus := normalizeRuntimeStatus(runtimeState.GetMilestoneStatus(origin.MilestoneID))
+	persistedStatus := normalizeRuntimeStatus(state.GetMilestoneStatus(origin.MilestoneID))
 	if cycleErr != nil || normalizeRuntimeStatus(status) != "approved" || persistedStatus != "approved" {
 		reason := "Milestone cycle did not finish approved"
 		if cycleErr != nil {
@@ -372,68 +396,78 @@ func finishPlanCycle(configPath, statePath string, origin tui.BriefingOrigin, te
 		} else if persistedStatus != normalizeRuntimeStatus(status) {
 			reason += fmt.Sprintf(": terminal message was %q but persisted state is %q", status, persistedStatus)
 		}
-		return stopPlanExecution(ctx, plan, "stopped", reason)
+		return stopPlanExecution(configPath, statePath, ctx, state, plan, exec, "stopped", reason)
 	}
-	if err := completeCurrentPlanBriefing(ctx, &plan, origin.MilestoneID); err != nil {
+	if err := completeCurrentPlanBriefing(configPath, statePath, ctx, state, plan, exec, origin.MilestoneID); err != nil {
 		return planExecutionStep{}, err
 	}
-	if execution.Mode == config.PlanExecutionModeOnce {
-		return pausePlanAfterOne(ctx, plan)
+	if exec.Mode == config.PlanExecutionModeOnce {
+		return pausePlanAfterOne(configPath, statePath, ctx, state, plan, exec)
 	}
 	return advancePlanExecution(configPath, statePath, origin.PlanID, false)
 }
 
-func completeCurrentPlanBriefing(ctx planningCommandContext, plan *config.Plan, milestoneID string) error {
-	execution := plan.Execution
-	briefing, ok := findBriefing(*plan, execution.CurrentBriefingID)
-	index := briefingIndex(*plan, execution.CurrentBriefingID)
+func completeCurrentPlanBriefing(configPath, statePath string, ctx planningCommandContext, state *config.State, plan config.Plan, exec *config.PlanExecution, milestoneID string) error {
+	briefing, ok := findBriefing(plan, exec.CurrentBriefingID)
+	index := briefingIndex(plan, exec.CurrentBriefingID)
 	if !ok || briefing.MilestoneID != milestoneID {
 		return fmt.Errorf("current Briefing/Milestone link changed; planning was not advanced")
 	}
 	now := planExecutionTimestamp(plan.CreatedAt, briefing.CreatedAt)
 	plan.Briefings[index].Status, plan.Briefings[index].UpdatedAt, plan.Briefings[index].UpdatedBy = "completed", now, "plan-executor"
-	execution.CurrentBriefingID, execution.CurrentMilestoneID, execution.PendingApproval = "", "", ""
-	execution.State, execution.Checkpoint, execution.StopReason = "running", "briefing-completed", ""
-	return savePlanExecution(ctx, *plan)
+	exec.CurrentBriefingID, exec.CurrentMilestoneID, exec.PendingApproval = "", "", ""
+	exec.State, exec.Checkpoint, exec.StopReason = "running", "briefing-completed", ""
+	return persistExecAndPlan(configPath, statePath, ctx, state, plan, exec)
 }
 
-func pausePlanAfterOne(ctx planningCommandContext, plan config.Plan) (planExecutionStep, error) {
-	plan.Execution.State, plan.Execution.Checkpoint, plan.Execution.StopReason = "paused", "one-complete", "execution mode stops after one eligible Briefing"
-	if err := savePlanExecution(ctx, plan); err != nil {
+func pausePlanAfterOne(configPath, statePath string, ctx planningCommandContext, state *config.State, plan config.Plan, exec *config.PlanExecution) (planExecutionStep, error) {
+	exec.State, exec.Checkpoint, exec.StopReason = "paused", "one-complete", "execution mode stops after one eligible Briefing"
+	if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 		return planExecutionStep{}, err
 	}
-	return planExecutionStep{message: planExecutionSummary(plan)}, nil
+	return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 }
 
-func stopPlanExecution(ctx planningCommandContext, plan config.Plan, state, reason string) (planExecutionStep, error) {
-	plan.Execution.State, plan.Execution.StopReason = state, reason
-	if state == "stopped" {
-		plan.Execution.Checkpoint = "stopped"
+func stopPlanExecution(configPath, statePath string, ctx planningCommandContext, state *config.State, plan config.Plan, exec *config.PlanExecution, stateName, reason string) (planExecutionStep, error) {
+	exec.State, exec.StopReason = stateName, reason
+	if stateName == "stopped" {
+		exec.Checkpoint = "stopped"
 	}
-	if err := savePlanExecution(ctx, plan); err != nil {
+	if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 		return planExecutionStep{}, err
 	}
-	return planExecutionStep{message: planExecutionSummary(plan)}, nil
+	return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 }
 
 // stopPlanExecutionPreservingCheckpoint records an actionable stop without
 // erasing a durable launch boundary. In particular, cycle-running must remain
 // non-launchable across repeated resumes until Milestone state is terminal.
-func stopPlanExecutionPreservingCheckpoint(ctx planningCommandContext, plan config.Plan, state, reason string) (planExecutionStep, error) {
-	plan.Execution.State, plan.Execution.StopReason = state, reason
-	if err := savePlanExecution(ctx, plan); err != nil {
+func stopPlanExecutionPreservingCheckpoint(configPath, statePath string, ctx planningCommandContext, state *config.State, plan config.Plan, exec *config.PlanExecution, stateName, reason string) (planExecutionStep, error) {
+	exec.State, exec.StopReason = stateName, reason
+	if err := persistExecAndPlan(configPath, statePath, ctx, state, plan, exec); err != nil {
 		return planExecutionStep{}, err
 	}
-	return planExecutionStep{message: planExecutionSummary(plan)}, nil
+	return planExecutionStep{message: planExecutionSummary(plan, exec)}, nil
 }
 
-func savePlanExecution(ctx planningCommandContext, plan config.Plan) error {
+// persistExecAndPlan saves the Plan execution state to state.json and the Plan
+// metadata (UpdatedAt/UpdatedBy, briefing updates) to the Plan file.
+func persistExecAndPlan(configPath, statePath string, ctx planningCommandContext, state *config.State, plan config.Plan, exec *config.PlanExecution) error {
 	now := planExecutionTimestamp(plan.CreatedAt)
-	plan.Execution.UpdatedAt, plan.UpdatedAt, plan.UpdatedBy = now, now, "plan-executor"
+	exec.UpdatedAt, plan.UpdatedAt, plan.UpdatedBy = now, now, "plan-executor"
+	if err := saveExecutionState(statePath, state, plan.ID, exec); err != nil {
+		return fmt.Errorf("failed to persist Plan execution checkpoint: %w", err)
+	}
 	if !savePlanForCommand(ctx, plan, io.Discard) {
-		return fmt.Errorf("failed to persist Plan execution checkpoint")
+		return fmt.Errorf("failed to persist Plan metadata")
 	}
 	return nil
+}
+
+// saveExecutionState sets the execution in state and persists state.json.
+func saveExecutionState(statePath string, state *config.State, planID string, exec *config.PlanExecution) error {
+	state.SetPlanExecution(planID, exec)
+	return config.SaveState(statePath, state)
 }
 
 func loadPlanningForExecution(configPath, planID string) (planningCommandContext, config.Plan, error) {
@@ -471,17 +505,16 @@ func milestoneByID(ctx planningCommandContext, id string) (config.Milestone, boo
 
 // currentPlanExecutionIdentity reloads the selected Briefing relationship from
 // the typed Plan and compact Milestone index before a launch or reconciliation.
-func currentPlanExecutionIdentity(ctx planningCommandContext, plan config.Plan) (config.Briefing, config.Milestone, error) {
-	execution := plan.Execution
-	if execution == nil || execution.CurrentBriefingID == "" || execution.CurrentMilestoneID == "" {
+func currentPlanExecutionIdentity(ctx planningCommandContext, plan config.Plan, exec *config.PlanExecution) (config.Briefing, config.Milestone, error) {
+	if exec == nil || exec.CurrentBriefingID == "" || exec.CurrentMilestoneID == "" {
 		return config.Briefing{}, config.Milestone{}, fmt.Errorf("Plan execution has incomplete current Briefing/Milestone identity")
 	}
 	if plan.Status != "completed" {
 		return config.Briefing{}, config.Milestone{}, fmt.Errorf("Plan %q is no longer approved: status is %q", plan.ID, plan.Status)
 	}
-	briefing, ok := findBriefing(plan, execution.CurrentBriefingID)
+	briefing, ok := findBriefing(plan, exec.CurrentBriefingID)
 	if !ok {
-		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q no longer exists", execution.CurrentBriefingID)
+		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q no longer exists", exec.CurrentBriefingID)
 	}
 	if briefing.Status != "active" {
 		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q is no longer executable: status is %q", briefing.ID, briefing.Status)
@@ -489,12 +522,12 @@ func currentPlanExecutionIdentity(ctx planningCommandContext, plan config.Plan) 
 	if blockedBy := incompleteBriefingDependencies(plan, briefing); len(blockedBy) > 0 {
 		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q now has incomplete dependencies: %s", briefing.ID, strings.Join(blockedBy, ", "))
 	}
-	if briefing.MilestoneID != execution.CurrentMilestoneID {
-		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q now links Milestone %q instead of retained Milestone %q", briefing.ID, briefing.MilestoneID, execution.CurrentMilestoneID)
+	if briefing.MilestoneID != exec.CurrentMilestoneID {
+		return config.Briefing{}, config.Milestone{}, fmt.Errorf("current Briefing %q now links Milestone %q instead of retained Milestone %q", briefing.ID, briefing.MilestoneID, exec.CurrentMilestoneID)
 	}
-	milestone, ok := milestoneByID(ctx, execution.CurrentMilestoneID)
+	milestone, ok := milestoneByID(ctx, exec.CurrentMilestoneID)
 	if !ok {
-		return config.Briefing{}, config.Milestone{}, fmt.Errorf("linked Milestone %q is missing", execution.CurrentMilestoneID)
+		return config.Briefing{}, config.Milestone{}, fmt.Errorf("linked Milestone %q is missing", exec.CurrentMilestoneID)
 	}
 	return briefing, milestone, nil
 }
@@ -541,9 +574,13 @@ func selectNextPlanBriefing(plan config.Plan) (config.Briefing, int, int, string
 	return config.Briefing{}, 0, total, "exhausted"
 }
 
-func planBriefingOrigin(plan config.Plan, briefingID, milestoneID string) tui.BriefingOrigin {
+func planBriefingOrigin(plan config.Plan, exec *config.PlanExecution, briefingID, milestoneID string) tui.BriefingOrigin {
 	_, position, total, _ := selectSpecificPlanBriefing(plan, briefingID)
-	return tui.BriefingOrigin{PlanID: plan.ID, BriefingID: briefingID, MilestoneID: milestoneID, Mode: plan.Execution.Mode, QueuePosition: position, QueueTotal: total, DependencyState: "ready", PlanRun: true}
+	mode := ""
+	if exec != nil {
+		mode = exec.Mode
+	}
+	return tui.BriefingOrigin{PlanID: plan.ID, BriefingID: briefingID, MilestoneID: milestoneID, Mode: mode, QueuePosition: position, QueueTotal: total, DependencyState: "ready", PlanRun: true}
 }
 
 func selectSpecificPlanBriefing(plan config.Plan, target string) (config.Briefing, int, int, bool) {
@@ -591,20 +628,22 @@ func planExecutionTimestamp(createdAt ...string) string {
 	return now.Format(time.RFC3339)
 }
 
-func planExecutionSummary(plan config.Plan) string {
-	e := plan.Execution
-	message := fmt.Sprintf("Plan %q execution: %s (mode %s, checkpoint %s)", plan.ID, e.State, e.Mode, e.Checkpoint)
-	if e.CurrentBriefingID != "" {
-		message += fmt.Sprintf("; current Briefing %q", e.CurrentBriefingID)
+func planExecutionSummary(plan config.Plan, exec *config.PlanExecution) string {
+	if exec == nil {
+		return fmt.Sprintf("Plan %q execution: unavailable", plan.ID)
 	}
-	if e.CurrentMilestoneID != "" {
-		message += fmt.Sprintf("; Milestone %q", e.CurrentMilestoneID)
+	message := fmt.Sprintf("Plan %q execution: %s (mode %s, checkpoint %s)", plan.ID, exec.State, exec.Mode, exec.Checkpoint)
+	if exec.CurrentBriefingID != "" {
+		message += fmt.Sprintf("; current Briefing %q", exec.CurrentBriefingID)
 	}
-	if e.PendingApproval != "" {
+	if exec.CurrentMilestoneID != "" {
+		message += fmt.Sprintf("; Milestone %q", exec.CurrentMilestoneID)
+	}
+	if exec.PendingApproval != "" {
 		message += "; resume with --approve after review"
 	}
-	if e.StopReason != "" {
-		message += "; " + e.StopReason
+	if exec.StopReason != "" {
+		message += "; " + exec.StopReason
 	}
 	return message
 }

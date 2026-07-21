@@ -36,7 +36,7 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 			executionBriefing("reused", []string{"generated"}, "linked"),
 		},
 	})
-	standaloneBefore, err := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone.md"))
+	standaloneBefore, err := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +81,14 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 	}
 	assertUnrelatedMilestoneUnchanged("initial selection")
 	first := launched.PendingCycle.BriefingOrigin
-	if first.BriefingID != "generated" || launched.PendingCycle.Milestone.ID != "delivery-generated" {
+	if first.BriefingID != "generated" || launched.PendingCycle.Milestone.ID != "ms-pf-0001-generated" {
 		t.Fatalf("unexpected first selection: %+v / %+v", first, launched.PendingCycle.Milestone)
 	}
 	if err := launched.PlanCycleStarted(first); err != nil {
 		t.Fatal(err)
 	}
 	state, _ = config.LoadState(statePath)
-	state.SetMilestoneStatus("delivery-generated", "Approved")
+	state.SetMilestoneStatus("ms-pf-0001-generated", "Approved")
 	if err := config.SaveState(statePath, state); err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +124,14 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 	if state.GetMilestoneCycles("standalone") != 2 || state.GetMilestoneStatus("standalone") != "In Progress" {
 		t.Fatalf("standalone runtime state changed: %+v", state)
 	}
-	standaloneAfter, _ := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone.md"))
+	standaloneAfter, _ := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone.md"))
 	if string(standaloneAfter) != string(standaloneBefore) {
 		t.Fatal("standalone Milestone spec was modified")
 	}
-	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked", "standalone", "delivery-generated"}))
+	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked", "standalone", "ms-pf-0001-generated"}))
 	plan, _ := findPlan(planning, "delivery")
 	generated, _ := findBriefing(plan, "generated")
-	if generated.Status != "completed" || generated.MilestoneID != "delivery-generated" {
+	if generated.Status != "completed" || generated.MilestoneID != "ms-pf-0001-generated" {
 		t.Fatalf("generated Briefing not durably reconciled: %+v", generated)
 	}
 	if generations != 1 {
@@ -235,8 +235,10 @@ func TestPlanExecutionReconcilesApprovedLinkWithoutLaunching(t *testing.T) {
 	}
 	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"done"}))
 	plan, _ := findPlan(planning, "approved-plan")
-	if plan.Briefings[0].Status != "completed" || plan.Execution.State != "completed" || plan.Execution.Checkpoint != "exhausted" {
-		t.Fatalf("unexpected reconciled Plan: %+v", plan)
+	st, _ := config.LoadState(statePath)
+	exec := st.GetPlanExecution("approved-plan")
+	if plan.Briefings[0].Status != "completed" || exec.State != "completed" || exec.Checkpoint != "exhausted" {
+		t.Fatalf("unexpected reconciled Plan: %+v exec=%+v", plan, exec)
 	}
 }
 
@@ -254,8 +256,10 @@ func TestPlanExecutionOncePausesAfterOneReconciliation(t *testing.T) {
 	}
 	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"done"}))
 	plan, _ := findPlan(planning, "once-plan")
-	if plan.Execution.State != "paused" || plan.Execution.Checkpoint != "one-complete" || plan.Briefings[1].Status != "active" {
-		t.Fatalf("once mode did not pause before dependent: %+v", plan)
+	st2, _ := config.LoadState(statePath)
+	exec2 := st2.GetPlanExecution("once-plan")
+	if exec2.State != "paused" || exec2.Checkpoint != "one-complete" || plan.Briefings[1].Status != "active" {
+		t.Fatalf("once mode did not pause before dependent: %+v exec=%+v", plan, exec2)
 	}
 }
 
@@ -272,8 +276,10 @@ func TestPlanExecutionStopsOnDanglingLinkAndPreservesIt(t *testing.T) {
 	}
 	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"))
 	plan, _ := findPlan(planning, "dangling-plan")
-	if plan.Briefings[0].MilestoneID != "missing" || plan.Execution.State != "stopped" || plan.Execution.CurrentBriefingID != "work" {
-		t.Fatalf("dangling link/current item not preserved: %+v", plan)
+	st3, _ := config.LoadState(statePath)
+	exec3 := st3.GetPlanExecution("dangling-plan")
+	if plan.Briefings[0].MilestoneID != "missing" || exec3.State != "stopped" || exec3.CurrentBriefingID != "work" {
+		t.Fatalf("dangling link/current item not preserved: %+v exec=%+v", plan, exec3)
 	}
 }
 
@@ -316,9 +322,11 @@ func TestPlanExecutionInterruptedRunningCycleDoesNotRelaunch(t *testing.T) {
 			t.Fatalf("resume %d relaunched or was not explained: launches=%d output=%s", attempt, launches, stdout.String())
 		}
 		planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked"}))
-		plan, _ := findPlan(planning, "interrupt-plan")
-		if plan.Execution.Checkpoint != "cycle-running" || plan.Execution.CurrentBriefingID != "work" || plan.Execution.CurrentMilestoneID != "linked" {
-			t.Fatalf("resume %d erased the uncertain launch boundary: %+v", attempt, plan.Execution)
+		_, _ = findPlan(planning, "interrupt-plan")
+		stInt, _ := config.LoadState(statePath)
+		execInt := stInt.GetPlanExecution("interrupt-plan")
+		if execInt.Checkpoint != "cycle-running" || execInt.CurrentBriefingID != "work" || execInt.CurrentMilestoneID != "linked" {
+			t.Fatalf("resume %d erased the uncertain launch boundary: %+v", attempt, execInt)
 		}
 	}
 }
@@ -352,7 +360,7 @@ func TestPlanExecutionPendingAndRunningBoundariesRevalidateLinks(t *testing.T) {
 			plan.Briefings[0].MilestoneID = "edited"
 			plan.Briefings[0].UpdatedAt = planExecutionTimestamp(plan.Briefings[0].CreatedAt)
 			plan.UpdatedAt = plan.Briefings[0].UpdatedAt
-			if validation, err := config.SavePlan(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked", "edited"})); err != nil || validation.HasErrors() {
+			if _, validation, err := config.SavePlanToFolder(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked", "edited"})); err != nil || validation.HasErrors() {
 				t.Fatalf("edit link: %v %+v", err, validation)
 			}
 			launches := 0
@@ -365,8 +373,10 @@ func TestPlanExecutionPendingAndRunningBoundariesRevalidateLinks(t *testing.T) {
 			}
 			planning, _ = config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs([]string{"linked", "edited"}))
 			plan, _ = findPlan(planning, "identity-plan")
-			if plan.Execution.Checkpoint != checkpoint || plan.Execution.CurrentMilestoneID != "linked" {
-				t.Fatalf("identity stop erased durable boundary: %+v", plan.Execution)
+			stId, _ := config.LoadState(statePath)
+			execId := stId.GetPlanExecution("identity-plan")
+			if execId.Checkpoint != checkpoint || execId.CurrentMilestoneID != "linked" {
+				t.Fatalf("identity stop erased durable boundary: %+v", execId)
 			}
 		})
 	}
@@ -391,8 +401,10 @@ func TestFinishPlanCycleRejectsStaleTerminalMilestone(t *testing.T) {
 	}
 	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked"}))
 	plan, _ := findPlan(planning, "stale-plan")
-	if plan.Execution.State != "stopped" || plan.Execution.Checkpoint != "cycle-running" || plan.Briefings[0].Status != "active" {
-		t.Fatalf("stale event advanced or erased execution: %+v", plan)
+	stStale, _ := config.LoadState(statePath)
+	execStale := stStale.GetPlanExecution("stale-plan")
+	if execStale.State != "stopped" || execStale.Checkpoint != "cycle-running" || plan.Briefings[0].Status != "active" {
+		t.Fatalf("stale event advanced or erased execution: %+v exec=%+v", plan, execStale)
 	}
 }
 
@@ -410,7 +422,7 @@ func TestPlanExecutionResumeStopsWhenCurrentBriefingWasRemoved(t *testing.T) {
 	plan.Briefings = nil
 	plan.BriefingOrder = nil
 	plan.UpdatedAt = planExecutionTimestamp(plan.CreatedAt)
-	if validation, err := config.SavePlan(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked"})); err != nil || validation.HasErrors() {
+	if _, validation, err := config.SavePlanToFolder(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked"})); err != nil || validation.HasErrors() {
 		t.Fatalf("remove current Briefing: %v %+v", err, validation)
 	}
 	launches := 0
@@ -423,8 +435,10 @@ func TestPlanExecutionResumeStopsWhenCurrentBriefingWasRemoved(t *testing.T) {
 	}
 	planning, _ = config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs([]string{"linked"}))
 	plan, _ = findPlan(planning, "removed-plan")
-	if plan.Execution.State != "stopped" || plan.Execution.Checkpoint != "cycle-pending" || plan.Execution.CurrentBriefingID != "work" || plan.Execution.CurrentMilestoneID != "linked" {
-		t.Fatalf("removed Briefing stop did not preserve identity: %+v", plan.Execution)
+	stRem, _ := config.LoadState(statePath)
+	execRem := stRem.GetPlanExecution("removed-plan")
+	if execRem.State != "stopped" || execRem.Checkpoint != "cycle-pending" || execRem.CurrentBriefingID != "work" || execRem.CurrentMilestoneID != "linked" {
+		t.Fatalf("removed Briefing stop did not preserve identity: %+v", execRem)
 	}
 }
 
@@ -475,11 +489,13 @@ func TestPlanExecutionTerminalStopsDoNotAdvanceDependents(t *testing.T) {
 			}
 			planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs(known))
 			plan, _ := findPlan(planning, "stop-plan")
-			if plan.Execution.State != tc.wantState || plan.Execution.Checkpoint != tc.wantCheckpoint || plan.Briefings[len(plan.Briefings)-1].Status != "active" {
-				t.Fatalf("unexpected stop state: %+v", plan)
+			stStop, _ := config.LoadState(statePath)
+			execStop := stStop.GetPlanExecution("stop-plan")
+			if execStop.State != tc.wantState || execStop.Checkpoint != tc.wantCheckpoint || plan.Briefings[len(plan.Briefings)-1].Status != "active" {
+				t.Fatalf("unexpected stop state: %+v exec=%+v", plan, execStop)
 			}
-			if plan.Execution.CurrentBriefingID == "" {
-				t.Fatalf("stopped Plan did not retain a resumable current Briefing: %+v", plan.Execution)
+			if execStop.CurrentBriefingID == "" {
+				t.Fatalf("stopped Plan did not retain a resumable current Briefing: %+v", execStop)
 			}
 		})
 	}
@@ -493,10 +509,10 @@ func TestPlanExecutionRecoversIndexedMilestoneAfterLinkSaveFailure(t *testing.T)
 	originalSave, originalAdd := savePlanningPlan, addPlanningMilestoneWithSpec
 	t.Cleanup(func() { savePlanningPlan, addPlanningMilestoneWithSpec = originalSave, originalAdd })
 	saves, generations := 0, 0
-	savePlanningPlan = func(dir string, plan config.Plan, options ...config.PlanningValidationOption) (config.PlanningValidationResult, error) {
+	savePlanningPlan = func(dir string, plan config.Plan, options ...config.PlanningValidationOption) (string, config.PlanningValidationResult, error) {
 		saves++
 		if saves == 3 {
-			return config.PlanningValidationResult{}, errors.New("injected link save failure")
+			return "", config.PlanningValidationResult{}, errors.New("injected link save failure")
 		}
 		return originalSave(dir, plan, options...)
 	}
@@ -517,13 +533,15 @@ func TestPlanExecutionRecoversIndexedMilestoneAfterLinkSaveFailure(t *testing.T)
 		t.Fatalf("recovery duplicated generation or missed launch: generations=%d launches=%d", generations, launches)
 	}
 	cfg, _ := config.LoadConfig(configPath)
-	if len(cfg.Milestones) != 1 || cfg.Milestones[0].ID != "recover-plan-work" {
+	if len(cfg.Milestones) != 1 || cfg.Milestones[0].ID != "ms-pf-0001-work" {
 		t.Fatalf("unexpected compact index after recovery: %+v", cfg.Milestones)
 	}
-	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"recover-plan-work"}))
+	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"ms-pf-0001-work"}))
 	plan, _ := findPlan(planning, "recover-plan")
-	if plan.Briefings[0].MilestoneID != "recover-plan-work" || plan.Execution.Checkpoint != "cycle-pending" {
-		t.Fatalf("recovered link/checkpoint was not durable: %+v", plan)
+	stRec, _ := config.LoadState(statePath)
+	execRec := stRec.GetPlanExecution("recover-plan")
+	if plan.Briefings[0].MilestoneID != "ms-pf-0001-work" || execRec.Checkpoint != "cycle-pending" {
+		t.Fatalf("recovered link/checkpoint was not durable: %+v exec=%+v", plan, execRec)
 	}
 }
 
@@ -554,9 +572,9 @@ func TestPlanExecutionRecoversSpecOnlyGenerationBoundary(t *testing.T) {
 	if generations != 1 || launches != 1 {
 		t.Fatalf("spec recovery duplicated generation or launch: generations=%d launches=%d", generations, launches)
 	}
-	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"spec-plan-work"}))
+	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"ms-pf-0001-work"}))
 	plan, _ := findPlan(planning, "spec-plan")
-	if plan.Briefings[0].MilestoneID != "spec-plan-work" {
+	if plan.Briefings[0].MilestoneID != "ms-pf-0001-work" {
 		t.Fatalf("spec-only recovery did not persist link: %+v", plan.Briefings[0])
 	}
 }
@@ -582,7 +600,7 @@ func TestPlanExecutionRevalidatesApprovalAndPreflightIdentity(t *testing.T) {
 			plan.Briefings[0].Status = "archived"
 			plan.Briefings[0].UpdatedAt = planExecutionTimestamp(plan.Briefings[0].CreatedAt)
 			plan.UpdatedAt = plan.Briefings[0].UpdatedAt
-			if validation, err := config.SavePlan(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked"})); err != nil || validation.HasErrors() {
+			if _, validation, err := config.SavePlanToFolder(plansDir, plan, config.WithKnownMilestoneIDs([]string{"linked"})); err != nil || validation.HasErrors() {
 				t.Fatalf("archive current Briefing: %v %+v", err, validation)
 			}
 			if checkpoint == "approval" {
@@ -596,8 +614,10 @@ func TestPlanExecutionRevalidatesApprovalAndPreflightIdentity(t *testing.T) {
 			}
 			planning, _ = config.LoadPlanningState(plansDir, config.WithKnownMilestoneIDs([]string{"linked"}))
 			plan, _ = findPlan(planning, "live-plan")
-			if plan.Execution.State != "stopped" || plan.Execution.CurrentBriefingID != "work" || plan.Execution.CurrentMilestoneID != "linked" {
-				t.Fatalf("identity stop did not retain current IDs: %+v", plan.Execution)
+			stLive, _ := config.LoadState(statePath)
+			execLive := stLive.GetPlanExecution("live-plan")
+			if execLive.State != "stopped" || execLive.CurrentBriefingID != "work" || execLive.CurrentMilestoneID != "linked" {
+				t.Fatalf("identity stop did not retain current IDs: %+v", execLive)
 			}
 		})
 	}
@@ -620,8 +640,8 @@ func TestPlanExecutionReconcilesApprovedAfterCompletionSaveFailure(t *testing.T)
 	_ = config.SaveState(statePath, state)
 	originalSave := savePlanningPlan
 	t.Cleanup(func() { savePlanningPlan = originalSave })
-	savePlanningPlan = func(string, config.Plan, ...config.PlanningValidationOption) (config.PlanningValidationResult, error) {
-		return config.PlanningValidationResult{}, errors.New("injected completion save failure")
+	savePlanningPlan = func(string, config.Plan, ...config.PlanningValidationOption) (string, config.PlanningValidationResult, error) {
+		return "", config.PlanningValidationResult{}, errors.New("injected completion save failure")
 	}
 	origin := queued.PendingCycle.BriefingOrigin
 	if _, err := queued.PlanCycleFinished(origin, origin.MilestoneID, "approved", nil); err == nil {
@@ -634,8 +654,10 @@ func TestPlanExecutionReconcilesApprovedAfterCompletionSaveFailure(t *testing.T)
 	}
 	planning, _ := config.LoadPlanningState(filepath.Join(root, ".cyclestone", "plans"), config.WithKnownMilestoneIDs([]string{"linked"}))
 	plan, _ := findPlan(planning, "completion-plan")
-	if plan.Briefings[0].Status != "completed" || plan.Execution.Checkpoint != "exhausted" {
-		t.Fatalf("approved completion was not reconciled: %+v", plan)
+	stComp, _ := config.LoadState(statePath)
+	execComp := stComp.GetPlanExecution("completion-plan")
+	if plan.Briefings[0].Status != "completed" || execComp.Checkpoint != "exhausted" {
+		t.Fatalf("approved completion was not reconciled: %+v exec=%+v", plan, execComp)
 	}
 }
 
@@ -668,7 +690,7 @@ func writePlanExecutionFixture(t *testing.T, milestones []config.Milestone, plan
 	for _, milestone := range milestones {
 		ids = append(ids, milestone.ID)
 	}
-	if validation, err := config.SavePlan(filepath.Join(cyclestoneDir, "plans"), plan, config.WithKnownMilestoneIDs(ids)); err != nil || validation.HasErrors() {
+	if _, validation, err := config.SavePlanToFolder(filepath.Join(cyclestoneDir, "plans"), plan, config.WithKnownMilestoneIDs(ids)); err != nil || validation.HasErrors() {
 		t.Fatalf("save Plan: %v %+v", err, validation)
 	}
 	return root, configPath, statePath
@@ -732,11 +754,16 @@ func assertStoppedPlanExecution(t *testing.T, root, planID, briefingID, mileston
 		t.Fatalf("reload stopped Plan: %+v", validation)
 	}
 	plan, ok := findPlan(planning, planID)
-	if !ok || plan.Execution == nil {
-		t.Fatalf("Plan %q or its execution checkpoint disappeared", planID)
+	if !ok {
+		t.Fatalf("Plan %q disappeared", planID)
 	}
-	if plan.Execution.State != "stopped" || plan.Execution.Checkpoint != "stopped" || plan.Execution.CurrentBriefingID != briefingID || plan.Execution.CurrentMilestoneID != milestoneID || !strings.Contains(plan.Execution.StopReason, reason) {
-		t.Fatalf("unexpected durable stop: %+v", plan.Execution)
+	st, _ := config.LoadState(filepath.Join(root, ".cyclestone", "state.json"))
+	exec := st.GetPlanExecution(planID)
+	if exec == nil {
+		t.Fatalf("Plan %q execution checkpoint disappeared from state", planID)
+	}
+	if exec.State != "stopped" || exec.Checkpoint != "stopped" || exec.CurrentBriefingID != briefingID || exec.CurrentMilestoneID != milestoneID || !strings.Contains(exec.StopReason, reason) {
+		t.Fatalf("unexpected durable stop: %+v", exec)
 	}
 	current, ok := findBriefing(plan, briefingID)
 	if !ok || current.Status != "active" {

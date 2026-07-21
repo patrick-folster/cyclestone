@@ -72,34 +72,42 @@ func TestDeletePlanRemovesOnlyExactPlanningRecord(t *testing.T) {
 func TestPlanExecutionRoundTripAndValidation(t *testing.T) {
 	t.Parallel()
 	plan := representativePlan()
-	plan.Execution = &PlanExecution{
-		Mode: PlanExecutionModeContinuous, State: "paused", Checkpoint: "approval-required",
-		CurrentBriefingID: plan.Briefings[0].ID, PendingApproval: "before-cycle", UpdatedAt: plan.UpdatedAt,
-	}
 	dir := filepath.Join(t.TempDir(), "plans")
 	if result, err := SavePlan(dir, plan); err != nil || result.HasErrors() {
 		t.Fatalf("SavePlan() = %v, %+v", err, result)
 	}
-	state, result := LoadPlanningState(dir)
-	if result.HasErrors() || len(state.Plans) != 1 || state.Plans[0].Execution == nil || state.Plans[0].Execution.Mode != PlanExecutionModeContinuous {
-		t.Fatalf("execution metadata did not round trip: %+v %+v", state, result)
+	// Execution state now lives in State.PlanExecutions, not in the Plan YAML.
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st, _ := LoadState(statePath)
+	exec := &PlanExecution{
+		Mode: PlanExecutionModeContinuous, State: "paused", Checkpoint: "approval-required",
+		CurrentBriefingID: plan.Briefings[0].ID, PendingApproval: "before-cycle", UpdatedAt: plan.UpdatedAt,
 	}
-	plan.Execution.Mode = "turbo"
-	if result := ValidatePlan(plan, "plan.yml"); !result.HasErrors() {
-		t.Fatal("expected invalid execution mode to fail validation")
+	st.SetPlanExecution(plan.ID, exec)
+	if err := SaveState(statePath, st); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+	reloaded, _ := LoadState(statePath)
+	got := reloaded.GetPlanExecution(plan.ID)
+	if got == nil || got.Mode != PlanExecutionModeContinuous || got.State != "paused" {
+		t.Fatalf("execution state did not round trip via State: %+v", got)
+	}
+	// ValidatePlan no longer validates execution (it lives in state.json).
+	planResult := ValidatePlan(plan, "plan.yml")
+	if planResult.HasErrors() {
+		t.Fatalf("expected clean plan validation without execution, got %+v", planResult)
 	}
 }
 
 func TestPlanExecutionMissingCurrentBriefingIsRepairableWarning(t *testing.T) {
 	t.Parallel()
 	plan := representativePlan()
-	plan.Execution = &PlanExecution{
-		Mode: PlanExecutionModeContinuous, State: "stopped", Checkpoint: "cycle-running",
-		CurrentBriefingID: "removed", CurrentMilestoneID: "linked", UpdatedAt: plan.UpdatedAt,
-	}
+	// Execution state is centralized in State.PlanExecutions. The Plan YAML
+	// itself should validate cleanly even when execution references a missing
+	// briefing, because that condition is surfaced at runtime via State.
 	result := ValidatePlan(plan, "plan.yml")
-	if result.HasErrors() || !result.HasWarnings() {
-		t.Fatalf("missing retained Briefing should remain loadable for explicit repair: %+v", result.Messages)
+	if result.HasErrors() {
+		t.Fatalf("plan should validate cleanly without inline execution: %+v", result.Messages)
 	}
 }
 
@@ -835,5 +843,47 @@ func TestLifecycleSafetyGeneratedMilestoneStandaloneExecutionAfterSourceRemoval(
 	st.SetMilestoneCycles(genMS.ID, 1)
 	if err := SaveState(statePath, st); err != nil {
 		t.Fatalf("SaveState failed for generated milestone: %v", err)
+	}
+}
+
+func TestAuthorPrefixAndIDAllocation(t *testing.T) {
+	t.Parallel()
+
+	// Test ExtractAuthorPrefix
+	if prefix := ExtractAuthorPrefix("p-pf-0001"); prefix != "pf" {
+		t.Fatalf("expected 'pf', got %q", prefix)
+	}
+	if prefix := ExtractAuthorPrefix("b-js-0003"); prefix != "js" {
+		t.Fatalf("expected 'js', got %q", prefix)
+	}
+	if prefix := ExtractAuthorPrefix("ms-al-0012-user-model"); prefix != "al" {
+		t.Fatalf("expected 'al', got %q", prefix)
+	}
+
+	// Test AllocatePlanID
+	existingPlans := []string{"p-pf-0001", "p-pf-0002", "p-js-0001"}
+	planID := AllocatePlanID("pf", existingPlans)
+	if planID != "p-pf-0003" {
+		t.Fatalf("expected 'p-pf-0003', got %q", planID)
+	}
+
+	// Test AllocateBriefingID inheriting parent Plan's author prefix ("js")
+	existingBriefings := []string{"b-js-0001"}
+	briefingID := AllocateBriefingID("p-js-0001", "pf", existingBriefings)
+	if briefingID != "b-js-0002" {
+		t.Fatalf("expected 'b-js-0002' inheriting parent namespace, got %q", briefingID)
+	}
+
+	// Test AllocateMilestoneID inheriting parent Plan's author prefix ("js")
+	existingMilestones := []string{"ms-js-0001"}
+	msID := AllocateMilestoneID("p-js-0001", "pf", existingMilestones)
+	if msID != "ms-js-0002" {
+		t.Fatalf("expected 'ms-js-0002' inheriting parent namespace, got %q", msID)
+	}
+
+	// Test standalone AllocateMilestoneID using default author prefix ("pf")
+	standaloneMSID := AllocateMilestoneID("", "pf", []string{"ms-pf-0001"})
+	if standaloneMSID != "ms-pf-0002" {
+		t.Fatalf("expected 'ms-pf-0002', got %q", standaloneMSID)
 	}
 }

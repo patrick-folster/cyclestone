@@ -439,7 +439,7 @@ func (m PreflightModel) content() string {
 		sb.WriteString(fmt.Sprintf("Proposal draft: %s\n", filepath.Join(".cyclestone", "temp", "AGENTS.md.proposed")))
 	}
 	sb.WriteString(fmt.Sprintf("State: %s\n", emptyFallback(m.StatePath, filepath.Join(".cyclestone", "state.json"))))
-	sb.WriteString(fmt.Sprintf("Config: %s\n", emptyFallback(m.ConfigPath, filepath.Join(".cyclestone", "milestone.yml"))))
+	sb.WriteString(fmt.Sprintf("Config: %s\n", emptyFallback(m.ConfigPath, filepath.Join(".cyclestone", "milestones"))))
 	sb.WriteString(fmt.Sprintf("Context size: %s\n", m.contextSizeText()))
 	sb.WriteString("Instruction sources:\n")
 	for _, source := range m.InstructionSources {

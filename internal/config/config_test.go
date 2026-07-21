@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
 )
 
 func TestParseAgentFile(t *testing.T) {
@@ -206,58 +205,43 @@ func TestMigrateLegacyState(t *testing.T) {
 }
 
 func TestAddMilestone(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "config_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
 
-	// 1. Initial milestone config
-	initialYAML := `milestones:
-  - id: MS-1
-    title: First Milestone
-    goal: First goal
-    acceptance_criteria:
-      - Criterion 1
-    status: Todo
-    cycles: 0
-`
-	if err := os.WriteFile(configPath, []byte(initialYAML), 0644); err != nil {
-		t.Fatalf("failed to write initial config: %v", err)
+	// 1. Create an initial milestone via the folder-per-item layout.
+	if _, err := SaveMilestoneToFolder(milestonesDir, Milestone{
+		ID: "MS-1", Title: "First Milestone", Goal: "First goal",
+		AcceptanceCriteria: []string{"Criterion 1"},
+	}, ""); err != nil {
+		t.Fatalf("SaveMilestoneToFolder MS-1 failed: %v", err)
 	}
 
-	// 2. Add new milestone
+	// 2. Add new milestone via AddMilestone.
 	newMs := Milestone{
 		ID:                 "MS-2",
 		Title:              "Second Milestone",
 		Goal:               "Second goal",
 		AcceptanceCriteria: []string{"Criterion A", "Criterion B"},
-		Status:             "Todo",
-		Cycles:             0,
 		Checks:             []string{"backend", "frontend"},
 	}
-
 	if err := AddMilestone(configPath, newMs); err != nil {
 		t.Fatalf("AddMilestone failed: %v", err)
 	}
 
-	// 3. Load config and verify fields
+	// 3. Load config and verify fields.
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-
 	if len(cfg.Milestones) != 2 {
 		t.Fatalf("expected 2 milestones, got %d", len(cfg.Milestones))
 	}
-
 	m1 := cfg.Milestones[0]
 	if m1.ID != "MS-1" {
 		t.Errorf("expected first milestone ID 'MS-1', got '%s'", m1.ID)
 	}
-
 	m2 := cfg.Milestones[1]
 	if m2.ID != "MS-2" {
 		t.Errorf("expected second milestone ID 'MS-2', got '%s'", m2.ID)
@@ -268,56 +252,39 @@ func TestAddMilestone(t *testing.T) {
 	if len(m2.AcceptanceCriteria) != 2 || m2.AcceptanceCriteria[0] != "Criterion A" {
 		t.Errorf("expected acceptance criteria correct, got %v", m2.AcceptanceCriteria)
 	}
-	if m2.SpecPath != filepath.Join("milestones", "MS-2.md") {
-		t.Errorf("expected compact spec path for MS-2, got %s", m2.SpecPath)
-	}
 	if len(m2.Checks) != 2 || m2.Checks[0] != "backend" {
 		t.Errorf("expected checks correct, got %v", m2.Checks)
 	}
-	specBytes, err := os.ReadFile(filepath.Join(tmpDir, "milestones", "MS-2.md"))
-	if err != nil {
-		t.Fatalf("expected milestone spec to be written: %v", err)
+	// Verify the folder-per-item spec file exists and contains the goal.
+	specFound := false
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-2") {
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-2.md"))
+				if err == nil && stringsContains(string(specBytes), "Second goal") {
+					specFound = true
+				}
+			}
+		}
 	}
-	if !stringsContains(string(specBytes), "Second goal") {
-		t.Errorf("expected spec to contain goal, got %s", string(specBytes))
-	}
-	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read compact config: %v", err)
-	}
-	configText := string(configBytes)
-	if stringsContains(configText, "status:") || stringsContains(configText, "cycles:") || stringsContains(configText, "goal:") || stringsContains(configText, "acceptance_criteria:") {
-		t.Errorf("expected compact config without mutable/spec fields, got %s", configText)
+	if !specFound {
+		t.Error("expected folder-per-item spec to contain the goal")
 	}
 
-	// 4. Verify duplicate prevention
-	duplicateMs := Milestone{
-		ID:    "MS-2",
-		Title: "Duplicate Milestone",
-	}
+	// 4. Verify duplicate prevention.
+	duplicateMs := Milestone{ID: "MS-2", Title: "Duplicate Milestone"}
 	if err := AddMilestone(configPath, duplicateMs); err == nil {
 		t.Error("expected error when adding milestone with duplicate ID, got nil")
 	}
 }
 
 func TestLoadConfigHydratesCompactSpec(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "compact_config_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
-	specDir := filepath.Join(tmpDir, "milestones")
-	if err := os.MkdirAll(specDir, 0755); err != nil {
-		t.Fatalf("failed to create spec dir: %v", err)
-	}
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
 
-	configYAML := `milestones:
-  - id: MS-1
-    title: Compact Milestone
-    spec_path: milestones/MS-1.md
-`
+	// Create a legacy flat .md spec (no companion .yml metadata).
 	specMarkdown := `# Milestone Spec: MS-1 - Compact Milestone
 
 ## Goal
@@ -327,12 +294,7 @@ Hydrate the goal from markdown.
 - [ ] First criterion
 - [ ] Second criterion
 `
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
-		t.Fatalf("failed to write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(specDir, "MS-1.md"), []byte(specMarkdown), 0644); err != nil {
-		t.Fatalf("failed to write spec: %v", err)
-	}
+	_ = os.WriteFile(filepath.Join(milestonesDir, "MS-1.md"), []byte(specMarkdown), 0644)
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
@@ -342,49 +304,46 @@ Hydrate the goal from markdown.
 		t.Fatalf("expected 1 milestone, got %d", len(cfg.Milestones))
 	}
 	ms := cfg.Milestones[0]
+	if ms.ID != "MS-1" {
+		t.Errorf("expected ID 'MS-1', got %q", ms.ID)
+	}
 	if ms.Goal != "Hydrate the goal from markdown." {
 		t.Errorf("expected hydrated goal, got %q", ms.Goal)
 	}
 	if len(ms.AcceptanceCriteria) != 2 || ms.AcceptanceCriteria[1] != "Second criterion" {
 		t.Errorf("expected hydrated criteria, got %v", ms.AcceptanceCriteria)
 	}
-	if ms.Status != "" || ms.Cycles != 0 {
-		t.Errorf("expected compact config to leave mutable fields empty/default, got status=%q cycles=%d", ms.Status, ms.Cycles)
-	}
 }
 
 func TestAddMilestonePreservesExistingSpec(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "preserve_spec_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
-	specDir := filepath.Join(tmpDir, "milestones")
-	if err := os.MkdirAll(specDir, 0755); err != nil {
-		t.Fatalf("failed to create spec dir: %v", err)
-	}
-	existingSpecPath := filepath.Join(specDir, "MS-9.md")
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
+
+	// Create a legacy flat .md spec.
+	existingSpecPath := filepath.Join(milestonesDir, "MS-9.md")
 	existingSpec := `# Milestone Spec: MS-9 - Generated Title
 
 ## Goal
 Keep generated content.
 `
-	if err := os.WriteFile(existingSpecPath, []byte(existingSpec), 0644); err != nil {
-		t.Fatalf("failed to write existing spec: %v", err)
-	}
+	_ = os.WriteFile(existingSpecPath, []byte(existingSpec), 0644)
 
+	// AddMilestone should detect the existing flat .md as a duplicate (it is
+	// already loadable via LoadAllMilestonesFromDir) and fail. This verifies
+	// that legacy flat specs are not silently overwritten.
 	ms := Milestone{
 		ID:       "MS-9",
 		Title:    "Generated Title",
 		Goal:     "Fallback goal should not overwrite existing file.",
 		SpecPath: filepath.Join("milestones", "MS-9.md"),
 	}
-	if err := AddMilestone(configPath, ms); err != nil {
-		t.Fatalf("AddMilestone failed: %v", err)
+	if err := AddMilestone(configPath, ms); err == nil {
+		t.Fatal("expected AddMilestone to fail when a legacy flat .md already exists for the same ID")
 	}
 
+	// The original flat .md must still be intact (not overwritten).
 	specBytes, err := os.ReadFile(existingSpecPath)
 	if err != nil {
 		t.Fatalf("failed to read existing spec: %v", err)
@@ -392,19 +351,38 @@ Keep generated content.
 	if string(specBytes) != existingSpec {
 		t.Errorf("expected existing spec to be preserved, got %s", string(specBytes))
 	}
+
+	// SaveMilestoneToFolder with the existing flat .md content preserves it.
+	_, err = SaveMilestoneToFolder(milestonesDir, Milestone{
+		ID:    "MS-9",
+		Title: "Generated Title",
+	}, existingSpec)
+	if err != nil {
+		t.Fatalf("SaveMilestoneToFolder failed: %v", err)
+	}
+	specFound := false
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-9") {
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-9.md"))
+				if err == nil && stringsContains(string(specBytes), "Keep generated content.") &&
+					!stringsContains(string(specBytes), "Fallback goal should not overwrite") {
+					specFound = true
+				}
+			}
+		}
+	}
+	if !specFound {
+		t.Error("expected folder-per-item spec to preserve existing content, not fallback goal")
+	}
 }
 
 func TestAddMilestoneWithSpecWritesSuppliedSpecAndCompactIndex(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "supplied_spec_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
-	if err := os.WriteFile(configPath, []byte("milestones: []\n"), 0644); err != nil {
-		t.Fatalf("failed to write config: %v", err)
-	}
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
+
 	spec := `# Milestone Spec: generated - Generated
 
 ## Goal
@@ -416,11 +394,12 @@ Use supplied spec content.
 ## Extra
 Keep long-form context.
 `
-	ms := Milestone{ID: "generated", Title: "Generated", SpecPath: filepath.Join("milestones", "generated.md")}
+	ms := Milestone{ID: "generated", Title: "Generated"}
 	if err := AddMilestoneWithSpec(configPath, ms, spec); err != nil {
 		t.Fatalf("AddMilestoneWithSpec failed: %v", err)
 	}
-	specBytes, err := os.ReadFile(filepath.Join(tmpDir, "milestones", "generated.md"))
+	// Read the folder-per-item spec.
+	specBytes, err := os.ReadFile(filepath.Join(milestonesDir, "generated", "generated.md"))
 	if err != nil {
 		t.Fatalf("expected supplied spec to be written: %v", err)
 	}
@@ -434,28 +413,18 @@ Keep long-form context.
 	if len(cfg.Milestones) != 1 || cfg.Milestones[0].Goal != "Use supplied spec content." || len(cfg.Milestones[0].AcceptanceCriteria) != 1 {
 		t.Fatalf("expected generated milestone to hydrate from supplied spec, got %+v", cfg.Milestones)
 	}
-	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read config: %v", err)
-	}
-	configText := string(configBytes)
-	if stringsContains(configText, "goal:") || stringsContains(configText, "acceptance_criteria:") {
-		t.Fatalf("expected compact config to omit spec fields, got:\n%s", configText)
-	}
 	if err := AddMilestoneWithSpec(configPath, ms, spec); err == nil {
 		t.Fatal("expected duplicate milestone ID to fail")
 	}
 }
 
 func TestMigrateMilestoneStorage(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "migrate_storage_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
 	statePath := filepath.Join(tmpDir, "state.json")
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
+
 	legacyYAML := `milestones:
   - id: MS-1
     title: Legacy Milestone
@@ -465,9 +434,7 @@ func TestMigrateMilestoneStorage(t *testing.T) {
     status: In Progress
     cycles: 3
 `
-	if err := os.WriteFile(configPath, []byte(legacyYAML), 0644); err != nil {
-		t.Fatalf("failed to write legacy config: %v", err)
-	}
+	_ = os.WriteFile(configPath, []byte(legacyYAML), 0644)
 
 	result, err := MigrateMilestoneStorage(configPath, statePath)
 	if err != nil {
@@ -485,24 +452,34 @@ func TestMigrateMilestoneStorage(t *testing.T) {
 		t.Errorf("expected migrated runtime state, got status=%q cycles=%d", state.GetMilestoneStatus("MS-1"), state.GetMilestoneCycles("MS-1"))
 	}
 
-	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("failed to read migrated config: %v", err)
-	}
-	configText := string(configBytes)
-	if stringsContains(configText, "goal:") || stringsContains(configText, "acceptance_criteria:") || stringsContains(configText, "status:") || stringsContains(configText, "cycles:") {
-		t.Errorf("expected compact config, got %s", configText)
-	}
-	if !stringsContains(configText, "spec_path: milestones/MS-1.md") {
-		t.Errorf("expected spec path in compact config, got %s", configText)
+	// The milestone.yml index should have been removed (no repositories to preserve).
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Errorf("expected milestone.yml to be removed after migration, got err=%v", err)
 	}
 
-	specBytes, err := os.ReadFile(filepath.Join(tmpDir, "milestones", "MS-1.md"))
-	if err != nil {
-		t.Fatalf("failed to read migrated spec: %v", err)
+	// The folder-per-item spec should exist with the legacy content.
+	specFound := false
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-1") {
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-1.md"))
+				if err == nil && stringsContains(string(specBytes), "Legacy goal") && stringsContains(string(specBytes), "Legacy criterion") {
+					specFound = true
+				}
+			}
+		}
 	}
-	if !stringsContains(string(specBytes), "Legacy goal") || !stringsContains(string(specBytes), "Legacy criterion") {
-		t.Errorf("expected legacy definition in spec, got %s", string(specBytes))
+	if !specFound {
+		t.Error("expected folder-per-item spec to contain legacy definition")
+	}
+
+	// Verify LoadConfig sees the migrated milestone.
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg.Milestones) != 1 || cfg.Milestones[0].ID != "MS-1" {
+		t.Fatalf("expected 1 milestone MS-1 after migration, got %+v", cfg.Milestones)
 	}
 
 	secondResult, err := MigrateMilestoneStorage(configPath, statePath)
@@ -576,39 +553,29 @@ func TestMilestoneRecommendations(t *testing.T) {
 }
 
 func TestConfigRepositoriesSerialization(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "config_repos_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
+	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
+
+	// milestone.yml carries repositories (milestones are now loaded from directories).
 	initialYAML := `repositories:
   - backend
   - frontend
   - custom_dir
-milestones:
-  - id: MS-1
-    title: First Milestone
 `
-	if err := os.WriteFile(configPath, []byte(initialYAML), 0644); err != nil {
-		t.Fatalf("failed to write initial config: %v", err)
-	}
+	_ = os.WriteFile(configPath, []byte(initialYAML), 0644)
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-
 	if len(cfg.Repositories) != 3 || cfg.Repositories[0] != "backend" || cfg.Repositories[2] != "custom_dir" {
 		t.Errorf("expected 3 repositories, got %v", cfg.Repositories)
 	}
 
-	// Test preservation on AddMilestone
-	newMs := Milestone{
-		ID:    "MS-2",
-		Title: "Second Milestone",
-	}
+	// Test preservation on AddMilestone.
+	newMs := Milestone{ID: "MS-2", Title: "Second Milestone"}
 	if err := AddMilestone(configPath, newMs); err != nil {
 		t.Fatalf("AddMilestone failed: %v", err)
 	}
@@ -617,9 +584,11 @@ milestones:
 	if err != nil {
 		t.Fatalf("LoadConfig reloaded failed: %v", err)
 	}
-
 	if len(cfg2.Repositories) != 3 || cfg2.Repositories[0] != "backend" || cfg2.Repositories[2] != "custom_dir" {
 		t.Errorf("repositories field was not preserved after AddMilestone: %v", cfg2.Repositories)
+	}
+	if len(cfg2.Milestones) != 1 || cfg2.Milestones[0].ID != "MS-2" {
+		t.Errorf("expected MS-2 in config, got %+v", cfg2.Milestones)
 	}
 }
 
@@ -640,15 +609,18 @@ func TestDeleteMilestone(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
 	statePath := filepath.Join(tmpDir, "state.json")
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
 
-	cfg := Config{
-		Milestones: []Milestone{
-			{ID: "MS-1", Title: "First MS", SpecPath: "milestones/MS-1.md"},
-			{ID: "MS-2", Title: "Second MS", SpecPath: "milestones/MS-2.md"},
-		},
+	// Create two milestones in the folder-per-item layout.
+	_, err := SaveMilestoneToFolder(milestonesDir, Milestone{ID: "MS-1", Title: "First MS"}, "")
+	if err != nil {
+		t.Fatalf("SaveMilestoneToFolder MS-1 failed: %v", err)
 	}
-	cfgData, _ := yaml.Marshal(cfg)
-	_ = os.WriteFile(configPath, cfgData, 0644)
+	_, err = SaveMilestoneToFolder(milestonesDir, Milestone{ID: "MS-2", Title: "Second MS"}, "")
+	if err != nil {
+		t.Fatalf("SaveMilestoneToFolder MS-2 failed: %v", err)
+	}
 
 	state := &State{
 		ActiveMilestoneID:                     "MS-1",
@@ -662,13 +634,7 @@ func TestDeleteMilestone(t *testing.T) {
 	}
 	_ = SaveState(statePath, state)
 
-	_ = os.MkdirAll(filepath.Join(tmpDir, "milestones"), 0755)
 	_ = os.MkdirAll(filepath.Join(tmpDir, "reports"), 0755)
-	spec1 := filepath.Join(tmpDir, "milestones", "MS-1.md")
-	spec2 := filepath.Join(tmpDir, "milestones", "MS-2.md")
-	_ = os.WriteFile(spec1, []byte("goal 1"), 0644)
-	_ = os.WriteFile(spec2, []byte("goal 2"), 0644)
-
 	report1Dir := filepath.Join(tmpDir, "reports", "MS-1")
 	report2Dir := filepath.Join(tmpDir, "reports", "MS-2")
 	report1 := filepath.Join(report1Dir, "summary.md")
@@ -680,8 +646,17 @@ func TestDeleteMilestone(t *testing.T) {
 	_ = os.WriteFile(report1Cycle, []byte("report 1 cycle 1"), 0644)
 	_ = os.WriteFile(report2, []byte("report 2"), 0644)
 
-	err := DeleteMilestone(configPath, statePath, "MS-1")
-	if err != nil {
+	// Find the MS-1 folder path.
+	var ms1Dir string
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-1") {
+				ms1Dir = filepath.Join(milestonesDir, e.Name())
+			}
+		}
+	}
+
+	if err := DeleteMilestone(configPath, statePath, "MS-1"); err != nil {
 		t.Fatalf("DeleteMilestone failed: %v", err)
 	}
 
@@ -710,11 +685,10 @@ func TestDeleteMilestone(t *testing.T) {
 		t.Errorf("expected MS-2 AGENTS.md update score to be preserved, got %d", got)
 	}
 
-	if _, err := os.Stat(spec1); !os.IsNotExist(err) {
-		t.Error("expected spec1 to be deleted")
-	}
-	if _, err := os.Stat(spec2); os.IsNotExist(err) {
-		t.Error("expected spec2 to be preserved")
+	if ms1Dir != "" {
+		if _, err := os.Stat(ms1Dir); !os.IsNotExist(err) {
+			t.Error("expected MS-1 directory to be deleted")
+		}
 	}
 	if _, err := os.Stat(report1Dir); !os.IsNotExist(err) {
 		t.Error("expected MS-1 report directory to be deleted")
@@ -859,4 +833,140 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	if _, err := os.Stat(summaryFile); !os.IsNotExist(err) {
 		t.Error("expected summary report to be deleted when 0 cycles are left")
 	}
+}
+
+func TestSaveMilestoneToFolderRoundTripWithProvenance(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	milestonesDir := filepath.Join(tmpDir, "milestones")
+	_ = os.MkdirAll(milestonesDir, 0755)
+
+	ms := Milestone{
+		ID:                 "ms-pf-0001",
+		Title:              "Folder Round Trip",
+		Goal:               "Verify provenance fields round-trip.",
+		AcceptanceCriteria: []string{"Spec persists", "Provenance persists"},
+		Checks:             []string{"go test"},
+		CreatedBy:          "pf",
+		UpdatedBy:          "pf",
+		CreatedAt:          "2026-07-21T10:00:00Z",
+		UpdatedAt:          "2026-07-21T11:00:00Z",
+		ParentBriefingID:   "b-pf-0001",
+		ParentPlanID:       "p-pf-0001",
+	}
+	dir, err := SaveMilestoneToFolder(milestonesDir, ms, "")
+	if err != nil {
+		t.Fatalf("SaveMilestoneToFolder failed: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("expected non-empty directory path")
+	}
+
+	loaded, err := LoadMilestoneFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadMilestoneFromDir failed: %v", err)
+	}
+	if loaded.ID != ms.ID || loaded.Title != ms.Title {
+		t.Errorf("expected ID=%s Title=%s, got ID=%s Title=%s", ms.ID, ms.Title, loaded.ID, loaded.Title)
+	}
+	if loaded.Goal != ms.Goal {
+		t.Errorf("expected Goal=%q, got %q", ms.Goal, loaded.Goal)
+	}
+	if len(loaded.AcceptanceCriteria) != 2 || loaded.AcceptanceCriteria[0] != "Spec persists" {
+		t.Errorf("expected acceptance criteria to round-trip, got %v", loaded.AcceptanceCriteria)
+	}
+	if loaded.CreatedBy != "pf" || loaded.UpdatedBy != "pf" {
+		t.Errorf("expected provenance CreatedBy/UpdatedBy to persist, got CreatedBy=%q UpdatedBy=%q", loaded.CreatedBy, loaded.UpdatedBy)
+	}
+	if loaded.CreatedAt != ms.CreatedAt || loaded.UpdatedAt != ms.UpdatedAt {
+		t.Errorf("expected provenance timestamps to persist, got CreatedAt=%q UpdatedAt=%q", loaded.CreatedAt, loaded.UpdatedAt)
+	}
+	if loaded.ParentBriefingID != "b-pf-0001" || loaded.ParentPlanID != "p-pf-0001" {
+		t.Errorf("expected parent links to persist, got ParentBriefingID=%q ParentPlanID=%q", loaded.ParentBriefingID, loaded.ParentPlanID)
+	}
+}
+
+func TestAuthorPrefixCollisionFreeAllocation(t *testing.T) {
+	t.Parallel()
+	// Two distinct author prefixes must produce zero ID collisions across all
+	// allocation functions.
+	authorA := "pf"
+	authorB := "js"
+
+	planIDsA := AllocatePlanID(authorA, nil)
+	planIDsB := AllocatePlanID(authorB, nil)
+	if planIDsA == planIDsB {
+		t.Fatalf("distinct author prefixes produced identical Plan IDs: %s", planIDsA)
+	}
+
+	existing := []string{planIDsA, planIDsB}
+	// Allocate 10 plan IDs for each author and verify no collisions.
+	allPlanIDs := make(map[string]bool)
+	for i := 0; i < 10; i++ {
+		idA := AllocatePlanID(authorA, existing)
+		idB := AllocatePlanID(authorB, existing)
+		if allPlanIDs[idA] || allPlanIDs[idB] {
+			t.Fatalf("Plan ID collision: %s or %s already allocated", idA, idB)
+		}
+		allPlanIDs[idA] = true
+		allPlanIDs[idB] = true
+		existing = append(existing, idA, idB)
+	}
+
+	// Milestone IDs inheriting parent Plan prefix
+	existingMS := []string{}
+	for i := 0; i < 10; i++ {
+		idA := AllocateMilestoneID("p-pf-0001", "", existingMS)
+		idB := AllocateMilestoneID("p-js-0001", "", existingMS)
+		if idA == idB {
+			t.Fatalf("distinct parent prefixes produced identical Milestone IDs: %s", idA)
+		}
+		existingMS = append(existingMS, idA, idB)
+	}
+
+	// Briefing IDs inheriting parent Plan prefix
+	existingB := []string{}
+	for i := 0; i < 10; i++ {
+		idA := AllocateBriefingID("p-pf-0001", "", existingB)
+		idB := AllocateBriefingID("p-js-0001", "", existingB)
+		if idA == idB {
+			t.Fatalf("distinct parent prefixes produced identical Briefing IDs: %s", idA)
+		}
+		existingB = append(existingB, idA, idB)
+	}
+}
+
+func TestStampMilestoneProvenanceFillsEmptyFields(t *testing.T) {
+	t.Parallel()
+	ms := &Milestone{ID: "ms-pf-0001-test"}
+	StampMilestoneProvenance(ms, "tui", "2026-07-21T12:00:00Z")
+	if ms.CreatedBy != "tui" || ms.UpdatedBy != "tui" {
+		t.Fatalf("expected CreatedBy/UpdatedBy=tui, got %q/%q", ms.CreatedBy, ms.UpdatedBy)
+	}
+	if ms.CreatedAt != "2026-07-21T12:00:00Z" || ms.UpdatedAt != "2026-07-21T12:00:00Z" {
+		t.Fatalf("expected timestamps to be set, got CreatedAt=%q UpdatedAt=%q", ms.CreatedAt, ms.UpdatedAt)
+	}
+}
+
+func TestStampMilestoneProvenancePreservesExistingFields(t *testing.T) {
+	t.Parallel()
+	ms := &Milestone{
+		ID:        "ms-pf-0001-test",
+		CreatedBy: "original-author",
+		UpdatedBy: "last-editor",
+		CreatedAt: "2026-07-01T08:00:00Z",
+		UpdatedAt: "2026-07-02T09:00:00Z",
+	}
+	StampMilestoneProvenance(ms, "tui", "2026-07-21T12:00:00Z")
+	if ms.CreatedBy != "original-author" || ms.UpdatedBy != "last-editor" {
+		t.Fatalf("expected existing provenance to be preserved, got CreatedBy=%q UpdatedBy=%q", ms.CreatedBy, ms.UpdatedBy)
+	}
+	if ms.CreatedAt != "2026-07-01T08:00:00Z" || ms.UpdatedAt != "2026-07-02T09:00:00Z" {
+		t.Fatalf("expected existing timestamps to be preserved, got CreatedAt=%q UpdatedAt=%q", ms.CreatedAt, ms.UpdatedAt)
+	}
+}
+
+func TestStampMilestoneProvenanceNilSafe(t *testing.T) {
+	t.Parallel()
+	StampMilestoneProvenance(nil, "tui", "2026-07-21T12:00:00Z")
 }

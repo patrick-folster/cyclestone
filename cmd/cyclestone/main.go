@@ -270,6 +270,7 @@ func runPlanList(configPath string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintln(stdout, "Plans:")
+	rtState, _ := config.LoadState(filepath.Join(filepath.Dir(configPath), "state.json"))
 	for _, plan := range state.Plans {
 		progress := planProgress(plan)
 		fmt.Fprintf(stdout, "- id: %s\n", plan.ID)
@@ -277,8 +278,10 @@ func runPlanList(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  status: %s\n", plan.Status)
 		fmt.Fprintf(stdout, "  briefings: %d\n", len(plan.Briefings))
 		fmt.Fprintf(stdout, "  progress: %s\n", progress.String())
-		if plan.Execution != nil {
-			fmt.Fprintf(stdout, "  execution: %s (%s, %s)\n", plan.Execution.State, plan.Execution.Mode, plan.Execution.Checkpoint)
+		if rtState != nil {
+			if exec := rtState.GetPlanExecution(plan.ID); exec != nil {
+				fmt.Fprintf(stdout, "  execution: %s (%s, %s)\n", exec.State, exec.Mode, exec.Checkpoint)
+			}
 		}
 	}
 	return commandStatusFromValidation(validation)
@@ -297,7 +300,12 @@ func runPlanShow(configPath, planID string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: Plan %q not found\n", planID)
 		return 1
 	}
-	printPlan(stdout, plan, milestoneIDs, buildMilestoneRelationIndex(state))
+	rtState, _ := config.LoadState(filepath.Join(filepath.Dir(configPath), "state.json"))
+	var exec *config.PlanExecution
+	if rtState != nil {
+		exec = rtState.GetPlanExecution(plan.ID)
+	}
+	printPlan(stdout, plan, milestoneIDs, buildMilestoneRelationIndex(state), exec)
 	return commandStatusFromValidation(validation)
 }
 
@@ -518,6 +526,7 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 	preview := flags.Bool("preview", false, "Print the generated Plan without writing it")
 	responseFile := flags.String("response-file", "", "Read structured generation response from a local file")
 	runnerCommand := flags.String("runner-command", "", "Shell command used to generate structured Plan JSON")
+	authorPrefix := flags.String("author-prefix", "", "Author prefix handle (e.g. pf, js)")
 	if !parsePlanningFlags(flags, args, stderr) {
 		return 1
 	}
@@ -561,6 +570,55 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", err)
 		return 1
 	}
+	// Always resolve the author prefix from merged (global+project) settings so
+	// the configured author_prefix (e.g. "pf") reaches AllocatePlanID even when
+	// only the global settings.yml carries it. An explicit --author-prefix flag
+	// takes precedence.
+	pref := strings.TrimSpace(*authorPrefix)
+	if pref == "" {
+		pref = config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+	}
+	// Collect existing plan and briefing IDs across the entire planning state
+	// so the allocated IDs are unique across all plans, not just the new one.
+	existingPlanIDs := make([]string, 0, len(ctx.state.Plans))
+	for _, p := range ctx.state.Plans {
+		existingPlanIDs = append(existingPlanIDs, p.ID)
+	}
+	newPlanID := config.AllocatePlanID(pref, existingPlanIDs) + "-" + config.PlanningSlug(plan.Title)
+	plan.ID = newPlanID
+	// Collect existing briefing IDs across all plans to avoid collisions.
+	existingBriefingIDs := make([]string, 0)
+	for _, p := range ctx.state.Plans {
+		for _, b := range p.Briefings {
+			existingBriefingIDs = append(existingBriefingIDs, b.ID)
+		}
+	}
+	// Map old briefing IDs to new prefixed IDs so DependsOn can be updated.
+	oldToNew := map[string]string{}
+	for i := range plan.Briefings {
+		bSlug := config.PlanningSlug(plan.Briefings[i].Title)
+		bID := config.AllocateBriefingID(plan.ID, pref, existingBriefingIDs)
+		if bSlug != "" {
+			bID = bID + "-" + bSlug
+		}
+		oldToNew[plan.Briefings[i].ID] = bID
+		existingBriefingIDs = append(existingBriefingIDs, bID)
+		plan.Briefings[i].ID = bID
+	}
+	// Update BriefingOrder and DependsOn to reference the new prefixed IDs.
+	plan.BriefingOrder = make([]string, 0, len(plan.Briefings))
+	for i := range plan.Briefings {
+		plan.BriefingOrder = append(plan.BriefingOrder, plan.Briefings[i].ID)
+		updatedDeps := make([]string, 0, len(plan.Briefings[i].DependsOn))
+		for _, dep := range plan.Briefings[i].DependsOn {
+			if newID, ok := oldToNew[dep]; ok {
+				updatedDeps = append(updatedDeps, newID)
+			} else {
+				updatedDeps = append(updatedDeps, dep)
+			}
+		}
+		plan.Briefings[i].DependsOn = updatedDeps
+	}
 	if _, exists := findPlan(ctx.state, plan.ID); exists {
 		fmt.Fprintf(stderr, "Error: generated Plan %q already exists\n", plan.ID)
 		return 1
@@ -582,14 +640,14 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 	}
 	if *preview {
 		fmt.Fprintf(stdout, "Generated Plan %q preview\n", plan.ID)
-		printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}))
+		printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}), nil)
 		return 0
 	}
 	if !savePlanForCommand(ctx, plan, stderr) {
 		return 1
 	}
 	fmt.Fprintf(stdout, "Plan %q generated\n", plan.ID)
-	printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}))
+	printPlan(stdout, plan, ctx.milestoneIDs, buildMilestoneRelationIndex(&config.PlanningState{Plans: []config.Plan{plan}}), nil)
 	return 0
 }
 
@@ -1436,9 +1494,40 @@ type briefingMilestoneResult struct {
 }
 
 var (
-	addPlanningMilestoneWithSpec   = config.AddMilestoneWithSpec
-	indexExistingPlanningMilestone = config.AddMilestone
+	addPlanningMilestoneWithSpec   = addPlanningMilestoneWithSpecFn
+	indexExistingPlanningMilestone = indexExistingPlanningMilestoneFn
 )
+
+// addPlanningMilestoneWithSpecFn creates a milestone via the folder-per-item layout
+// using the supplied spec Markdown, mirroring the legacy config.AddMilestoneWithSpec signature.
+func addPlanningMilestoneWithSpecFn(configPath string, milestone config.Milestone, spec string) error {
+	milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+	_, err := config.SaveMilestoneToFolder(milestonesDir, milestone, spec)
+	return err
+}
+
+// indexExistingPlanningMilestoneFn re-indexes an existing milestone via the folder-per-item
+// layout, mirroring the legacy config.AddMilestone signature.
+func indexExistingPlanningMilestoneFn(configPath string, milestone config.Milestone) error {
+	milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+	// Read the existing spec content if the flat .md exists.
+	specContent := ""
+	absSpec := filepath.Join(milestonesDir, milestone.ID+".md")
+	if data, err := os.ReadFile(absSpec); err == nil {
+		specContent = string(data)
+	}
+	if specContent == "" && milestone.SpecPath != "" {
+		alt := milestone.SpecPath
+		if !filepath.IsAbs(alt) {
+			alt = filepath.Join(filepath.Dir(configPath), alt)
+		}
+		if data, err := os.ReadFile(alt); err == nil {
+			specContent = string(data)
+		}
+	}
+	_, err := config.SaveMilestoneToFolder(milestonesDir, milestone, specContent)
+	return err
+}
 
 // prepareBriefingMilestone is the shared planning-layer resolver used by both
 // generation and execution. It never changes runtime state, reports, or branches.
@@ -1477,7 +1566,41 @@ func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req
 
 	targetID := strings.TrimSpace(req.targetID)
 	if targetID == "" {
-		targetID = uniquePlanningSlug(plan.ID+"-"+briefing.ID, map[string]bool{})
+		// Before allocating a new ms-<author>-NNNN[-slug] ID, check whether a
+		// milestone was already generated from this Briefing in a previous
+		// interrupted run. If the spec file exists on disk and contains the
+		// expected Briefing/Plan markers, reuse that ID so the recovery
+		// mechanism can reclaim it instead of generating a duplicate.
+		baseDir := filepath.Dir(configPath)
+		authorPref := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+		existingMilestoneIDs := planningMilestoneIDs(ctx)
+		expectedSlug := config.PlanningSlug(briefing.Title)
+		_ = expectedSlug // used for potential future matching refinement
+		for _, existingID := range existingMilestoneIDs {
+			specCandidate := filepath.Join(baseDir, "milestones", existingID, existingID+".md")
+			data, err := os.ReadFile(specCandidate)
+			if err != nil {
+				// Fall back to legacy flat .md path.
+				flatCandidate := filepath.Join(baseDir, "milestones", existingID+".md")
+				data, err = os.ReadFile(flatCandidate)
+				if err != nil {
+					continue
+				}
+			}
+			content := string(data)
+			if strings.Contains(content, fmt.Sprintf("Briefing `%s` in Plan `%s`", briefing.ID, plan.ID)) &&
+				strings.Contains(content, fmt.Sprintf("- Source Plan: `%s`", plan.ID)) &&
+				strings.Contains(content, fmt.Sprintf("- Source Briefing: `%s`", briefing.ID)) {
+				targetID = existingID
+				break
+			}
+		}
+		if targetID == "" {
+			targetID = config.AllocateMilestoneID(plan.ID, authorPref, existingMilestoneIDs)
+			if slug := config.PlanningSlug(briefing.Title); slug != "" {
+				targetID = targetID + "-" + slug
+			}
+		}
 	}
 	if !milestoneIDPattern.MatchString(targetID) {
 		return briefingMilestoneResult{}, fmt.Errorf("Milestone ID %q must use lowercase letters, numbers, and hyphens", targetID)
@@ -1490,12 +1613,37 @@ func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req
 	}
 
 	spec := buildBriefingMilestoneSpec(configPath, ctx, plan, briefing, targetID)
-	milestone := config.Milestone{ID: targetID, Title: briefing.Title, SpecPath: filepath.Join("milestones", targetID+".md")}
+	actor := strings.TrimSpace(req.actor)
+	if actor == "" {
+		actor = "planning"
+	}
+	now := planningTimestamp()
+	milestone := config.Milestone{
+		ID:               targetID,
+		Title:            briefing.Title,
+		SpecPath:         filepath.Join("milestones", targetID, targetID+".md"),
+		CreatedBy:        actor,
+		UpdatedBy:        actor,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ParentBriefingID: briefing.ID,
+		ParentPlanID:     plan.ID,
+	}
 	result := briefingMilestoneResult{Milestone: milestone, Spec: spec}
 	if req.preview {
 		return result, nil
 	}
-	absoluteSpecPath := filepath.Join(filepath.Dir(configPath), milestone.SpecPath)
+	// Resolve the spec path, checking the folder-per-item directory first, then
+	// the legacy flat .md path for interrupted pre-folder migrations.
+	baseDir := filepath.Dir(configPath)
+	absoluteSpecPath := filepath.Join(baseDir, "milestones", targetID, targetID+".md")
+	if _, err := os.Stat(absoluteSpecPath); err != nil {
+		// Fall back to legacy flat .md path.
+		flatPath := filepath.Join(baseDir, "milestones", targetID+".md")
+		if _, err := os.Stat(flatPath); err == nil {
+			absoluteSpecPath = flatPath
+		}
+	}
 	if ctx.milestoneIDs[targetID] {
 		if !req.allowActive || briefing.MilestoneID != "" {
 			return briefingMilestoneResult{}, fmt.Errorf("Milestone %q already exists", targetID)
@@ -1540,7 +1688,12 @@ func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req
 }
 
 func reclaimableBriefingMilestone(indexed, expected config.Milestone, specPath, planID, briefingID string) bool {
-	if indexed.ID != expected.ID || indexed.Title != expected.Title || filepath.Clean(indexed.SpecPath) != filepath.Clean(expected.SpecPath) {
+	if indexed.ID != expected.ID || indexed.Title != expected.Title {
+		return false
+	}
+	// Compare spec paths by base name to handle absolute vs relative path differences
+	// between legacy flat specs and folder-per-item layouts.
+	if filepath.Base(indexed.SpecPath) != filepath.Base(expected.SpecPath) {
 		return false
 	}
 	data, err := os.ReadFile(specPath)
@@ -1616,7 +1769,7 @@ func loadWritablePlanningContext(configPath string, stderr io.Writer) (planningC
 
 func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.Writer) bool {
 	milestoneIDs := planningMilestoneIDs(ctx)
-	validation, err := savePlanningPlan(ctx.plansDir, plan, config.WithKnownMilestoneIDs(milestoneIDs))
+	_, validation, err := savePlanningPlan(ctx.plansDir, plan, config.WithKnownMilestoneIDs(milestoneIDs))
 	printPlanningMessages(stderr, validation)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -1625,7 +1778,7 @@ func savePlanForCommand(ctx planningCommandContext, plan config.Plan, stderr io.
 	return true
 }
 
-var savePlanningPlan = config.SavePlan
+var savePlanningPlan = config.SavePlanToFolder
 
 func planningMilestoneIDs(ctx planningCommandContext) []string {
 	milestoneIDs := make([]string, 0, len(ctx.milestoneIDs))
@@ -2254,7 +2407,7 @@ func buildMilestoneRelationIndex(state *config.PlanningState) milestoneRelationI
 	return index
 }
 
-func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool, relations milestoneRelationIndex) {
+func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool, relations milestoneRelationIndex, exec *config.PlanExecution) {
 	fmt.Fprintf(w, "Plan: %s\n", plan.ID)
 	fmt.Fprintf(w, "Title: %s\n", plan.Title)
 	fmt.Fprintf(w, "Status: %s\n", plan.Status)
@@ -2262,21 +2415,21 @@ func printPlan(w io.Writer, plan config.Plan, milestoneIDs map[string]bool, rela
 	fmt.Fprintf(w, "Created: %s by %s\n", plan.CreatedAt, plan.CreatedBy)
 	fmt.Fprintf(w, "Updated: %s by %s\n", plan.UpdatedAt, plan.UpdatedBy)
 	fmt.Fprintf(w, "Progress: %s\n", planProgress(plan).String())
-	if plan.Execution != nil {
-		fmt.Fprintf(w, "Execution: %s\n", plan.Execution.State)
-		fmt.Fprintf(w, "Execution Mode: %s\n", plan.Execution.Mode)
-		fmt.Fprintf(w, "Checkpoint: %s\n", plan.Execution.Checkpoint)
-		if plan.Execution.CurrentBriefingID != "" {
-			fmt.Fprintf(w, "Current Briefing: %s\n", plan.Execution.CurrentBriefingID)
+	if exec != nil {
+		fmt.Fprintf(w, "Execution: %s\n", exec.State)
+		fmt.Fprintf(w, "Execution Mode: %s\n", exec.Mode)
+		fmt.Fprintf(w, "Checkpoint: %s\n", exec.Checkpoint)
+		if exec.CurrentBriefingID != "" {
+			fmt.Fprintf(w, "Current Briefing: %s\n", exec.CurrentBriefingID)
 		}
-		if plan.Execution.CurrentMilestoneID != "" {
-			fmt.Fprintf(w, "Current Milestone: %s\n", plan.Execution.CurrentMilestoneID)
+		if exec.CurrentMilestoneID != "" {
+			fmt.Fprintf(w, "Current Milestone: %s\n", exec.CurrentMilestoneID)
 		}
-		if plan.Execution.PendingApproval != "" {
-			fmt.Fprintf(w, "Pending Approval: %s\n", plan.Execution.PendingApproval)
+		if exec.PendingApproval != "" {
+			fmt.Fprintf(w, "Pending Approval: %s\n", exec.PendingApproval)
 		}
-		if plan.Execution.StopReason != "" {
-			fmt.Fprintf(w, "Stop Reason: %s\n", plan.Execution.StopReason)
+		if exec.StopReason != "" {
+			fmt.Fprintf(w, "Stop Reason: %s\n", exec.StopReason)
 		}
 	}
 	printStringList(w, "Constraints", plan.Constraints)

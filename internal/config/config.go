@@ -22,6 +22,14 @@ type Milestone struct {
 	Status             string   `yaml:"status,omitempty" json:"status,omitempty"` // legacy: runtime state now lives in state.json
 	Cycles             int      `yaml:"cycles,omitempty" json:"cycles,omitempty"` // legacy: runtime state now lives in state.json
 	Checks             []string `yaml:"checks,omitempty" json:"checks,omitempty"`
+
+	// Provenance fields for the folder-per-item layout.
+	CreatedBy         string `yaml:"created_by,omitempty" json:"created_by,omitempty"`
+	UpdatedBy         string `yaml:"updated_by,omitempty" json:"updated_by,omitempty"`
+	CreatedAt         string `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt         string `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+	ParentBriefingID  string `yaml:"parent_briefing_id,omitempty" json:"parent_briefing_id,omitempty"`
+	ParentPlanID      string `yaml:"parent_plan_id,omitempty" json:"parent_plan_id,omitempty"`
 }
 
 // Config wraps a collection of Milestones.
@@ -60,25 +68,228 @@ type AgentFrontmatter struct {
 	OutputContract string `yaml:"output_contract"`
 }
 
-// LoadConfig reads the milestone.yml file.
+// LoadConfig loads milestone configuration from the folder-per-item milestones
+// directory. Milestones are scanned exclusively from .cyclestone/milestones/
+// subdirectories (and legacy flat .md files) via LoadAllMilestonesFromDir.
+// The optional milestone.yml is read only for the Repositories list when present.
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Return a default config if it doesn't exist
-			return &Config{Milestones: []Milestone{}}, nil
-		}
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+
+	// Read repositories from the optional milestone.yml when it exists.
+	if data, err := os.ReadFile(path); err == nil {
+		var fileCfg Config
+		if err := yaml.Unmarshal(data, &fileCfg); err == nil {
+			cfg.Repositories = fileCfg.Repositories
+		}
 	}
 
-	hydrateMilestoneSpecs(path, &cfg)
+	// Load milestones exclusively from the directory scan.
+	milestonesDir := filepath.Join(filepath.Dir(path), "milestones")
+	milestones, err := LoadAllMilestonesFromDir(milestonesDir)
+	if err == nil {
+		cfg.Milestones = milestones
+	}
+	if cfg.Milestones == nil {
+		cfg.Milestones = []Milestone{}
+	}
+
+	sort.Slice(cfg.Milestones, func(i, j int) bool {
+		return cfg.Milestones[i].ID < cfg.Milestones[j].ID
+	})
 
 	return &cfg, nil
+}
+
+// LoadMilestoneFromDir loads a milestone from its folder directory (.cyclestone/milestones/ms-<author>-<seq>-<slug>/).
+func LoadMilestoneFromDir(dirPath string) (*Milestone, error) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read milestone directory %s: %w", dirPath, err)
+	}
+
+	var metaPath, specPath string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			metaPath = filepath.Join(dirPath, name)
+		} else if strings.HasSuffix(name, ".md") {
+			specPath = filepath.Join(dirPath, name)
+		}
+	}
+
+	if metaPath == "" {
+		return nil, fmt.Errorf("no metadata .yml file found in milestone directory %s", dirPath)
+	}
+
+	metaData, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read milestone metadata file %s: %w", metaPath, err)
+	}
+
+	var ms Milestone
+	if err := yaml.Unmarshal(metaData, &ms); err != nil {
+		return nil, fmt.Errorf("failed to parse milestone metadata %s: %w", metaPath, err)
+	}
+
+	if specPath != "" {
+		ms.SpecPath = specPath
+		specBytes, err := os.ReadFile(specPath)
+		if err == nil {
+			goal, criteria := parseMilestoneSpecMarkdown(string(specBytes))
+			if goal != "" {
+				ms.Goal = goal
+			}
+			if len(criteria) > 0 {
+				ms.AcceptanceCriteria = criteria
+			}
+		}
+	}
+
+	return &ms, nil
+}
+
+// SaveMilestoneToFolder saves a Milestone into a folder-per-item structure
+// under baseMilestonesDir. When specContent is non-empty it is written verbatim
+// as the .md spec; otherwise formatMilestoneSpec(ms) is used.
+func SaveMilestoneToFolder(baseMilestonesDir string, ms Milestone, specContent string) (string, error) {
+	if strings.TrimSpace(ms.ID) == "" {
+		return "", fmt.Errorf("milestone ID cannot be empty")
+	}
+
+	// Use the milestone ID as the stable directory name so title edits do
+	// not create orphan directories.
+	dirPath := filepath.Join(baseMilestonesDir, ms.ID)
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create milestone directory %s: %w", dirPath, err)
+	}
+
+	shortID := ms.ID
+	metaPath := filepath.Join(dirPath, shortID+".yml")
+	specPath := filepath.Join(dirPath, shortID+".md")
+
+	ms.SpecPath = specPath
+
+	metaBytes, err := yaml.Marshal(ms)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal milestone metadata: %w", err)
+	}
+	if err := os.WriteFile(metaPath, metaBytes, 0644); err != nil {
+		return "", fmt.Errorf("failed to write milestone metadata %s: %w", metaPath, err)
+	}
+
+	if strings.TrimSpace(specContent) == "" {
+		specContent = formatMilestoneSpec(ms)
+	}
+	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write milestone spec %s: %w", specPath, err)
+	}
+
+	return dirPath, nil
+}
+
+// StampMilestoneProvenance fills empty provenance fields on a Milestone before
+// it is persisted. It is a defensive helper so that future call sites cannot
+// accidentally save a Milestone without CreatedBy/UpdatedBy/CreatedAt/UpdatedAt.
+// If the fields are already populated they are left untouched.
+func StampMilestoneProvenance(ms *Milestone, actor, now string) {
+	if ms == nil {
+		return
+	}
+	if actor == "" {
+		actor = "unknown"
+	}
+	if ms.CreatedBy == "" {
+		ms.CreatedBy = actor
+	}
+	if ms.UpdatedBy == "" {
+		ms.UpdatedBy = actor
+	}
+	if ms.CreatedAt == "" {
+		ms.CreatedAt = now
+	}
+	if ms.UpdatedAt == "" {
+		ms.UpdatedAt = now
+	}
+}
+
+// LoadAllMilestonesFromDir scans a milestones directory for folder-per-item
+// milestone subdirectories and legacy flat .md spec files.
+func LoadAllMilestonesFromDir(milestonesDir string) ([]Milestone, error) {
+	entries, err := os.ReadDir(milestonesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var milestones []Milestone
+	seenIDs := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirPath := filepath.Join(milestonesDir, entry.Name())
+			ms, err := LoadMilestoneFromDir(dirPath)
+			if err == nil && ms != nil && ms.ID != "" && !seenIDs[ms.ID] {
+				milestones = append(milestones, *ms)
+				seenIDs[ms.ID] = true
+			}
+			continue
+		}
+		// Legacy flat .md spec file (no companion .yml metadata).
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		ms := loadLegacyFlatMilestone(filepath.Join(milestonesDir, name))
+		if ms != nil && ms.ID != "" && !seenIDs[ms.ID] {
+			milestones = append(milestones, *ms)
+			seenIDs[ms.ID] = true
+		}
+	}
+
+	sort.Slice(milestones, func(i, j int) bool {
+		return milestones[i].ID < milestones[j].ID
+	})
+
+	return milestones, nil
+}
+
+// loadLegacyFlatMilestone parses a legacy flat .md milestone spec file into a
+// Milestone by extracting the ID and title from the H1 header and the
+// goal/criteria from the markdown body. The SpecPath is set relative to the
+// milestones directory.
+func loadLegacyFlatMilestone(mdPath string) *Milestone {
+	data, err := os.ReadFile(mdPath)
+	if err != nil {
+		return nil
+	}
+	content := string(data)
+	ms := Milestone{SpecPath: mdPath}
+	// Parse H1 header: "# Milestone Spec: <id> - <title>"
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+			// Strip "Milestone Spec: " prefix if present
+			rest = strings.TrimPrefix(rest, "Milestone Spec: ")
+			// Split on " - " to get ID and title
+			idx := strings.Index(rest, " - ")
+			if idx > 0 {
+				ms.ID = strings.TrimSpace(rest[:idx])
+				ms.Title = strings.TrimSpace(rest[idx+3:])
+			} else {
+				ms.ID = strings.TrimSpace(rest)
+			}
+			break
+		}
+	}
+	goal, criteria := parseMilestoneSpecMarkdown(content)
+	ms.Goal = goal
+	ms.AcceptanceCriteria = criteria
+	return &ms
 }
 
 // GenerateDefaultConfig creates an empty milestone index for a new project.
@@ -89,20 +300,33 @@ func GenerateDefaultConfig(path string) error {
 	return os.WriteFile(path, []byte("milestones: []\n"), 0644)
 }
 
-// InitializeMilestonesConfig creates the default config and companion milestones directory.
+// InitializeMilestonesConfig creates the .cyclestone/milestones/ and
+// .cyclestone/plans/ directories. It no longer generates a legacy milestone.yml index file.
 func InitializeMilestonesConfig(path string) error {
-	if err := GenerateDefaultConfig(path); err != nil {
+	baseDir := filepath.Dir(path)
+	if err := os.MkdirAll(filepath.Join(baseDir, "milestones"), 0755); err != nil {
 		return err
 	}
-	return os.MkdirAll(filepath.Join(filepath.Dir(path), "milestones"), 0755)
+	return os.MkdirAll(filepath.Join(baseDir, "plans"), 0755)
 }
 
-// MigrateMilestoneStorage moves legacy milestone definitions into compact index entries.
+// MigrateMilestoneStorage migrates legacy milestone.yml index entries and flat
+// .md specs into the folder-per-item layout. It reads any legacy milestone
+// definitions from milestone.yml, writes them as folder-per-item
+// <id>/<id>.yml + <id>.md pairs, copies runtime state, and then removes the
+// milestone.yml index. Milestones already present as folder-per-item
+// directories are left untouched.
 func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationResult, error) {
 	var result MilestoneMigrationResult
 
+	baseDir := filepath.Dir(configPath)
+	milestonesDir := filepath.Join(baseDir, "milestones")
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
 		return result, fmt.Errorf("failed to read config file: %w", err)
 	}
 	var cfg Config
@@ -116,29 +340,38 @@ func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationRe
 		return result, err
 	}
 
-	for i := range cfg.Milestones {
-		ms := cfg.Milestones[i]
+	// Determine which IDs already exist as folder-per-item directories.
+	existing, _ := LoadAllMilestonesFromDir(milestonesDir)
+	existingIDs := make(map[string]bool, len(existing))
+	for _, m := range existing {
+		existingIDs[m.ID] = true
+	}
+
+	for _, ms := range cfg.Milestones {
+		if existingIDs[ms.ID] {
+			continue
+		}
+		// Read the legacy flat .md spec if it exists.
+		specContent := ""
 		specPath := ms.SpecPath
 		if specPath == "" {
 			specPath = filepath.Join("milestones", ms.ID+".md")
-			result.Changed = true
 		}
-		writePath := specPath
-		if !filepath.IsAbs(writePath) {
-			writePath = filepath.Join(filepath.Dir(configPath), writePath)
+		absSpec := specPath
+		if !filepath.IsAbs(absSpec) {
+			absSpec = filepath.Join(baseDir, specPath)
 		}
-		if _, err := os.Stat(writePath); os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
-				return result, fmt.Errorf("failed to create milestone spec directory: %w", err)
-			}
-			if err := os.WriteFile(writePath, []byte(formatMilestoneSpec(ms)), 0644); err != nil {
-				return result, fmt.Errorf("failed to write milestone spec: %w", err)
-			}
-			result.SpecsCreated++
-			result.Changed = true
-		} else if err != nil {
-			return result, fmt.Errorf("failed to inspect milestone spec: %w", err)
+		if specBytes, err := os.ReadFile(absSpec); err == nil {
+			specContent = string(specBytes)
 		}
+		if specContent == "" {
+			specContent = formatMilestoneSpec(ms)
+		}
+		if _, err := SaveMilestoneToFolder(milestonesDir, ms, specContent); err != nil {
+			return result, fmt.Errorf("failed to migrate milestone %s: %w", ms.ID, err)
+		}
+		result.SpecsCreated++
+		result.Changed = true
 
 		if ms.Status != "" {
 			if _, exists := state.MilestoneStatuses[ms.ID]; !exists {
@@ -154,11 +387,6 @@ func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationRe
 				result.Changed = true
 			}
 		}
-
-		if ms.Goal != "" || len(ms.AcceptanceCriteria) > 0 || ms.Status != "" || ms.Cycles != 0 {
-			result.Changed = true
-		}
-		cfg.Milestones[i] = compactMilestoneIndex(ms, specPath)
 	}
 
 	if !result.Changed {
@@ -167,12 +395,20 @@ func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationRe
 	if err := SaveState(statePath, state); err != nil {
 		return result, err
 	}
-	compactData, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return result, fmt.Errorf("failed to marshal compact milestone config: %w", err)
-	}
-	if err := os.WriteFile(configPath, compactData, 0644); err != nil {
-		return result, fmt.Errorf("failed to write compact milestone config: %w", err)
+	// Remove the legacy milestone.yml index now that all entries are in the
+	// folder-per-item layout. Preserve a milestone.yml that only contains
+	// repositories by rewriting it without the milestones key.
+	if repoData, rerr := os.ReadFile(configPath); rerr == nil {
+		var rcfg Config
+		if yaml.Unmarshal(repoData, &rcfg) == nil {
+			rcfg.Milestones = nil
+			if len(rcfg.Repositories) > 0 {
+				compactData, _ := yaml.Marshal(&rcfg)
+				_ = os.WriteFile(configPath, compactData, 0644)
+			} else {
+				_ = os.Remove(configPath)
+			}
+		}
 	}
 	return result, nil
 }
@@ -384,54 +620,36 @@ func parseMilestoneSpecMarkdown(content string) (string, []string) {
 	return strings.TrimSpace(strings.Join(goalLines, "\n")), criteria
 }
 
-// AddMilestone saves a compact milestone index entry to milestone.yml.
+// AddMilestone persists a milestone through the folder-per-item layout,
+// producing a <id>/<id>.yml + <id>.md pair under the milestones directory.
 func AddMilestone(configPath string, ms Milestone) error {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return err
 	}
-
-	// Prevent duplicate IDs
 	for _, m := range cfg.Milestones {
 		if m.ID == ms.ID {
 			return fmt.Errorf("milestone ID %s already exists", ms.ID)
 		}
 	}
-
-	specPath := ms.SpecPath
-	if specPath == "" {
-		specPath = filepath.Join("milestones", ms.ID+".md")
-	}
-	writePath := specPath
-	if !filepath.IsAbs(writePath) {
-		writePath = filepath.Join(filepath.Dir(configPath), writePath)
-	}
-	if _, err := os.Stat(writePath); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
-			return fmt.Errorf("failed to create milestone spec directory: %w", err)
+	milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+	// If a legacy flat .md spec already exists, preserve its content.
+	specContent := ""
+	if ms.SpecPath != "" {
+		absSpec := ms.SpecPath
+		if !filepath.IsAbs(absSpec) {
+			absSpec = filepath.Join(filepath.Dir(configPath), absSpec)
 		}
-		if err := os.WriteFile(writePath, []byte(formatMilestoneSpec(ms)), 0644); err != nil {
-			return fmt.Errorf("failed to write milestone spec: %w", err)
+		if data, err := os.ReadFile(absSpec); err == nil {
+			specContent = string(data)
 		}
-	} else if err != nil {
-		return fmt.Errorf("failed to inspect milestone spec: %w", err)
 	}
-
-	cfg.Milestones = append(cfg.Milestones, compactMilestoneIndex(ms, specPath))
-	if err := compactMilestoneConfig(configPath, cfg); err != nil {
-		return err
-	}
-
-	// Marshall and rewrite
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, data, 0644)
+	_, err = SaveMilestoneToFolder(milestonesDir, ms, specContent)
+	return err
 }
 
-// AddMilestoneWithSpec writes supplied milestone spec Markdown and indexes the
-// milestone through the same compact milestone.yml behavior as AddMilestone.
+// AddMilestoneWithSpec persists a milestone with the supplied spec Markdown
+// through the folder-per-item layout, producing a <id>/<id>.yml + <id>.md pair.
 func AddMilestoneWithSpec(configPath string, ms Milestone, specMarkdown string) error {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
@@ -442,37 +660,24 @@ func AddMilestoneWithSpec(configPath string, ms Milestone, specMarkdown string) 
 			return fmt.Errorf("milestone ID %s already exists", ms.ID)
 		}
 	}
-
-	specPath := ms.SpecPath
-	if specPath == "" {
-		specPath = filepath.Join("milestones", ms.ID+".md")
+	milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+	// Check for an existing spec in the folder-per-item layout.
+	folderName := ms.ID
+	slug := PlanningSlug(ms.Title)
+	if slug != "" && !strings.Contains(folderName, slug) {
+		folderName = folderName + "-" + slug
 	}
-	writePath := specPath
-	if !filepath.IsAbs(writePath) {
-		writePath = filepath.Join(filepath.Dir(configPath), writePath)
+	existingDir := filepath.Join(milestonesDir, folderName)
+	if _, err := os.Stat(existingDir); err == nil {
+		return fmt.Errorf("milestone spec %s already exists", ms.ID)
 	}
-	if _, err := os.Stat(writePath); err == nil {
-		return fmt.Errorf("milestone spec %s already exists", specPath)
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to inspect milestone spec: %w", err)
+	// Also check legacy flat .md path.
+	legacyPath := filepath.Join(milestonesDir, ms.ID+".md")
+	if _, err := os.Stat(legacyPath); err == nil {
+		return fmt.Errorf("milestone spec %s already exists", ms.ID)
 	}
-	if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
-		return fmt.Errorf("failed to create milestone spec directory: %w", err)
-	}
-	if err := os.WriteFile(writePath, []byte(specMarkdown), 0644); err != nil {
-		return fmt.Errorf("failed to write milestone spec: %w", err)
-	}
-
-	ms.SpecPath = specPath
-	cfg.Milestones = append(cfg.Milestones, compactMilestoneIndex(ms, specPath))
-	if err := compactMilestoneConfig(configPath, cfg); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, data, 0644)
+	_, err = SaveMilestoneToFolder(milestonesDir, ms, specMarkdown)
+	return err
 }
 
 func compactMilestoneConfig(configPath string, cfg *Config) error {
@@ -540,35 +745,26 @@ func formatMilestoneSpec(ms Milestone) string {
 	return sb.String()
 }
 
-// DeleteMilestone removes a milestone from config and state files, and cleans up specs and reports.
+// DeleteMilestone removes a milestone's folder-per-item directory (or legacy
+// flat .md spec), cleans up state entries, and removes report artifacts. It no
+// longer rewrites milestone.yml.
 func DeleteMilestone(configPath, statePath, milestoneID string) error {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return err
 	}
 
-	foundIdx := -1
+	found := false
 	var specPath string
-	for i, ms := range cfg.Milestones {
+	for _, ms := range cfg.Milestones {
 		if ms.ID == milestoneID {
-			foundIdx = i
+			found = true
 			specPath = ms.SpecPath
 			break
 		}
 	}
-	if foundIdx == -1 {
+	if !found {
 		return fmt.Errorf("milestone %s not found in config", milestoneID)
-	}
-
-	cfg.Milestones = append(cfg.Milestones[:foundIdx], cfg.Milestones[foundIdx+1:]...)
-
-	// Save compact config back to disk
-	cfgData, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(configPath, cfgData, 0644); err != nil {
-		return err
 	}
 
 	// Load and update state
@@ -602,16 +798,33 @@ func DeleteMilestone(configPath, statePath, milestoneID string) error {
 		return err
 	}
 
-	// Remove spec file
-	if specPath != "" {
-		absSpecPath := specPath
-		if !filepath.IsAbs(absSpecPath) {
-			absSpecPath = filepath.Join(filepath.Dir(configPath), specPath)
+	// Remove the milestone directory or legacy flat spec.
+	milestonesDir := filepath.Join(filepath.Dir(configPath), "milestones")
+	removed := false
+	if entries, err := os.ReadDir(milestonesDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), milestoneID) {
+				_ = os.RemoveAll(filepath.Join(milestonesDir, entry.Name()))
+				removed = true
+				break
+			}
 		}
-		_ = os.Remove(absSpecPath)
-	} else {
-		// Try fallback default
-		_ = os.Remove(filepath.Join(filepath.Dir(configPath), "milestones", milestoneID+".md"))
+	}
+	if !removed {
+		// Try legacy flat .md path or specPath
+		candidates := []string{
+			filepath.Join(milestonesDir, milestoneID+".md"),
+		}
+		if specPath != "" {
+			absSpec := specPath
+			if !filepath.IsAbs(absSpec) {
+				absSpec = filepath.Join(filepath.Dir(configPath), specPath)
+			}
+			candidates = append(candidates, absSpec)
+		}
+		for _, c := range candidates {
+			_ = os.Remove(c)
+		}
 	}
 
 	// Remove milestone-owned report artifacts.

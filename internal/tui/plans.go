@@ -73,8 +73,10 @@ func (m *PlansModel) UpdateTableRows() {
 			briefingsProgress := fmt.Sprintf("%d/%d", completedCount, len(plan.Briefings))
 
 			executionState := "-"
-			if plan.Execution != nil && plan.Execution.State != "" {
-				executionState = plan.Execution.State
+			if m.State != nil {
+				if exec := m.State.GetPlanExecution(plan.ID); exec != nil && exec.State != "" {
+					executionState = exec.State
+				}
 			}
 
 			title := plan.Title
@@ -521,8 +523,10 @@ func (m PlanDetailsModel) View() string {
 	progressStr := fmt.Sprintf("Briefings: %d/%d completed", completed, len(m.Plan.Briefings))
 
 	execStr := "Execution: none"
-	if m.Plan.Execution != nil && m.Plan.Execution.State != "" {
-		execStr = fmt.Sprintf("Execution: %s", m.Plan.Execution.State)
+	if m.State != nil {
+		if exec := m.State.GetPlanExecution(m.Plan.ID); exec != nil && exec.State != "" {
+			execStr = fmt.Sprintf("Execution: %s", exec.State)
+		}
 	}
 
 	statusBadge := renderStatusTag(m.Styles, m.Plan.Status)

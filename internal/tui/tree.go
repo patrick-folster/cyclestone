@@ -93,9 +93,16 @@ func buildPlanNode(plan config.Plan, msMap map[string]config.Milestone, st *conf
 		title = plan.ID
 	}
 
+	var execState string
+	if st != nil {
+		if exec := st.GetPlanExecution(plan.ID); exec != nil {
+			execState = exec.State
+		}
+	}
+
 	text := fmt.Sprintf("Plan: %s - %s [%s] (briefings: %d/%d)", plan.ID, title, formatStatus(plan.Status), completedCount, totalCount)
-	if plan.Execution != nil {
-		text += fmt.Sprintf(" [execution: %s]", plan.Execution.State)
+	if execState != "" {
+		text += fmt.Sprintf(" [execution: %s]", execState)
 	}
 
 	var styled string
@@ -106,8 +113,8 @@ func buildPlanNode(plan config.Plan, msMap map[string]config.Milestone, st *conf
 			renderStatusTag(opts.Styles, plan.Status),
 			opts.Styles.SubtleText.Render(fmt.Sprintf("(briefings: %d/%d)", completedCount, totalCount)),
 		)
-		if plan.Execution != nil {
-			styled += " " + opts.Styles.WarningText.Render(fmt.Sprintf("[execution: %s]", plan.Execution.State))
+		if execState != "" {
+			styled += " " + opts.Styles.WarningText.Render(fmt.Sprintf("[execution: %s]", execState))
 		}
 	} else {
 		styled = text

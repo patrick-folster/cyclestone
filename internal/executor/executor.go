@@ -739,7 +739,7 @@ func updateCycleSummaryReport(milestoneID string, latest int, reportsDir string)
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Milestone Cycle Summary: %s\n\n", milestoneID))
-	sb.WriteString(fmt.Sprintf("- Milestone file: .cyclestone/milestones/%s.md\n", milestoneID))
+	sb.WriteString(fmt.Sprintf("- Milestone ID: %s\n", milestoneID))
 	sb.WriteString(fmt.Sprintf("- Latest cycle: %03d\n", latest))
 	sb.WriteString(fmt.Sprintf("- Updated: %s\n", time.Now().Format("2006-01-02 15:04:05 -0700")))
 	sb.WriteString("\n## Cycle History\n\n")
@@ -1989,7 +1989,7 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 	}
 	fmt.Fprintf(reportFile, "cycle: %s\n", yamlQuote(cyclePadded))
 	fmt.Fprintf(reportFile, "cycle_mode: %s\n", yamlQuote(cycleMode))
-	fmt.Fprintf(reportFile, "milestone_file: %s\n", yamlQuote(fmt.Sprintf(".cyclestone/milestones/%s.md", milestoneID)))
+	fmt.Fprintf(reportFile, "milestone_file: %s\n", yamlQuote(milestoneID))
 	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(cycleArtifacts(filepath.Join(".cyclestone", "reports"), milestoneID, cycleNum).Summary))
 	if previousReportPath != "" {
 		fmt.Fprintf(reportFile, "previous_cycle_report: %s\n", yamlQuote(previousReportPath))

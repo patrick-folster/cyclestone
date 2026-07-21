@@ -43,7 +43,8 @@ type State struct {
 	MilestoneCycles                       map[string]int                 `json:"milestone_cycles"`   // milestone ID -> cycle count
 	MilestoneRecommendations              map[string]int                 `json:"milestone_recommendations"`
 	MilestoneAgentInstructionUpdateScores map[string]int                 `json:"milestone_agent_instruction_update_scores"`
-	History                               map[string][]MilestoneCycleLog `json:"history"` // milestone ID -> list of cycles
+	PlanExecutions                        map[string]*PlanExecution      `json:"plan_executions,omitempty"` // plan ID -> execution state
+	History                               map[string][]MilestoneCycleLog `json:"history"`                   // milestone ID -> list of cycles
 }
 
 // LoadState reads the state.json tracking file and migrates legacy formats if necessary.
@@ -57,6 +58,7 @@ func LoadState(path string) (*State, error) {
 				MilestoneCycles:                       make(map[string]int),
 				MilestoneRecommendations:              make(map[string]int),
 				MilestoneAgentInstructionUpdateScores: make(map[string]int),
+				PlanExecutions:                        make(map[string]*PlanExecution),
 				History:                               make(map[string][]MilestoneCycleLog),
 			}, nil
 		}
@@ -500,4 +502,34 @@ func firstCycleReportSignal(details string) string {
 		}
 	}
 	return ""
+}
+
+// GetPlanExecution retrieves the runtime execution state for a plan ID.
+func (s *State) GetPlanExecution(planID string) *PlanExecution {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.PlanExecutions == nil {
+		return nil
+	}
+	exec := s.PlanExecutions[planID]
+	if exec == nil {
+		return nil
+	}
+	cp := *exec
+	return &cp
+}
+
+// SetPlanExecution updates or removes runtime execution state for a plan ID.
+func (s *State) SetPlanExecution(planID string, exec *PlanExecution) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PlanExecutions == nil {
+		s.PlanExecutions = make(map[string]*PlanExecution)
+	}
+	if exec == nil {
+		delete(s.PlanExecutions, planID)
+	} else {
+		cp := *exec
+		s.PlanExecutions[planID] = &cp
+	}
 }

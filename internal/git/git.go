@@ -129,7 +129,9 @@ type EmbeddedRepoWarning struct {
 	Path string
 }
 
-// ConfigPath is the configurable path to the milestone YAML configuration.
+// ConfigPath is the configurable path to the milestone configuration.
+// Milestones are now loaded from the folder-per-item .cyclestone/milestones/
+// directory; this path is used only for the optional repositories list.
 var ConfigPath = ".cyclestone/milestone.yml"
 
 // GetTrackedRepos returns all configured, worktree-discovered, and submodule git/non-git directories.

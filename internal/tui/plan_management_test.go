@@ -390,8 +390,8 @@ func TestPlanPersistenceFailuresRemainInMutationScreen(t *testing.T) {
 	model := NewRootModel(&config.Config{}, &config.State{}, configPath, "", true, false, true, true)
 
 	originalSave := savePlanningPlan
-	savePlanningPlan = func(string, config.Plan, ...config.PlanningValidationOption) (config.PlanningValidationResult, error) {
-		return config.PlanningValidationResult{}, errors.New("injected save failure")
+	savePlanningPlan = func(string, config.Plan, ...config.PlanningValidationOption) (string, config.PlanningValidationResult, error) {
+		return "", config.PlanningValidationResult{}, errors.New("injected save failure")
 	}
 	model.ActiveScreen = ScreenCreatePlan
 	updated, _ := model.Update(CreatePlanMsg{ID: "failed-plan", Title: "Failed", Objective: "Do not write"})
@@ -469,12 +469,12 @@ func TestPlanMutationsBlockInvalidExistingFilesAndReportReloadFailures(t *testin
 	if got.ActiveScreen != ScreenCreatePlan || !strings.Contains(got.CreatePlan.ErrorMsg, "Plan was saved") {
 		t.Fatalf("post-save reload failure was not reported truthfully: %q", got.CreatePlan.ErrorMsg)
 	}
-	if _, err := os.Stat(filepath.Join(plansDir, "saved-plan.yml")); err != nil {
+	if _, err := os.Stat(filepath.Join(plansDir, "saved-plan", "saved-plan.yml")); err != nil {
 		t.Fatalf("successfully saved Plan disappeared after reload failure: %v", err)
 	}
 
 	deleteTarget := testEmptyPlan("reload-delete", "Reload Delete")
-	if _, err := config.SavePlan(plansDir, deleteTarget); err != nil {
+	if _, _, err := config.SavePlanToFolder(plansDir, deleteTarget); err != nil {
 		t.Fatal(err)
 	}
 	model = NewRootModel(&config.Config{}, &config.State{}, configPath, "", true, false, true, true)
