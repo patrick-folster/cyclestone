@@ -14,13 +14,15 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
 	"github.com/patrick-folster/cyclestone/internal/executor"
 	"github.com/patrick-folster/cyclestone/internal/tui"
+	"github.com/patrick-folster/cyclestone/resources"
 )
+
+
 
 const maxPlanGenerationContextChars = 120000
 const maxBriefingMilestoneContextChars = 120000
@@ -505,22 +507,9 @@ func runPlanCreate(args []string, configPath string, stdout, stderr io.Writer) i
 	return 0
 }
 
-type generatedPlanResponse struct {
-	Title       string                      `json:"title"`
-	Objective   string                      `json:"objective"`
-	Constraints []string                    `json:"constraints"`
-	Briefings   []generatedBriefingResponse `json:"briefings"`
-}
+type generatedPlanResponse = config.GeneratedPlanResponse
+type generatedBriefingResponse = config.GeneratedBriefingResponse
 
-type generatedBriefingResponse struct {
-	Title            string   `json:"title"`
-	Objective        string   `json:"objective"`
-	Intent           string   `json:"intent"`
-	CompletionSignal string   `json:"completion_signal"`
-	Constraints      []string `json:"constraints"`
-	DependsOn        []string `json:"depends_on"`
-	MilestoneID      string   `json:"milestone_id"`
-}
 
 func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer) int {
 	flags := newPlanningFlagSet("plan generate", stderr)
@@ -1648,172 +1637,40 @@ func planningMilestoneIDs(ctx planningCommandContext) []string {
 }
 
 func parseGeneratedPlanResponse(text string) (generatedPlanResponse, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return generatedPlanResponse{}, fmt.Errorf("response is empty")
-	}
-	if strings.HasPrefix(text, "```") {
-		lines := strings.Split(text, "\n")
-		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
-			text = strings.Join(lines[1:len(lines)-1], "\n")
-		}
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end < start {
-		return generatedPlanResponse{}, fmt.Errorf("response must contain one JSON object")
-	}
-	var response generatedPlanResponse
-	decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&response); err != nil {
-		return generatedPlanResponse{}, err
-	}
-	return response, nil
+
+
+	return config.ParseGeneratedPlanResponse(text)
 }
 
 func convertGeneratedPlan(goal string, response generatedPlanResponse, actor, now string) (config.Plan, error) {
-	if actor == "" {
-		actor = "ai-plan-generator"
-	}
-	title := strings.TrimSpace(response.Title)
-	if title == "" {
-		title = strings.TrimSpace(goal)
-	}
-	planID := planningSlug(title)
-	if planID == "" {
-		return config.Plan{}, fmt.Errorf("title cannot produce a valid Plan ID")
-	}
-	objective := strings.TrimSpace(response.Objective)
-	if objective == "" {
-		return config.Plan{}, fmt.Errorf("objective is required")
-	}
-	plan := config.Plan{
-		SchemaVersion: config.PlanningSchemaVersion,
-		ID:            planID,
-		Title:         title,
-		Objective:     objective,
-		Status:        "active",
-		CreatedAt:     now,
-		CreatedBy:     actor,
-		UpdatedAt:     now,
-		UpdatedBy:     actor,
-		Constraints:   cleanStringList(response.Constraints),
-		BriefingOrder: []string{},
-		Briefings:     []config.Briefing{},
-	}
-	if len(response.Briefings) == 0 {
-		return config.Plan{}, fmt.Errorf("at least one briefing is required")
-	}
-
-	usedIDs := map[string]bool{}
-	dependencyAliases := map[string]string{}
-	for _, generated := range response.Briefings {
-		briefingTitle := strings.TrimSpace(generated.Title)
-		if briefingTitle == "" {
-			return config.Plan{}, fmt.Errorf("briefing title is required")
-		}
-		briefingID := uniquePlanningSlug(briefingTitle, usedIDs)
-		if briefingID == "" {
-			return config.Plan{}, fmt.Errorf("briefing title %q cannot produce a valid ID", briefingTitle)
-		}
-		usedIDs[briefingID] = true
-		dependencyAliases[briefingID] = briefingID
-		dependencyAliases[strings.ToLower(briefingTitle)] = briefingID
-		dependencyAliases[planningSlug(briefingTitle)] = briefingID
-		plan.Briefings = append(plan.Briefings, config.Briefing{
-			ID:               briefingID,
-			Title:            briefingTitle,
-			Objective:        strings.TrimSpace(generated.Objective),
-			Intent:           strings.TrimSpace(generated.Intent),
-			Status:           "active",
-			CompletionSignal: strings.TrimSpace(generated.CompletionSignal),
-			CreatedAt:        now,
-			CreatedBy:        actor,
-			UpdatedAt:        now,
-			UpdatedBy:        actor,
-			Constraints:      cleanStringList(generated.Constraints),
-			MilestoneID:      strings.TrimSpace(generated.MilestoneID),
-		})
-		plan.BriefingOrder = append(plan.BriefingOrder, briefingID)
-	}
-
-	for index, generated := range response.Briefings {
-		if strings.TrimSpace(generated.MilestoneID) != "" {
-			return config.Plan{}, fmt.Errorf("briefing %q must not include milestone_id", plan.Briefings[index].Title)
-		}
-		for _, dependency := range cleanStringList(generated.DependsOn) {
-			key := dependency
-			if mapped, ok := dependencyAliases[key]; ok {
-				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
-				continue
-			}
-			if mapped, ok := dependencyAliases[strings.ToLower(key)]; ok {
-				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
-				continue
-			}
-			if mapped, ok := dependencyAliases[planningSlug(key)]; ok {
-				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
-				continue
-			}
-			return config.Plan{}, fmt.Errorf("briefing %q depends on unknown Briefing %q", plan.Briefings[index].Title, dependency)
-		}
-	}
-	return plan, nil
-}
-
-func cleanStringList(values []string) []string {
-	var cleaned []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			cleaned = append(cleaned, value)
-		}
-	}
-	return cleaned
-}
-
-func uniquePlanningSlug(title string, used map[string]bool) string {
-	base := planningSlug(title)
-	if base == "" {
-		return ""
-	}
-	if !used[base] {
-		return base
-	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if !used[candidate] {
-			return candidate
-		}
-	}
+	return config.ConvertGeneratedPlan(goal, response, actor, now)
 }
 
 func planningSlug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastHyphen := false
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastHyphen = false
-		case unicode.IsLetter(r), unicode.IsDigit(r):
-			continue
-		default:
-			if !lastHyphen && b.Len() > 0 {
-				b.WriteByte('-')
-				lastHyphen = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
+	return config.PlanningSlug(value)
 }
+
+func cleanStringList(values []string) []string {
+	return config.CleanStringList(values)
+}
+
+func uniquePlanningSlug(title string, used map[string]bool) string {
+	return config.UniquePlanningSlug(title, used)
+}
+
 
 func buildPlanGenerationPrompt(configPath, goal string) string {
 	root := filepath.Dir(filepath.Dir(configPath))
 	var sb strings.Builder
 	sb.WriteString("# Cyclestone Plan Generation\n\n")
+	if resources.PlanCreatorPrompt != "" {
+		prompt := resources.PlanCreatorPrompt
+		prompt = strings.ReplaceAll(prompt, "{{GOAL}}", goal)
+		prompt = strings.ReplaceAll(prompt, "{{TITLE}}", "")
+		prompt = strings.ReplaceAll(prompt, "{{PLAN_ID}}", "")
+		sb.WriteString(prompt)
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("Generate one reviewable Cyclestone Plan from the user goal. Return only one JSON object matching this contract:\n\n")
 	sb.WriteString(`{"title":"Plan title","objective":"Plan objective","constraints":["optional"],"briefings":[{"title":"Briefing title","objective":"Briefing objective","intent":"Why this matters","completion_signal":"Observable done signal","constraints":["optional"],"depends_on":["same Plan briefing title or id"]}]}`)
 	sb.WriteString("\n\nRules:\n")
@@ -1831,6 +1688,8 @@ func buildPlanGenerationPrompt(configPath, goal string) string {
 	appendGenerationTrackedStructure(&sb, root)
 	return limitPlanGenerationContext(sb.String())
 }
+
+
 
 func appendGenerationContextFile(sb *strings.Builder, root, rel string) {
 	data, err := os.ReadFile(filepath.Join(root, rel))

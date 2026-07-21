@@ -584,6 +584,72 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.CreatePlan.ErrorMsg = "Cannot create a Plan without a project configuration path."
 			return m, nil
 		}
+
+		if msg.CreateBranch {
+			settings := config.LoadMergedSettings()
+			prefix := settings.DefaultGitBranchPrefix
+			if prefix == "" {
+				prefix = "cyclestone/plans/"
+			}
+			branchName := prefix + msg.ID
+			repos := git.GetTrackedRepos()
+			for _, repo := range repos {
+				_ = git.CheckoutOrCreateBranchInDir(repo.Path, branchName)
+			}
+		}
+
+		if msg.RunnerType != "" && msg.RunnerType != "template" && msg.RunnerType != "manual" {
+
+			if err := os.MkdirAll(plansDir, 0755); err != nil {
+				m.CreatePlan.ErrorMsg = fmt.Sprintf("Error creating plans directory: %v", err)
+				return m, nil
+			}
+
+			m.CreatePlan.Loading = true
+			m.CreatePlan.Logs = nil
+
+			absRoot, err := filepath.Abs(".")
+			if err != nil {
+				absRoot = "."
+			}
+
+			prompt := resources.PlanCreatorPrompt
+			prompt = strings.ReplaceAll(prompt, "{{PLAN_ID}}", msg.ID)
+			prompt = strings.ReplaceAll(prompt, "{{TITLE}}", msg.Title)
+			prompt = strings.ReplaceAll(prompt, "{{GOAL}}", msg.Objective)
+
+			rootInfo := fmt.Sprintf("\n## Repository Information\n\nRepository root: %s\n\n", absRoot)
+			prompt = rootInfo + prompt
+
+			safetyRules := strings.ReplaceAll(resources.SafetyRules, "root (`.`)", fmt.Sprintf("root (`%s`)", absRoot))
+			safetyRules = strings.ReplaceAll(safetyRules, "outside the root `.`", fmt.Sprintf("outside the root `%s`", absRoot))
+			safetyRules = strings.ReplaceAll(safetyRules, "workspace root (`.`)", fmt.Sprintf("workspace root (`%s`)", absRoot))
+			prompt += "\n\n## Workspace Safety Rules\n\n" + safetyRules + "\n\n"
+
+			ctx, cancel := context.WithCancel(context.Background())
+
+			opts := executor.RunOptions{
+				ConfigPath:     m.ConfigPath,
+				StatePath:      m.StatePath,
+				NoBranchChange: m.NoBranchChange,
+				Unrestricted:   m.Unrestricted,
+			}
+
+			for len(m.MsgChan) > 0 {
+				<-m.MsgChan
+			}
+
+			go func() {
+				defer cancel()
+				executor.ExecutePlanCreation(ctx, msg.RunnerType, prompt, opts, m.MsgChan, msg.ID, msg.Title)
+			}()
+
+			return m, tea.Batch(
+				m.CreatePlan.Spinner.Tick,
+				m.ListenForExecutorMessages(),
+			)
+		}
+
 		now := time.Now().UTC().Format(time.RFC3339)
 		plan := config.Plan{
 			SchemaVersion: config.PlanningSchemaVersion,
@@ -619,18 +685,6 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if msg.CreateBranch {
-			settings := config.LoadMergedSettings()
-			prefix := settings.DefaultGitBranchPrefix
-			if prefix == "" {
-				prefix = "cyclestone/plans/"
-			}
-			branchName := prefix + msg.ID
-			repos := git.GetTrackedRepos()
-			for _, repo := range repos {
-				_ = git.CheckoutOrCreateBranchInDir(repo.Path, branchName)
-			}
-		}
 		planning, reloadValidation := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
 		if reloadValidation.HasErrors() {
 			m.CreatePlan.ErrorMsg = "Plan was saved, but reloading planning data failed: " + firstPlanningError(reloadValidation)
@@ -642,6 +696,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.StatusMsg = fmt.Sprintf("Created Plan %s successfully.", plan.ID)
 		m.StatusTime = time.Now()
 		return m, nil
+
 
 	case DeletePlanMsg:
 		plansDir, ok := m.plansDirectory()
@@ -1069,7 +1124,68 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		continuationCmd := m.finishBriefingExecution(msg)
 		return m, tea.Batch(rCmd, continuationCmd)
 
+	case executor.CreatePlanProgressMsg:
+		m.CreatePlan.Logs = append(m.CreatePlan.Logs, msg.LogLine)
+		return m, m.ListenForExecutorMessages()
+
+	case executor.CreatePlanFinishedMsg:
+		m.CreatePlan.Loading = false
+		if msg.Error != nil {
+			m.CreatePlan.ErrorMsg = fmt.Sprintf("Error creating plan: %v", msg.Error)
+			return m, nil
+		}
+		plansDir, ok := m.plansDirectory()
+		if !ok {
+			m.CreatePlan.ErrorMsg = "Cannot locate plans directory after creation."
+			return m, nil
+		}
+
+		targetPlanID := m.CreatePlan.effectivePlanID()
+		planning, _ := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		var loadedPlan *config.Plan
+		for i := range planning.Plans {
+			if targetPlanID != "" && planning.Plans[i].ID == targetPlanID {
+				loadedPlan = &planning.Plans[i]
+				break
+			}
+		}
+
+		if (loadedPlan == nil || len(loadedPlan.Briefings) == 0) && strings.TrimSpace(msg.Output) != "" {
+			generated, err := config.ParseGeneratedPlanResponse(msg.Output)
+			if err == nil {
+				now := time.Now().UTC().Format(time.RFC3339)
+				goal := m.CreatePlan.ObjectiveInput.Value()
+				if targetPlanID == "" {
+					targetPlanID = config.PlanningSlug(generated.Title)
+				}
+				plan, err2 := config.ConvertGeneratedPlan(goal, generated, "ai-plan-generator", now)
+				if err2 == nil {
+					if targetPlanID != "" {
+						plan.ID = targetPlanID
+					}
+					savePlanningPlan(plansDir, plan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+					planning, _ = loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+				}
+			}
+		}
+
+
+		m.syncPlanning(planning)
+		if len(planning.Plans) > 0 {
+			if targetPlanID != "" {
+				m.Plans.SelectPlan(targetPlanID)
+			} else {
+				m.Plans.SelectPlan(planning.Plans[len(planning.Plans)-1].ID)
+			}
+		}
+		m.ActiveScreen = ScreenPlans
+		m.StatusMsg = "Plan generated successfully."
+		m.StatusTime = time.Now()
+		return m, nil
+
+
 	case executor.CreateMilestoneProgressMsg:
+
 		m.CreateMilestone.Logs = append(m.CreateMilestone.Logs, msg.LogLine)
 		return m, m.ListenForExecutorMessages()
 

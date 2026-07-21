@@ -50,6 +50,7 @@ Thumbs.db
 # Cyclestone runtime files
 .cyclestone/milestones
 .cyclestone/reports
+.cyclestone/plans
 .cyclestone/temp
 .cyclestone/milestone.yml
 .cyclestone/state.json

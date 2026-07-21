@@ -754,6 +754,64 @@ func TestMilestoneCreationRejectsUnsupportedRunner(t *testing.T) {
 	}
 }
 
+func TestPlanCreationSizeGuardEnforced(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	settings := config.Settings{
+		MaxLLMInputChars: 1000,
+	}
+	if err := config.SaveProjectSettings(settings); err != nil {
+		t.Fatalf("failed to save project settings: %v", err)
+	}
+
+	ch := make(chan tea.Msg, 1)
+	prompt := strings.Repeat("x", 1001)
+
+	ExecutePlanCreation(context.Background(), "codex", prompt, RunOptions{}, ch, "plan-size", "Oversized Plan")
+
+	msg := <-ch
+	finished, ok := msg.(CreatePlanFinishedMsg)
+	if !ok {
+		t.Fatalf("expected CreatePlanFinishedMsg, got %T", msg)
+	}
+	if finished.Error == nil || !strings.Contains(finished.Error.Error(), "above codex safety limit") {
+		t.Fatalf("expected input size guard error, got %v", finished.Error)
+	}
+}
+
+func TestPlanCreationRejectsUnsupportedRunner(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current wd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change wd: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+
+	ch := make(chan tea.Msg, 1)
+	ExecutePlanCreation(context.Background(), "gemini", "prompt", RunOptions{}, ch, "plan-unsupported", "Unsupported Plan")
+
+	msg := <-ch
+	finished, ok := msg.(CreatePlanFinishedMsg)
+	if !ok {
+		t.Fatalf("expected CreatePlanFinishedMsg, got %T", msg)
+	}
+	if finished.Error == nil || !strings.Contains(finished.Error.Error(), "unsupported runner: gemini") {
+		t.Fatalf("expected unsupported runner error, got %v", finished.Error)
+	}
+}
+
+
 func TestWriteGitContextAndDefaultChecksUseDiscoveredRepos(t *testing.T) {
 	origWd, err := os.Getwd()
 	if err != nil {

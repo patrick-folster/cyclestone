@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+
 
 const PlanningSchemaVersion = 1
 
@@ -916,4 +919,211 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// GeneratedPlanResponse is the structured schema produced by AI Plan generation.
+type GeneratedPlanResponse struct {
+	Title       string                      `json:"title" yaml:"title"`
+	Objective   string                      `json:"objective" yaml:"objective"`
+	Constraints []string                    `json:"constraints,omitempty" yaml:"constraints,omitempty"`
+	Briefings   []GeneratedBriefingResponse `json:"briefings" yaml:"briefings"`
+}
+
+// GeneratedBriefingResponse is a Briefing item inside an AI-generated Plan proposal.
+type GeneratedBriefingResponse struct {
+	Title            string   `json:"title" yaml:"title"`
+	Objective        string   `json:"objective" yaml:"objective"`
+	Intent           string   `json:"intent" yaml:"intent"`
+	CompletionSignal string   `json:"completion_signal" yaml:"completion_signal"`
+	Constraints      []string `json:"constraints,omitempty" yaml:"constraints,omitempty"`
+	DependsOn        []string `json:"depends_on,omitempty" yaml:"depends_on,omitempty"`
+	MilestoneID      string   `json:"milestone_id,omitempty" yaml:"milestone_id,omitempty"`
+}
+
+// ParseGeneratedPlanResponse parses a raw JSON or YAML response into a GeneratedPlanResponse struct.
+func ParseGeneratedPlanResponse(text string) (GeneratedPlanResponse, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return GeneratedPlanResponse{}, fmt.Errorf("response is empty")
+	}
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+			text = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start >= 0 && end > start {
+		var response GeneratedPlanResponse
+		decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&response); err == nil {
+			return response, nil
+		}
+	}
+	var response GeneratedPlanResponse
+	if err := yaml.Unmarshal([]byte(text), &response); err == nil && (response.Title != "" || response.Objective != "" || len(response.Briefings) > 0) {
+		return response, nil
+	}
+	return GeneratedPlanResponse{}, fmt.Errorf("response must contain one JSON object")
+}
+
+// ConvertGeneratedPlan converts a GeneratedPlanResponse into a valid Plan model.
+func ConvertGeneratedPlan(goal string, response GeneratedPlanResponse, actor, now string) (Plan, error) {
+	if actor == "" {
+		actor = "ai-plan-generator"
+	}
+	title := strings.TrimSpace(response.Title)
+	if title == "" {
+		title = strings.TrimSpace(goal)
+	}
+	planID := PlanningSlug(title)
+	if planID == "" {
+		return Plan{}, fmt.Errorf("title cannot produce a valid Plan ID")
+	}
+	objective := strings.TrimSpace(response.Objective)
+	if objective == "" {
+		return Plan{}, fmt.Errorf("objective is required")
+	}
+	plan := Plan{
+		SchemaVersion: PlanningSchemaVersion,
+		ID:            planID,
+		Title:         title,
+		Objective:     objective,
+		Status:        "active",
+		CreatedAt:     now,
+		CreatedBy:     actor,
+		UpdatedAt:     now,
+		UpdatedBy:     actor,
+		Constraints:   cleanStringList(response.Constraints),
+		BriefingOrder: []string{},
+		Briefings:     []Briefing{},
+	}
+	if len(response.Briefings) == 0 {
+		return Plan{}, fmt.Errorf("at least one briefing is required")
+	}
+
+	usedIDs := map[string]bool{}
+	dependencyAliases := map[string]string{}
+	for _, generated := range response.Briefings {
+		briefingTitle := strings.TrimSpace(generated.Title)
+		if briefingTitle == "" {
+			return Plan{}, fmt.Errorf("briefing title is required")
+		}
+		briefingID := uniquePlanningSlug(briefingTitle, usedIDs)
+		if briefingID == "" {
+			return Plan{}, fmt.Errorf("briefing title %q cannot produce a valid ID", briefingTitle)
+		}
+		usedIDs[briefingID] = true
+		dependencyAliases[briefingID] = briefingID
+		dependencyAliases[strings.ToLower(briefingTitle)] = briefingID
+		dependencyAliases[PlanningSlug(briefingTitle)] = briefingID
+		plan.Briefings = append(plan.Briefings, Briefing{
+			ID:               briefingID,
+			Title:            briefingTitle,
+			Objective:        strings.TrimSpace(generated.Objective),
+			Intent:           strings.TrimSpace(generated.Intent),
+			Status:           "active",
+			CompletionSignal: strings.TrimSpace(generated.CompletionSignal),
+			CreatedAt:        now,
+			CreatedBy:        actor,
+			UpdatedAt:        now,
+			UpdatedBy:        actor,
+			Constraints:      cleanStringList(generated.Constraints),
+			MilestoneID:      strings.TrimSpace(generated.MilestoneID),
+		})
+		plan.BriefingOrder = append(plan.BriefingOrder, briefingID)
+	}
+
+	for index, generated := range response.Briefings {
+		if strings.TrimSpace(generated.MilestoneID) != "" {
+			return Plan{}, fmt.Errorf("briefing %q must not include milestone_id", plan.Briefings[index].Title)
+		}
+		for _, dependency := range cleanStringList(generated.DependsOn) {
+			key := dependency
+			if mapped, ok := dependencyAliases[key]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			if mapped, ok := dependencyAliases[strings.ToLower(key)]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			if mapped, ok := dependencyAliases[PlanningSlug(key)]; ok {
+				plan.Briefings[index].DependsOn = appendMissing(plan.Briefings[index].DependsOn, mapped)
+				continue
+			}
+			return Plan{}, fmt.Errorf("briefing %q depends on unknown Briefing %q", plan.Briefings[index].Title, dependency)
+		}
+	}
+	return plan, nil
+}
+
+// PlanningSlug converts a title or string into a lowercase hyphenated planning slug.
+func PlanningSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func uniquePlanningSlug(title string, used map[string]bool) string {
+	base := PlanningSlug(title)
+	if base == "" {
+		base = "briefing"
+	}
+	if !used[base] {
+		return base
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// CleanStringList removes empty and whitespace-only strings from a slice.
+func CleanStringList(values []string) []string {
+	return cleanStringList(values)
+}
+
+// UniquePlanningSlug derives a unique planning slug from title avoiding used IDs.
+func UniquePlanningSlug(title string, used map[string]bool) string {
+	return uniquePlanningSlug(title, used)
+}
+
+func cleanStringList(values []string) []string {
+	var cleaned []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
+}
+
+
+func appendMissing(list []string, item string) []string {
+	for _, existing := range list {
+		if existing == item {
+			return list
+		}
+	}
+	return append(list, item)
 }

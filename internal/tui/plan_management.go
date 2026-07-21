@@ -3,7 +3,9 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,8 +41,11 @@ type CreatePlanModel struct {
 	TitleInput     textinput.Model
 	ObjectiveInput textarea.Model
 	RunnerType     string
-	DefaultLLM    string
+	DefaultLLM     string
 	CreateBranch   bool
+	Loading        bool
+	Logs           []string
+	Spinner        spinner.Model
 	Form           FormModel
 	FocusIndex     int
 	Width          int
@@ -81,6 +86,13 @@ func NewCreatePlanModel(styles Styles) CreatePlanModel {
 	titleInput := newInput("Plan title (optional, auto-generated if empty)", 160)
 	idInput := newInput("Plan ID (optional, auto-generated if empty)", 80)
 
+	s := spinner.New()
+	s.Spinner = spinner.Spinner{
+		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		FPS:    80 * time.Millisecond,
+	}
+	s.Style = styles.Spinner
+
 	form := NewFormModel(styles)
 	form.FocusOrder = []int{0, 1, 2, 3, 4, 5, 6}
 	form.BindTextArea(0)
@@ -95,6 +107,7 @@ func NewCreatePlanModel(styles Styles) CreatePlanModel {
 		IDInput:        idInput,
 		TitleInput:     titleInput,
 		ObjectiveInput: obj,
+		Spinner:        s,
 		RunnerType:     normalizeMilestoneRunner(""),
 		DefaultLLM:     "",
 		CreateBranch:   false,
@@ -107,6 +120,7 @@ func NewCreatePlanModel(styles Styles) CreatePlanModel {
 	m.recalcHeights()
 	return m
 }
+
 
 func (m CreatePlanModel) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, textarea.Blink)
@@ -207,7 +221,13 @@ func (m CreatePlanModel) Update(msg tea.Msg) (CreatePlanModel, tea.Cmd) {
 		m.recalcHeights()
 		return m, nil
 
+	case spinner.TickMsg:
+		var sCmd tea.Cmd
+		m.Spinner, sCmd = m.Spinner.Update(msg)
+		return m, sCmd
+
 	case tea.MouseMsg:
+
 		if m.FocusIndex == 0 {
 			if cmd, handled := m.Form.HandleMouseMsg(msg, &m.ObjectiveInput); handled {
 				return m, cmd
@@ -438,7 +458,42 @@ func cleanPlanID(s string) string {
 
 func (m CreatePlanModel) View() string {
 	(&m).recalcHeights()
+	if m.Loading {
+		var sb strings.Builder
+		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATING PLAN USING %s", strings.ToUpper(m.RunnerType))) + "\n\n")
+		sb.WriteString(fmt.Sprintf("%s %s\n\n", m.Spinner.View(), m.Styles.DetailValue.Render("Generating plan and briefings specification, please wait...")))
+
+		var rootOverhead = 3
+		boxHeight := m.Height - rootOverhead - 2
+		if boxHeight < 10 {
+			boxHeight = 10
+		}
+		styleHeight := boxHeight - 2
+		if styleHeight < 1 {
+			styleHeight = 1
+		}
+		contentHeight := styleHeight
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
+		contentWidth := m.Width - 6
+		if contentWidth < 10 {
+			contentWidth = 10
+		}
+		headerHeight := strings.Count(sb.String(), "\n")
+		logHeight := contentHeight - headerHeight
+		if logHeight < 1 {
+			logHeight = 1
+		}
+		sb.WriteString(renderBoundedLines(m.Logs, contentWidth, logHeight, "Preparing plan generator..."))
+
+		return m.Styles.ActiveBorder.
+			Width(m.Width - 4).
+			Height(styleHeight).
+			Render(truncateLines(sb.String(), contentHeight))
+	}
 	var sb strings.Builder
+
 
 	var spacing = "\n\n"
 	if m.Height < 22 {

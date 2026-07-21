@@ -8,6 +8,10 @@ var AgentsFS embed.FS
 //go:embed creator.md
 var CreatorPrompt string
 
+//go:embed plan_creator.md
+var PlanCreatorPrompt string
+
+
 //go:embed safety.md
 var SafetyRules string
 

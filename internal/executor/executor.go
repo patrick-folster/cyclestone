@@ -1098,10 +1098,157 @@ type CreateMilestoneProgressMsg struct {
 	LogLine string
 }
 
+// CreatePlanProgressMsg is sent during plan creation execution.
+type CreatePlanProgressMsg struct {
+	LogLine string
+}
+
+// CreatePlanFinishedMsg is sent when the plan creation agent finishes execution.
+type CreatePlanFinishedMsg struct {
+	Error  error
+	Output string
+}
+
+
 // CreateMilestoneFinishedMsg is sent when the creation agent finishes execution.
 type CreateMilestoneFinishedMsg struct {
 	Error error
 }
+
+// ExecutePlanCreation runs the plan creation prompt through a supported runner in the background.
+func ExecutePlanCreation(ctx context.Context, runner string, prompt string, opts RunOptions, ch chan tea.Msg, planID string, defaultTitle string) {
+	settings := config.LoadMergedSettings()
+	if limit, ok := inputSizeLimitForRunner(runner, settings); ok && len([]rune(prompt)) > limit {
+		ch <- CreatePlanFinishedMsg{Error: inputSizeGuardError(runner, len([]rune(prompt)), limit)}
+		return
+	}
+
+	var cmd *exec.Cmd
+	if runner == "agy" {
+		absRoot, err := filepath.Abs(".")
+		if err != nil {
+			absRoot = "."
+		}
+		args := []string{"--add-dir", absRoot, "--print", prompt, "--print-timeout", "30m"}
+		if opts.Unrestricted {
+			args = append(args, "--dangerously-skip-permissions")
+		} else {
+			args = append(args, "--sandbox", "--dangerously-skip-permissions")
+		}
+		cmd = exec.CommandContext(ctx, "agy", args...)
+		cmd.Dir = absRoot
+	} else if runner == "aider" || runner == "ollama" {
+		cleanupGitignore := setupTemporaryGitignore()
+		defer cleanupGitignore()
+		var promptFile string
+		var cleanup func()
+		_ = os.MkdirAll(".cyclestone", 0755)
+		promptFile = filepath.Join(".cyclestone", "aider-plan-prompt.txt")
+		if err := os.WriteFile(promptFile, []byte(prompt), 0644); err == nil {
+			cleanup = func() { _ = os.Remove(promptFile) }
+		} else {
+			promptFile = ".aider-plan-prompt.txt"
+			if err2 := os.WriteFile(promptFile, []byte(prompt), 0644); err2 == nil {
+				cleanup = func() { _ = os.Remove(promptFile) }
+			} else {
+				tmpFile, err3 := os.CreateTemp("", "aider-plan-prompt-*.txt")
+				if err3 != nil {
+					ch <- CreatePlanFinishedMsg{Error: fmt.Errorf("failed to create prompt file: %w (fallback errors: %v, %v)", err, err2, err3)}
+					return
+				}
+				promptFile = tmpFile.Name()
+				if _, err4 := tmpFile.Write([]byte(prompt)); err4 != nil {
+					tmpFile.Close()
+					_ = os.Remove(promptFile)
+					ch <- CreatePlanFinishedMsg{Error: err4}
+					return
+				}
+				tmpFile.Close()
+				cleanup = func() { _ = os.Remove(promptFile) }
+			}
+		}
+		defer cleanup()
+		args := []string{
+			"--message-file", promptFile,
+			"--yes-always",
+			"--no-auto-commits",
+			"--no-dirty-commits",
+			"--no-gitignore",
+			"--edit-format", "diff",
+		}
+		var model string
+		if runner == "aider" {
+			model = settings.AiderModel
+		} else {
+			model = settings.OllamaModel
+			if !strings.Contains(model, "/") {
+				model = "ollama_chat/" + model
+			}
+			cleanup := setupTemporaryAiderSettings(model, settings)
+			defer cleanup()
+		}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		cmd = exec.CommandContext(ctx, "aider", args...)
+		cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+		if runner == "ollama" {
+			host := settings.OllamaHost
+			if host == "" {
+				host = "http://localhost:11434"
+			}
+			cmd.Env = append(cmd.Env, "OLLAMA_API_BASE="+host)
+		}
+	} else {
+		if runner != "codex" && runner != "ollama-codex" {
+			ch <- CreatePlanFinishedMsg{Error: fmt.Errorf("unsupported runner: %s", runner)}
+			return
+		}
+		if runner == "ollama-codex" {
+			cmd = buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, false, "")
+		} else {
+			cmd = buildCodexCommand(ctx, opts, false, "")
+		}
+		cmd.Stdin = strings.NewReader(prompt)
+	}
+
+	r, w := io.Pipe()
+	cmd.Stdout = w
+	cmd.Stderr = w
+
+	var outBuf strings.Builder
+	scanDone := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			line := scanner.Text()
+			outBuf.WriteString(line)
+			outBuf.WriteByte('\n')
+			ch <- CreatePlanProgressMsg{LogLine: line}
+		}
+		close(scanDone)
+	}()
+
+	runErr := cmd.Start()
+	if runErr == nil {
+		runErr = cmd.Wait()
+	}
+	w.Close()
+	<-scanDone
+
+	var exitCode int
+	if runErr != nil {
+		exitCode = 1
+		if exitError, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		}
+		ch <- CreatePlanFinishedMsg{Error: fmt.Errorf("agent exited with code %d: %w", exitCode, runErr), Output: outBuf.String()}
+	} else {
+		ch <- CreatePlanFinishedMsg{Error: nil, Output: outBuf.String()}
+	}
+}
+
+
 
 // ExecuteMilestoneCreation runs the creation prompt through a supported runner in the background.
 func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string, opts RunOptions, ch chan tea.Msg, milestoneID string, defaultTitle string) {

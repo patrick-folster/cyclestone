@@ -10,7 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patrick-folster/cyclestone/internal/config"
+	"github.com/patrick-folster/cyclestone/internal/executor"
 )
+
 
 func TestCreatePlanModelKeyboardValidationAndCancellation(t *testing.T) {
 	model := NewCreatePlanModel(DefaultStyles(true, true))
@@ -238,6 +240,67 @@ func TestRootCreatePlanRejectsInvalidDuplicateAndCancelWritesNothing(t *testing.
 		t.Fatalf("cancelled Plan was persisted: %v", err)
 	}
 }
+
+func TestRootCreatePlanWithAIExecution(t *testing.T) {
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, ".cyclestone", "milestone.yml")
+	if err := config.GenerateDefaultConfig(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewRootModel(&config.Config{}, &config.State{}, configPath, "", true, false, true, true)
+	model.ActiveScreen = ScreenCreatePlan
+
+
+	msg := CreatePlanMsg{
+		ID:           "ai-plan-1",
+		Title:        "AI Plan 1",
+		Objective:    "Generate features",
+		RunnerType:   "codex",
+		CreateBranch: false,
+	}
+
+	updated, _ := model.Update(msg)
+	got := updated.(RootModel)
+
+	if !got.CreatePlan.Loading {
+		t.Fatalf("expected CreatePlan.Loading to be true during AI plan creation")
+	}
+
+	updated, _ = got.Update(executor.CreatePlanProgressMsg{LogLine: "Analyzing codebase..."})
+	got = updated.(RootModel)
+	if len(got.CreatePlan.Logs) != 1 || got.CreatePlan.Logs[0] != "Analyzing codebase..." {
+		t.Fatalf("expected progress log to be recorded, got: %v", got.CreatePlan.Logs)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	plan := testEmptyPlan("ai-plan-1", "AI Plan 1")
+	plan.Briefings = []config.Briefing{
+		{ID: "b1", Title: "Briefing 1", Objective: "First step", Intent: "Setup", Status: "active", CompletionSignal: "Done", CreatedAt: now, CreatedBy: "test", UpdatedAt: now, UpdatedBy: "test"},
+
+	}
+	plan.BriefingOrder = []string{"b1"}
+
+	if val, err := config.SavePlan(filepath.Join(rootDir, ".cyclestone", "plans"), plan); err != nil {
+		t.Fatalf("failed to save test plan: %v (validation: %+v)", err, val)
+	}
+
+
+	updated, _ = got.Update(executor.CreatePlanFinishedMsg{Error: nil})
+	got = updated.(RootModel)
+
+	if got.CreatePlan.Loading {
+		t.Fatalf("expected Loading to be false after completion")
+	}
+	if got.ActiveScreen != ScreenPlans {
+		t.Fatalf("expected to navigate to ScreenPlans after finish, got: %v", got.ActiveScreen)
+	}
+	if got.Plans.Planning == nil || len(got.Plans.Planning.Plans) != 1 || len(got.Plans.Planning.Plans[0].Briefings) != 1 {
+		t.Fatalf("expected generated plan with briefing loaded into TUI state: %+v", got.Plans.Planning)
+	}
+}
+
+
 
 func TestDeletePlanConfirmationAndRootCleanup(t *testing.T) {
 	rootDir := t.TempDir()
