@@ -1134,21 +1134,36 @@ func ParseGeneratedPlanResponse(text string) (GeneratedPlanResponse, error) {
 			text = strings.Join(lines[1:len(lines)-1], "\n")
 		}
 	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start >= 0 && end > start {
-		var response GeneratedPlanResponse
-		decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&response); err == nil {
-			return response, nil
+
+	// Find all occurrences of "{"
+	var indices []int
+	for i := 0; i < len(text); i++ {
+		if text[i] == '{' {
+			indices = append(indices, i)
 		}
 	}
+
+	// Try parsing from each index, starting from the last one (most likely the model's actual response)
+	for i := len(indices) - 1; i >= 0; i-- {
+		startIdx := indices[i]
+		decoder := json.NewDecoder(strings.NewReader(text[startIdx:]))
+		decoder.DisallowUnknownFields()
+		var response GeneratedPlanResponse
+		if err := decoder.Decode(&response); err == nil {
+			// Ensure it is not a placeholder response and has required fields
+			if response.Title != "" && response.Title != "<optimized_plan_title>" && response.Objective != "<detailed_plan_objective>" {
+				return response, nil
+			}
+		}
+	}
+
+	// Fallback to YAML unmarshal of the entire text
 	var response GeneratedPlanResponse
-	if err := yaml.Unmarshal([]byte(text), &response); err == nil && (response.Title != "" || response.Objective != "" || len(response.Briefings) > 0) {
+	if err := yaml.Unmarshal([]byte(text), &response); err == nil && response.Title != "" && response.Title != "<optimized_plan_title>" && response.Objective != "<detailed_plan_objective>" {
 		return response, nil
 	}
-	return GeneratedPlanResponse{}, fmt.Errorf("response must contain one JSON object")
+
+	return GeneratedPlanResponse{}, fmt.Errorf("response must contain one JSON object matching the planning contract (no non-placeholder match found)")
 }
 
 // ConvertGeneratedPlan converts a GeneratedPlanResponse into a valid Plan model.

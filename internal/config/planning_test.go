@@ -887,3 +887,49 @@ func TestAuthorPrefixAndIDAllocation(t *testing.T) {
 		t.Fatalf("expected 'ms-pf-0002', got %q", standaloneMSID)
 	}
 }
+
+func TestParseGeneratedPlanResponseRobustness(t *testing.T) {
+	t.Parallel()
+
+	// Test output containing both prompt template (with placeholders) and real response (JSON)
+	mergedOutput := `
+Some headers or prompt echoes:
+{
+  "title": "<optimized_plan_title>",
+  "objective": "<detailed_plan_objective>",
+  "constraints": ["<optional plan constraint>"],
+  "briefings": [
+    {
+      "title": "<briefing title 1>",
+      "objective": "<briefing objective 1>",
+      "intent": "<briefing intent 1>",
+      "completion_signal": "<how to verify completion>"
+    }
+  ]
+}
+
+actual codex response:
+{
+  "title": "Real Plan",
+  "objective": "Real Objective",
+  "briefings": [
+    {
+      "title": "Real Briefing",
+      "objective": "Real Briefing Objective",
+      "intent": "Real Intent",
+      "completion_signal": "Verify real"
+    }
+  ]
+}
+`
+	parsed, err := ParseGeneratedPlanResponse(mergedOutput)
+	if err != nil {
+		t.Fatalf("unexpected error parsing robustly: %v", err)
+	}
+	if parsed.Title != "Real Plan" {
+		t.Fatalf("expected robust parser to select 'Real Plan', got %q", parsed.Title)
+	}
+	if parsed.Objective != "Real Objective" {
+		t.Fatalf("expected robust parser to select 'Real Objective', got %q", parsed.Objective)
+	}
+}

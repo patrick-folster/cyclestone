@@ -1145,6 +1145,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		targetPlanID := m.CreatePlan.effectivePlanID()
+		finalPlanID := targetPlanID
 		planning, _ := loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
 		var loadedPlan *config.Plan
 		for i := range planning.Plans {
@@ -1159,14 +1160,19 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err == nil {
 				now := time.Now().UTC().Format(time.RFC3339)
 				goal := m.CreatePlan.ObjectiveInput.Value()
-				if targetPlanID == "" {
-					targetPlanID = config.PlanningSlug(generated.Title)
-				}
 				plan, err2 := config.ConvertGeneratedPlan(goal, generated, "ai-plan-generator", now)
 				if err2 == nil {
-					if targetPlanID != "" {
+					if strings.TrimSpace(m.CreatePlan.IDInput.Value()) == "" {
+						slug := config.PlanningSlug(plan.Title)
+						if slug != "" {
+							plan.ID = targetPlanID + "-" + slug
+						} else {
+							plan.ID = targetPlanID
+						}
+					} else {
 						plan.ID = targetPlanID
 					}
+					finalPlanID = plan.ID
 					// Rewrite generated briefing IDs from title slugs to the
 					// b-<author>-NNNN form, mirroring the CLI plan generate path.
 					authorPref := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
@@ -1210,8 +1216,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.syncPlanning(planning)
 		if len(planning.Plans) > 0 {
-			if targetPlanID != "" {
-				m.Plans.SelectPlan(targetPlanID)
+			if finalPlanID != "" {
+				m.Plans.SelectPlan(finalPlanID)
 			} else {
 				m.Plans.SelectPlan(planning.Plans[len(planning.Plans)-1].ID)
 			}

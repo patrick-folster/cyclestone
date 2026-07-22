@@ -758,17 +758,30 @@ func parsePlanReevaluationResponse(text string) (config.PlanReevaluationProposal
 			text = strings.Join(lines[1:len(lines)-1], "\n")
 		}
 	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end < start {
-		return config.PlanReevaluationProposal{}, fmt.Errorf("response must contain one JSON object")
+
+	// Find all occurrences of "{"
+	var indices []int
+	for i := 0; i < len(text); i++ {
+		if text[i] == '{' {
+			indices = append(indices, i)
+		}
 	}
-	var proposal config.PlanReevaluationProposal
-	decoder := json.NewDecoder(strings.NewReader(text[start : end+1]))
-	if err := decoder.Decode(&proposal); err != nil {
-		return config.PlanReevaluationProposal{}, err
+
+	// Try parsing from each index, starting from the last one (most likely the model's actual response)
+	for i := len(indices) - 1; i >= 0; i-- {
+		startIdx := indices[i]
+		decoder := json.NewDecoder(strings.NewReader(text[startIdx:]))
+		decoder.DisallowUnknownFields()
+		var proposal config.PlanReevaluationProposal
+		if err := decoder.Decode(&proposal); err == nil {
+			// Ensure it is not a placeholder response and has required fields
+			if proposal.PlanID != "" && proposal.PlanID != "<plan-id>" && proposal.Rationale != "Explanation of proposed plan modifications based on execution findings" {
+				return proposal, nil
+			}
+		}
 	}
-	return proposal, nil
+
+	return config.PlanReevaluationProposal{}, fmt.Errorf("response must contain one non-placeholder JSON object matching the re-evaluation contract")
 }
 
 func runPlanEdit(args []string, configPath string, stdout, stderr io.Writer) int {
