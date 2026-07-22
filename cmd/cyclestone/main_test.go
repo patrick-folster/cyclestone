@@ -2058,3 +2058,41 @@ func TestCLILifecycleSafetyUnlinkPreservesMilestoneStorage(t *testing.T) {
 		t.Fatalf("expected briefing milestone_id to be empty after unlink, got %+v", briefing)
 	}
 }
+
+func TestDefaultPlanGenerationRunnerCommand(t *testing.T) {
+	// 1. Default runner (codex)
+	cmdCodex, err := defaultPlanGenerationRunnerCommand(config.Settings{
+		DefaultLLM: "codex",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for codex default: %v", err)
+	}
+	if !strings.Contains(cmdCodex, "codex") || strings.Contains(cmdCodex, "ollama") {
+		t.Fatalf("expected codex command, got %q", cmdCodex)
+	}
+
+	// 2. ollama-codex without model
+	_, err = defaultPlanGenerationRunnerCommand(config.Settings{
+		DefaultLLM: "ollama-codex",
+	})
+	if err == nil {
+		t.Fatalf("expected error for ollama-codex without model")
+	}
+
+	// 3. ollama-codex with model and custom host
+	cmdOllama, err := defaultPlanGenerationRunnerCommand(config.Settings{
+		DefaultLLM:       "ollama-codex",
+		OllamaCodexModel: "glm-test:cloud",
+		OllamaHost:       "http://192.168.1.100:11434",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for ollama-codex: %v", err)
+	}
+	if !strings.Contains(cmdOllama, "ollama launch codex --model glm-test:cloud") {
+		t.Fatalf("expected launch codex command, got %q", cmdOllama)
+	}
+	expectedOverride := `-c model_providers.ollama.base_url="http://192.168.1.100:11434/v1"`
+	if !strings.Contains(cmdOllama, expectedOverride) {
+		t.Fatalf("expected config override %q, got %q", expectedOverride, cmdOllama)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1205,9 +1206,9 @@ func ExecutePlanCreation(ctx context.Context, runner string, prompt string, opts
 			return
 		}
 		if runner == "ollama-codex" {
-			cmd = buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, false, "")
+			cmd = buildOllamaCodexCommand(ctx, opts, settings, false, "")
 		} else {
-			cmd = buildCodexCommand(ctx, opts, false, "")
+			cmd = buildCodexCommand(ctx, opts, settings, false, "")
 		}
 		cmd.Stdin = strings.NewReader(prompt)
 	}
@@ -1343,9 +1344,9 @@ func ExecuteMilestoneCreation(ctx context.Context, runner string, prompt string,
 			return
 		}
 		if runner == "ollama-codex" {
-			cmd = buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, false, "")
+			cmd = buildOllamaCodexCommand(ctx, opts, settings, false, "")
 		} else {
-			cmd = buildCodexCommand(ctx, opts, false, "")
+			cmd = buildCodexCommand(ctx, opts, settings, false, "")
 		}
 		cmd.Stdin = strings.NewReader(prompt)
 	}
@@ -1435,24 +1436,68 @@ func buildCodexArgs(opts RunOptions, enableResume bool, threadID string) []strin
 	return args
 }
 
-func buildCodexCommand(ctx context.Context, opts RunOptions, enableResume bool, threadID string) *exec.Cmd {
-	return exec.CommandContext(ctx, "codex", buildCodexArgs(opts, enableResume, threadID)...)
+func buildCodexArgsWithSettings(opts RunOptions, settings config.Settings, enableResume bool, threadID string) []string {
+	var args []string
+	if opts.Unrestricted {
+		args = append(args, "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox")
+	} else {
+		args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "never")
+	}
+
+	if settings.OllamaHost != "" {
+		host := settings.OllamaHost
+		codexBaseURL := host
+		if !strings.HasSuffix(codexBaseURL, "/v1") && !strings.HasSuffix(codexBaseURL, "/v1/") {
+			codexBaseURL = strings.TrimSuffix(codexBaseURL, "/") + "/v1"
+		}
+		args = append(args, "-c", fmt.Sprintf("model_providers.ollama.base_url=%q", codexBaseURL))
+	}
+
+	args = append(args, "exec")
+	if enableResume && threadID == "" {
+		args = append(args, "--json")
+	}
+	if enableResume && threadID != "" {
+		args = append(args, "resume", threadID)
+	}
+	args = append(args, "--cd", ".", "--skip-git-repo-check", "--", "-")
+	return args
 }
 
-func buildOllamaCodexCommand(ctx context.Context, opts RunOptions, model string, enableResume bool, threadID string) *exec.Cmd {
+func buildCodexCommand(ctx context.Context, opts RunOptions, settings config.Settings, enableResume bool, threadID string) *exec.Cmd {
+	return exec.CommandContext(ctx, "codex", buildCodexArgsWithSettings(opts, settings, enableResume, threadID)...)
+}
+
+func buildOllamaCodexCommand(ctx context.Context, opts RunOptions, settings config.Settings, enableResume bool, threadID string) *exec.Cmd {
+	model := settings.OllamaCodexModel
 	if model == "" {
 		model = config.DefaultOllamaModel
 	}
 	args := []string{"launch", "codex", "--model", model, "--"}
-	args = append(args, buildCodexArgs(opts, enableResume, threadID)...)
-	return exec.CommandContext(ctx, "ollama", args...)
+	args = append(args, buildCodexArgsWithSettings(opts, settings, enableResume, threadID)...)
+	cmd := exec.CommandContext(ctx, "ollama", args...)
+
+	cmd.Env = os.Environ()
+	host := settings.OllamaHost
+	if host == "" {
+		host = "http://localhost:11434"
+	}
+	cmd.Env = append(cmd.Env, "OLLAMA_HOST="+host, "OLLAMA_API_BASE="+host)
+	if settings.OllamaNumCtx > 0 {
+		cmd.Env = append(cmd.Env, "OLLAMA_CONTEXT_LENGTH="+strconv.Itoa(settings.OllamaNumCtx))
+		cmd.Env = append(cmd.Env, "OLLAMA_NUM_CTX="+strconv.Itoa(settings.OllamaNumCtx))
+	}
+	if settings.OllamaNumPredict > 0 {
+		cmd.Env = append(cmd.Env, "OLLAMA_NUM_PREDICT="+strconv.Itoa(settings.OllamaNumPredict))
+	}
+	return cmd
 }
 
 func buildCodexRunnerCommand(ctx context.Context, runner string, opts RunOptions, settings config.Settings, enableResume bool, threadID string) *exec.Cmd {
 	if runner == "ollama-codex" {
-		return buildOllamaCodexCommand(ctx, opts, settings.OllamaCodexModel, enableResume, threadID)
+		return buildOllamaCodexCommand(ctx, opts, settings, enableResume, threadID)
 	}
-	return buildCodexCommand(ctx, opts, enableResume, threadID)
+	return buildCodexCommand(ctx, opts, settings, enableResume, threadID)
 }
 
 func setupTemporaryAiderSettings(model string, settings config.Settings) func() {

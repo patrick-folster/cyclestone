@@ -1723,8 +1723,12 @@ func answerRegionWithOffset(text string) (string, int) {
 }
 
 func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars int, pipeline []config.Agent) string {
+	reportsDir := filepath.Join(".cyclestone", "reports")
+	if _, err := os.Stat(filepath.Join(".cyclestone", "reports", "milestones", milestoneID)); err == nil {
+		reportsDir = filepath.Join(".cyclestone", "reports", "milestones")
+	}
 	agentFileID := getAgentFileID(agentID, pipeline)
-	path := phaseHandoffPath(filepath.Join(".cyclestone", "reports"), milestoneID, cyclePadded, agentFileID)
+	path := phaseHandoffPath(reportsDir, milestoneID, cyclePadded, agentFileID)
 	content, err := os.ReadFile(path)
 	if err == nil {
 		if handoffContentValid(content) {
@@ -1733,7 +1737,7 @@ func readHandoffOrFallback(milestoneID, cyclePadded, agentID string, maxChars in
 	}
 
 	cycleNum, _ := strconv.Atoi(cyclePadded)
-	outputPath := phaseArtifacts(filepath.Join(".cyclestone", "reports"), milestoneID, cycleNum, agentFileID).Output
+	outputPath := phaseArtifacts(reportsDir, milestoneID, cycleNum, agentFileID).Output
 	output, outputErr := os.ReadFile(outputPath)
 	if outputErr != nil {
 		return ""

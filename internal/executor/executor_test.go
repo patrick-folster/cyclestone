@@ -2148,13 +2148,13 @@ func TestCodexThreadIDParseAndResumeCommandConstruction(t *testing.T) {
 		t.Fatalf("expected thread id, got %q", got)
 	}
 
-	startCmd := buildCodexCommand(context.Background(), RunOptions{}, true, "")
+	startCmd := buildCodexCommand(context.Background(), RunOptions{}, config.Settings{}, true, "")
 	startArgs := strings.Join(startCmd.Args, " ")
 	if !strings.Contains(startArgs, "exec --json") || strings.Contains(startArgs, "resume") {
 		t.Fatalf("unexpected start command args: %v", startCmd.Args)
 	}
 
-	resumeCmd := buildCodexCommand(context.Background(), RunOptions{}, true, "thread-123")
+	resumeCmd := buildCodexCommand(context.Background(), RunOptions{}, config.Settings{}, true, "thread-123")
 	resumeArgs := strings.Join(resumeCmd.Args, " ")
 	if !strings.Contains(resumeArgs, "exec resume thread-123") || strings.Contains(resumeArgs, "--json") {
 		t.Fatalf("unexpected resume command args: %v", resumeCmd.Args)
@@ -2162,28 +2162,70 @@ func TestCodexThreadIDParseAndResumeCommandConstruction(t *testing.T) {
 }
 
 func TestOllamaCodexCommandConstructionUsesSharedCodexArgs(t *testing.T) {
-	restricted := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", false, "")
+	settings := config.Settings{
+		OllamaCodexModel: "glm-test:cloud",
+	}
+	restricted := buildOllamaCodexCommand(context.Background(), RunOptions{}, settings, false, "")
 	wantRestricted := []string{"ollama", "launch", "codex", "--model", "glm-test:cloud", "--", "--sandbox", "workspace-write", "--ask-for-approval", "never", "exec", "--cd", ".", "--skip-git-repo-check", "--", "-"}
 	if !slicesEqual(restricted.Args, wantRestricted) {
 		t.Fatalf("restricted ollama-codex args mismatch:\n got: %v\nwant: %v", restricted.Args, wantRestricted)
 	}
 
-	unrestricted := buildOllamaCodexCommand(context.Background(), RunOptions{Unrestricted: true}, "glm-test:cloud", false, "")
+	unrestricted := buildOllamaCodexCommand(context.Background(), RunOptions{Unrestricted: true}, settings, false, "")
 	wantUnrestricted := []string{"ollama", "launch", "codex", "--model", "glm-test:cloud", "--", "--sandbox", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox", "exec", "--cd", ".", "--skip-git-repo-check", "--", "-"}
 	if !slicesEqual(unrestricted.Args, wantUnrestricted) {
 		t.Fatalf("unrestricted ollama-codex args mismatch:\n got: %v\nwant: %v", unrestricted.Args, wantUnrestricted)
 	}
 
-	startCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", true, "")
+	startCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, settings, true, "")
 	startArgs := strings.Join(startCmd.Args, " ")
 	if !strings.Contains(startArgs, "exec --json") || strings.Contains(startArgs, "resume") {
 		t.Fatalf("unexpected ollama-codex start command args: %v", startCmd.Args)
 	}
 
-	resumeCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, "glm-test:cloud", true, "thread-123")
+	resumeCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, settings, true, "thread-123")
 	resumeArgs := strings.Join(resumeCmd.Args, " ")
 	if !strings.Contains(resumeArgs, "exec resume thread-123") || strings.Contains(resumeArgs, "--json") {
 		t.Fatalf("unexpected ollama-codex resume command args: %v", resumeCmd.Args)
+	}
+
+	// Test environment variables and config overrides with custom settings
+	customSettings := config.Settings{
+		OllamaCodexModel: "glm-test:cloud",
+		OllamaHost:       "http://192.168.1.50:11434",
+		OllamaNumCtx:     16384,
+		OllamaNumPredict: 2048,
+	}
+	customCmd := buildOllamaCodexCommand(context.Background(), RunOptions{}, customSettings, false, "")
+
+	// Check environment variables
+	var hasHost, hasBase, hasCtx, hasNumCtx, hasPredict bool
+	for _, env := range customCmd.Env {
+		if env == "OLLAMA_HOST=http://192.168.1.50:11434" {
+			hasHost = true
+		}
+		if env == "OLLAMA_API_BASE=http://192.168.1.50:11434" {
+			hasBase = true
+		}
+		if env == "OLLAMA_CONTEXT_LENGTH=16384" {
+			hasCtx = true
+		}
+		if env == "OLLAMA_NUM_CTX=16384" {
+			hasNumCtx = true
+		}
+		if env == "OLLAMA_NUM_PREDICT=2048" {
+			hasPredict = true
+		}
+	}
+	if !hasHost || !hasBase || !hasCtx || !hasNumCtx || !hasPredict {
+		t.Fatalf("expected environment variables not set on custom cmd, got Env: %v", customCmd.Env)
+	}
+
+	// Check arguments include config override for model_providers.ollama.base_url
+	customArgs := strings.Join(customCmd.Args, " ")
+	expectedOverride := `-c model_providers.ollama.base_url="http://192.168.1.50:11434/v1"`
+	if !strings.Contains(customArgs, expectedOverride) {
+		t.Fatalf("expected argument config override %q not found in custom args: %v", expectedOverride, customCmd.Args)
 	}
 }
 

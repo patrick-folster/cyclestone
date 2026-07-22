@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1893,8 +1894,8 @@ func limitPlanGenerationContext(text string) string {
 
 func executePlanGenerationRunner(runnerCommand, prompt string) (string, error) {
 	runnerCommand = strings.TrimSpace(runnerCommand)
+	settings := config.LoadMergedSettings()
 	if runnerCommand == "" {
-		settings := config.LoadMergedSettings()
 		command, err := defaultPlanGenerationRunnerCommand(settings)
 		if err != nil {
 			return "", err
@@ -1906,6 +1907,21 @@ func executePlanGenerationRunner(runnerCommand, prompt string) (string, error) {
 	}
 	cmd := exec.Command("bash", "-c", runnerCommand)
 	cmd.Stdin = strings.NewReader(prompt)
+
+	cmd.Env = os.Environ()
+	host := settings.OllamaHost
+	if host == "" {
+		host = "http://localhost:11434"
+	}
+	cmd.Env = append(cmd.Env, "OLLAMA_HOST="+host, "OLLAMA_API_BASE="+host)
+	if settings.OllamaNumCtx > 0 {
+		cmd.Env = append(cmd.Env, "OLLAMA_CONTEXT_LENGTH="+strconv.Itoa(settings.OllamaNumCtx))
+		cmd.Env = append(cmd.Env, "OLLAMA_NUM_CTX="+strconv.Itoa(settings.OllamaNumCtx))
+	}
+	if settings.OllamaNumPredict > 0 {
+		cmd.Env = append(cmd.Env, "OLLAMA_NUM_PREDICT="+strconv.Itoa(settings.OllamaNumPredict))
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1931,7 +1947,17 @@ func defaultPlanGenerationRunnerCommand(settings config.Settings) (string, error
 		if model == "" {
 			return "", fmt.Errorf("ollama-codex generation requires an ollama_codex_model setting or --runner-command")
 		}
-		return fmt.Sprintf("ollama launch codex --model %s -- --sandbox read-only --ask-for-approval never exec --cd . --skip-git-repo-check -- -", shellQuote(model)), nil
+
+		var configOverride string
+		if settings.OllamaHost != "" {
+			codexBaseURL := settings.OllamaHost
+			if !strings.HasSuffix(codexBaseURL, "/v1") && !strings.HasSuffix(codexBaseURL, "/v1/") {
+				codexBaseURL = strings.TrimSuffix(codexBaseURL, "/") + "/v1"
+			}
+			configOverride = fmt.Sprintf("-c model_providers.ollama.base_url=%q ", codexBaseURL)
+		}
+
+		return fmt.Sprintf("ollama launch codex --model %s -- %s--sandbox read-only --ask-for-approval never exec --cd . --skip-git-repo-check -- -", shellQuote(model), configOverride), nil
 	default:
 		return "", fmt.Errorf("default runner %q is not supported for Plan generation; pass --runner-command or --response-file", settings.DefaultLLM)
 	}

@@ -25,8 +25,10 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 
 	if agent.ID == "recommender" {
 		reportsDir := filepath.Join(".cyclestone", "reports")
+		if _, err := os.Stat(filepath.Join(".cyclestone", "reports", "milestones", milestone.ID)); err == nil {
+			reportsDir = filepath.Join(".cyclestone", "reports", "milestones")
+		}
 		reportPath := cycleArtifacts(reportsDir, milestone.ID, cycleNum).Report
-
 		latestCycleReportText := summarizeCycleReport(reportPath)
 
 		var criteriaBuilder strings.Builder
@@ -233,6 +235,9 @@ func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum
 func assembleCompactRecommenderInput(milestone config.Milestone, agent config.Agent, cycleNum int, settings config.Settings, pipeline []config.Agent) string {
 	cyclePadded := fmt.Sprintf("%03d", cycleNum)
 	reportsDir := filepath.Join(".cyclestone", "reports")
+	if _, err := os.Stat(filepath.Join(".cyclestone", "reports", "milestones", milestone.ID)); err == nil {
+		reportsDir = filepath.Join(".cyclestone", "reports", "milestones")
+	}
 	qaHandoff := readHandoffOrFallback(milestone.ID, cyclePadded, "qa", maxRecommenderReportOutputChars, pipeline)
 	if qaHandoff == "" {
 		reportPath := cycleArtifacts(reportsDir, milestone.ID, cycleNum).Report
