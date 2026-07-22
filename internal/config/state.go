@@ -361,7 +361,7 @@ func DeleteMilestoneCycle(configPath, statePath, milestoneID string, cycleNum in
 		return fmt.Errorf("cycle %d not found in milestone %s history", cycleNum, milestoneID)
 	}
 
-	reportsDir := filepath.Join(filepath.Dir(configPath), "reports")
+	reportsDir := filepath.Join(filepath.Dir(configPath), "reports", "milestones")
 	milestoneReportsDir := filepath.Join(reportsDir, milestoneID)
 	_ = os.RemoveAll(filepath.Join(milestoneReportsDir, fmt.Sprintf("cycle-%03d", cycleNum)))
 
@@ -432,8 +432,8 @@ func updateCycleSummaryReportAfterDeletion(reportsDir, milestoneID string, remai
 }
 
 func renumberCycleActionPaths(log *MilestoneCycleLog, reportsDir, milestoneID string, oldNum, newNum int) {
-	oldSegment := filepath.Join(".cyclestone", "reports", milestoneID, fmt.Sprintf("cycle-%03d", oldNum))
-	newSegment := filepath.Join(".cyclestone", "reports", milestoneID, fmt.Sprintf("cycle-%03d", newNum))
+	oldSegment := filepath.Join(".cyclestone", "reports", "milestones", milestoneID, fmt.Sprintf("cycle-%03d", oldNum))
+	newSegment := filepath.Join(".cyclestone", "reports", "milestones", milestoneID, fmt.Sprintf("cycle-%03d", newNum))
 	oldAbsSegment := filepath.Join(reportsDir, milestoneID, fmt.Sprintf("cycle-%03d", oldNum))
 	newAbsSegment := filepath.Join(reportsDir, milestoneID, fmt.Sprintf("cycle-%03d", newNum))
 	for i := range log.Actions {

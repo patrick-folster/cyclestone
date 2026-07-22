@@ -938,7 +938,7 @@ func DeleteMilestone(configPath, statePath, milestoneID string) error {
 	}
 
 	// Remove milestone-owned report artifacts.
-	_ = os.RemoveAll(filepath.Join(filepath.Dir(configPath), "reports", milestoneID))
+	_ = os.RemoveAll(filepath.Join(filepath.Dir(configPath), "reports", "milestones", milestoneID))
 
 	return nil
 }

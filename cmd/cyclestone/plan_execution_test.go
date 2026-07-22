@@ -47,9 +47,9 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 		t.Fatal(err)
 	}
 	unrelatedPaths := []string{
-		filepath.Join(root, ".cyclestone", "reports", "standalone", "summary.md"),
-		filepath.Join(root, ".cyclestone", "reports", "standalone", "cycle-002", "report.yaml"),
-		filepath.Join(root, ".cyclestone", "reports", "standalone", "cycle-002", "03-qa", "handoff.yaml"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "standalone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "standalone", "cycle-002", "report.yaml"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "standalone", "cycle-002", "03-qa", "handoff.yaml"),
 		filepath.Join(root, ".cyclestone", "branch-snapshots", "standalone.json"),
 	}
 	for i, path := range unrelatedPaths {

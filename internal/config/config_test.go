@@ -634,9 +634,9 @@ func TestDeleteMilestone(t *testing.T) {
 	}
 	_ = SaveState(statePath, state)
 
-	_ = os.MkdirAll(filepath.Join(tmpDir, "reports"), 0755)
-	report1Dir := filepath.Join(tmpDir, "reports", "MS-1")
-	report2Dir := filepath.Join(tmpDir, "reports", "MS-2")
+	_ = os.MkdirAll(filepath.Join(tmpDir, "reports", "milestones"), 0755)
+	report1Dir := filepath.Join(tmpDir, "reports", "milestones", "MS-1")
+	report2Dir := filepath.Join(tmpDir, "reports", "milestones", "MS-2")
 	report1 := filepath.Join(report1Dir, "summary.md")
 	report1Cycle := filepath.Join(report1Dir, "cycle-001", "report.yaml")
 	report2 := filepath.Join(report2Dir, "summary.md")
@@ -702,7 +702,7 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "milestone.yml")
 	statePath := filepath.Join(tmpDir, "state.json")
-	reportsDir := filepath.Join(tmpDir, "reports")
+	reportsDir := filepath.Join(tmpDir, "reports", "milestones")
 
 	state := &State{
 		History: map[string][]MilestoneCycleLog{
@@ -714,8 +714,8 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 					Actions: []AgentActionLog{
 						{
 							AgentID:    "developer",
-							InputFile:  filepath.Join(".cyclestone", "reports", "MS-1", "cycle-003", "02-developer", "input.md"),
-							OutputFile: filepath.Join(".cyclestone", "reports", "MS-1", "cycle-003", "02-developer", "output.log"),
+							InputFile:  filepath.Join(".cyclestone", "reports", "milestones", "MS-1", "cycle-003", "02-developer", "input.md"),
+							OutputFile: filepath.Join(".cyclestone", "reports", "milestones", "MS-1", "cycle-003", "02-developer", "output.log"),
 						},
 						{
 							AgentID:    "qa",
@@ -765,8 +765,8 @@ func TestDeleteMilestoneCycle(t *testing.T) {
 	if len(logs[1].Actions) != 2 {
 		t.Fatalf("expected renamed cycle actions to be preserved, got %d", len(logs[1].Actions))
 	}
-	expectedRelativeInput := filepath.Join(".cyclestone", "reports", "MS-1", "cycle-002", "02-developer", "input.md")
-	expectedRelativeOutput := filepath.Join(".cyclestone", "reports", "MS-1", "cycle-002", "02-developer", "output.log")
+	expectedRelativeInput := filepath.Join(".cyclestone", "reports", "milestones", "MS-1", "cycle-002", "02-developer", "input.md")
+	expectedRelativeOutput := filepath.Join(".cyclestone", "reports", "milestones", "MS-1", "cycle-002", "02-developer", "output.log")
 	if logs[1].Actions[0].InputFile != expectedRelativeInput || logs[1].Actions[0].OutputFile != expectedRelativeOutput {
 		t.Errorf("expected relative action paths to be renumbered, got input %q output %q", logs[1].Actions[0].InputFile, logs[1].Actions[0].OutputFile)
 	}

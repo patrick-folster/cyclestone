@@ -79,10 +79,10 @@ You are never required to use Plans or Briefings. The standalone path is fully s
 
 1. Create a Milestone from the TUI (`c` from the dashboard) or by adding an entry to `.cyclestone/milestone.yml` and a spec under `.cyclestone/milestones/`.
 2. Run it from the dashboard with `r`, confirm the preflight review, and the normal PM -> Developer -> QA -> Recommender cycle executes.
-3. Reports are written under `.cyclestone/reports/<milestone-id>/`, runtime state under `.cyclestone/state.json`.
+3. Reports are written under `.cyclestone/reports/milestones/<milestone-id>/`, runtime state under `.cyclestone/state.json`.
 4. Delete or archive the Milestone through the existing TUI flows.
 
-**No migration is required.** A repository with no `.cyclestone/plans/` directory is valid. `.cyclestone/milestone.yml`, `.cyclestone/milestones/*.md`, `.cyclestone/state.json`, and `.cyclestone/reports/<milestone-id>/` remain valid without any planning data.
+**No migration is required.** A repository with no `.cyclestone/plans/` directory is valid. `.cyclestone/milestone.yml`, `.cyclestone/milestones/*.md`, `.cyclestone/state.json`, and `.cyclestone/reports/milestones/<milestone-id>/` remain valid without any planning data.
 
 ## Creating a Plan Manually
 
@@ -415,7 +415,7 @@ Correct stale runner status rendering after a cycle finishes.
 }
 ```
 
-Reports land under `.cyclestone/reports/0008-fix-runner-status/`. No `.cyclestone/plans/` entry is needed; provenance is absent.
+Reports land under `.cyclestone/reports/milestones/0008-fix-runner-status/`. No `.cyclestone/plans/` entry is needed; provenance is absent.
 
 ### Planned Milestone (Plan, Briefing, link, provenance)
 
@@ -469,14 +469,14 @@ milestones:
 }
 ```
 
-If the `reporting-reliability` Plan is later archived or deleted, `0007-preserve-cycle-metadata`, its state, and its reports under `.cyclestone/reports/0007-preserve-cycle-metadata/` remain valid and untouched.
+If the `reporting-reliability` Plan is later archived or deleted, `0007-preserve-cycle-metadata`, its state, and its reports under `.cyclestone/reports/milestones/0007-preserve-cycle-metadata/` remain valid and untouched.
 
 ## Migration Guidance
 
 No migration is required to adopt the planning layer.
 
 - `.cyclestone/plans/` is optional. Old projects with no `.cyclestone/plans/` directory are valid.
-- No existing file needs to move. `.cyclestone/milestone.yml`, `.cyclestone/milestones/*.md`, `.cyclestone/state.json`, and `.cyclestone/reports/<milestone-id>/` remain in their existing locations and remain valid without planning data.
+- No existing file needs to move. `.cyclestone/milestone.yml`, `.cyclestone/milestones/*.md`, `.cyclestone/state.json`, and `.cyclestone/reports/milestones/<milestone-id>/` remain in their existing locations and remain valid without planning data.
 - Planning files may be added, removed, archived, or malformed without changing Milestone execution validity.
 - Existing Milestones do not need to be migrated into Plans. The planning layer is not required for Milestone creation or execution.
 - Planning validation failures are isolated to planning views and planning commands.
@@ -486,7 +486,7 @@ No migration is required to adopt the planning layer.
 - `.cyclestone/milestone.yml` remains the compact Milestone index and remains valid without any Plan or Briefing data.
 - `.cyclestone/milestones/*.md` remains the long-form Milestone spec location and remains valid without planning provenance.
 - `.cyclestone/state.json` remains keyed by Milestone runtime progress and remains valid without planning state.
-- `.cyclestone/reports/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added.
+- `.cyclestone/reports/milestones/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added.
 - `.cyclestone/plans/*.yml` is optional and additive. Adding planning files never rewrites Milestone specs, compact index entries, state, reports, temp files, or branch snapshots.
 - Existing projects require no migration for the optional planning layer.
 - Standalone and generated Milestones function as fully independent first-class entities regardless of source Plan or Briefing archival, deletion, or missing status.

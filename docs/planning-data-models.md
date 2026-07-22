@@ -31,7 +31,7 @@ Each Plan file embeds its Briefing records and keeps a canonical `briefing_order
 - `.cyclestone/milestone.yml` remains the compact Milestone index.
 - `.cyclestone/milestones/*.md` remains the long-form Milestone spec location.
 - `.cyclestone/state.json` remains runtime state keyed by Milestone ID.
-- `.cyclestone/reports/<milestone-id>/` remains cycle artifacts keyed by Milestone ID.
+- `.cyclestone/reports/milestones/<milestone-id>/` remains cycle artifacts keyed by Milestone ID.
 
 Old projects with no `.cyclestone/plans/` directory are valid and require no migration.
 
@@ -309,7 +309,7 @@ Existing data remains readable without modification:
 - Compact Milestone index entries continue to require only current Milestone fields.
 - Long-form Milestone specs continue to use Markdown sections such as `## Goal` and `## Acceptance Criteria`.
 - Runtime status, cycle counts, recommendations, and history remain in `.cyclestone/state.json`.
-- Cycle artifacts remain under `.cyclestone/reports/<milestone-id>/`.
+- Cycle artifacts remain under `.cyclestone/reports/milestones/<milestone-id>/`.
 
 Planning files may be added, removed, archived, or malformed without changing Milestone execution validity. Future planning features should isolate planning validation failures to planning views and planning commands.
 
@@ -318,7 +318,7 @@ Planning files may be added, removed, archived, or malformed without changing Mi
 - `.cyclestone/milestone.yml` remains the compact Milestone index and remains valid without any Plan or Briefing data.
 - `.cyclestone/milestones/*.md` remains the long-form Milestone spec location and remains valid without planning provenance.
 - `.cyclestone/state.json` remains keyed by Milestone runtime progress and remains valid without planning state.
-- `.cyclestone/reports/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added.
+- `.cyclestone/reports/milestones/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added.
 - `.cyclestone/plans/*.yml` is optional and additive. Adding planning files never rewrites Milestone specs, compact index entries, state, reports, temp files, or branch snapshots.
 - Existing projects require no migration for the optional planning layer.
 - Standalone and generated Milestones function as fully independent first-class entities regardless of source Plan or Briefing archival, deletion, or missing status.
@@ -505,4 +505,4 @@ milestones:
     spec_path: milestones/0005-hierarchical-reports.md
 ```
 
-The archived Plan and Briefing do not invalidate `0005-hierarchical-reports`, its runtime state, or any reports under `.cyclestone/reports/0005-hierarchical-reports/`.
+The archived Plan and Briefing do not invalidate `0005-hierarchical-reports`, its runtime state, or any reports under `.cyclestone/reports/milestones/0005-hierarchical-reports/`.

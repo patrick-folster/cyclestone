@@ -95,7 +95,7 @@ func TestPlanListReadOnlyOutput(t *testing.T) {
 		statePath,
 		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	var stdout, stderr bytes.Buffer
@@ -121,7 +121,7 @@ func TestPlanListReadOnlyOutput(t *testing.T) {
 	}
 	assertFilesUnchanged(t, before)
 	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "missing-milestone.md"))
-	assertPathMissing(t, filepath.Join(root, ".cyclestone", "reports", "missing-milestone"))
+	assertPathMissing(t, filepath.Join(root, ".cyclestone", "reports", "milestones", "missing-milestone"))
 	assertPathMissing(t, filepath.Join(root, ".cyclestone", "plans", "missing-milestone.yml"))
 }
 
@@ -406,7 +406,7 @@ func TestPlanGenerateCreatesValidatedPlanOnly(t *testing.T) {
 `)
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"), "# Existing\n")
 	writeMainTestFile(t, statePath, `{"active_milestone_id":"existing-milestone","milestone_statuses":{},"milestone_cycles":{"existing-milestone":3},"history":{}}`)
-	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"), "existing report\n")
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"), "existing report\n")
 	responsePath := filepath.Join(root, "response.json")
 	writeMainTestFile(t, responsePath, `{
   "title": "Improve First Run Setup",
@@ -439,7 +439,7 @@ func TestPlanGenerateCreatesValidatedPlanOnly(t *testing.T) {
 		configPath,
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	var stdout, stderr bytes.Buffer
@@ -513,7 +513,7 @@ func TestPlanGenerateRejectsInvalidResponsesWithoutWrites(t *testing.T) {
 				statePath,
 				planPath,
 				filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-				filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+				filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 			)
 			responsePath := filepath.Join(root, tc.name+".json")
 			writeMainTestFile(t, responsePath, tc.body)
@@ -538,7 +538,7 @@ func TestPlanGenerateRejectsExistingPlanCollision(t *testing.T) {
 		statePath,
 		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 	responsePath := filepath.Join(root, "collision.json")
 	writeMainTestFile(t, responsePath, validGeneratedPlanJSON("Delivery Plan"))
@@ -673,7 +673,7 @@ func TestBriefingLinkUnlinkAndDeletesPreserveMilestoneStorage(t *testing.T) {
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	}
 	beforeMilestones := snapshotFiles(t, milestonePaths...)
 
@@ -736,7 +736,7 @@ func TestBriefingLinkReplacementRequiresExplicitFlagAndPreservesOldMilestone(t *
 		planPath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 		filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"),
 		filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"),
 	)
@@ -761,7 +761,7 @@ func TestBriefingLinkReplacementRequiresExplicitFlagAndPreservesOldMilestone(t *
 		statePath:  before[statePath],
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"):         before[filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")],
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"):       before[filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md")],
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md")],
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md")],
 		filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"):                     before[filepath.Join(root, ".cyclestone", "temp", "runner-note.txt")],
 		filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"):  before[filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt")],
 	})
@@ -780,7 +780,7 @@ func TestBriefingLinkReplacementRejectsMissingAndCrossPlanMilestones(t *testing.
 		filepath.Join(root, ".cyclestone", "plans", "other-plan", "other-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	assertCommandFails(t, configPath,
@@ -803,7 +803,7 @@ func TestBriefingGenerateMilestoneCreatesOrdinaryMilestoneAndLink(t *testing.T) 
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	var stdout, stderr bytes.Buffer
@@ -884,7 +884,7 @@ func TestBriefingExecuteGeneratesAndQueuesOneOrdinaryMilestone(t *testing.T) {
 	root, configPath, statePath := writePlanningCommandFixture(t)
 	stateBefore := snapshotFiles(t,
 		statePath,
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 	var launched tui.RootModel
 	var stdout, stderr bytes.Buffer
@@ -927,7 +927,7 @@ func TestBriefingExecuteLinkedMilestoneDoesNotRewriteArtifacts(t *testing.T) {
 		statePath,
 		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 	var launched tui.RootModel
 	code := runBriefingExecute([]string{"delivery-plan", "linked-existing"}, briefingExecutionOptions{
@@ -1238,7 +1238,7 @@ func TestPlanAndBriefingReviewAliasesOnlyUpdatePlanFile(t *testing.T) {
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 		filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"),
 		filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"),
 	}
@@ -1316,7 +1316,7 @@ func TestBriefingSplitRewritesOrderDependenciesAndPreservesMilestoneStorage(t *t
 		configPath,
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	}
 	beforeMilestones := snapshotFiles(t, milestonePaths...)
 
@@ -1371,7 +1371,7 @@ func TestBriefingSplitLinkedSourceRequiresExplicitMilestoneChoice(t *testing.T) 
 		statePath,
 		planPath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	assertCommandFails(t, configPath,
@@ -1394,7 +1394,7 @@ func TestBriefingSplitLinkedSourceRequiresExplicitMilestoneChoice(t *testing.T) 
 		configPath: before[configPath],
 		statePath:  before[statePath],
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"):         before[filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")],
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md")],
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md")],
 	})
 }
 
@@ -1408,7 +1408,7 @@ func TestBriefingMergeRequiresExplicitLinkChoiceForMultipleLinks(t *testing.T) {
 		statePath,
 		planPath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 	mergeArgs := []string{
 		"briefing", "merge", "delivery-plan", "linked-existing", "blocked-missing",
@@ -1444,7 +1444,7 @@ func TestBriefingMergeRequiresExplicitLinkChoiceForMultipleLinks(t *testing.T) {
 		configPath: before[configPath],
 		statePath:  before[statePath],
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"):         before[filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md")],
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md")],
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"): before[filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md")],
 	})
 	assertPathMissing(t, filepath.Join(root, ".cyclestone", "milestones", "blocked-missing.md"))
 }
@@ -1459,7 +1459,7 @@ func TestMutatingPlanningCommandFailuresLeaveFilesUnchanged(t *testing.T) {
 		statePath,
 		planPath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	assertCommandFails(t, configPath,
@@ -1510,7 +1510,7 @@ func writePlanningCommandFixture(t *testing.T) (root, configPath, statePath stri
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"), "# Milestone Spec: existing-milestone - Existing Milestone\n\n## Goal\nExisting.\n")
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"), "# Milestone Spec: standalone-milestone - Standalone Milestone\n\n## Goal\nStandalone.\n")
 	writeMainTestFile(t, statePath, `{"active_milestone_id":"existing-milestone","milestone_statuses":{},"milestone_cycles":{"existing-milestone":3},"history":{}}`)
-	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"), "existing report\n")
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"), "existing report\n")
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"), `schema_version: 1
 id: delivery-plan
 title: Delivery Plan
@@ -1864,7 +1864,7 @@ func TestPlanReevaluateCLI(t *testing.T) {
 		configPath,
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	// Test 1: Preview mode
@@ -1909,7 +1909,7 @@ func TestCLILifecycleSafetyPlanAndDeleteConfirmationAndWarnings(t *testing.T) {
 		configPath: filepath.Join(root, ".cyclestone", "milestone.yml"),
 		statePath:  filepath.Join(root, ".cyclestone", "state.json"),
 		"spec":     filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		"report":   filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		"report":   filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	}
 	before := snapshotFiles(t,
 		configPath,
@@ -2039,7 +2039,7 @@ func TestCLILifecycleSafetyUnlinkPreservesMilestoneStorage(t *testing.T) {
 		configPath,
 		statePath,
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
-		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
+		filepath.Join(root, ".cyclestone", "reports", "milestones", "existing-milestone", "summary.md"),
 	)
 
 	// Unlink linked-existing Briefing

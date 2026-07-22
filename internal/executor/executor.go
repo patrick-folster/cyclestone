@@ -393,7 +393,7 @@ func interceptAgentInstructionsMutation(snapshot agentInstructionsSnapshot) (age
 
 // ExecuteCycle runs the milestone cycle as a background task.
 func ExecuteCycle(ctx context.Context, milestone config.Milestone, pipeline []config.Agent, opts RunOptions, state *config.State, ch chan tea.Msg) {
-	reportsDir := filepath.Join(".cyclestone", "reports")
+	reportsDir := filepath.Join(".cyclestone", "reports", "milestones")
 	if ch != nil {
 		sendExecutorMsg(ctx, ch, RunnerStatusMsg{
 			MilestoneID: milestone.ID,
@@ -1990,7 +1990,7 @@ func writeReportHeader(reportFile *os.File, milestoneID string, branchName strin
 	fmt.Fprintf(reportFile, "cycle: %s\n", yamlQuote(cyclePadded))
 	fmt.Fprintf(reportFile, "cycle_mode: %s\n", yamlQuote(cycleMode))
 	fmt.Fprintf(reportFile, "milestone_file: %s\n", yamlQuote(milestoneID))
-	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(cycleArtifacts(filepath.Join(".cyclestone", "reports"), milestoneID, cycleNum).Summary))
+	fmt.Fprintf(reportFile, "summary_report: %s\n", yamlQuote(cycleArtifacts(filepath.Join(".cyclestone", "reports", "milestones"), milestoneID, cycleNum).Summary))
 	if previousReportPath != "" {
 		fmt.Fprintf(reportFile, "previous_cycle_report: %s\n", yamlQuote(previousReportPath))
 	}

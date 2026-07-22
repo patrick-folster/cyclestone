@@ -15,7 +15,7 @@ Cyclestone is a local-first Go CLI/TUI for running milestone-oriented agent cycl
 9. A confirmed cycle runs the selected agent group, usually PM -> Developer -> QA -> Recommender.
 10. Each agent receives milestone context, recent reports, git context, and handoff data from earlier phases.
 11. During execution the executor streams log lines and focused structured runner status events to the TUI. The runner screen shows cycle status, active phase, per-agent state and elapsed time, report/output paths, runner/model/mode, usage ceilings, available token/tool/model-call metrics, and final success/failure/cancellation summaries. Streamed and structured fields are redacted before TUI rendering.
-12. Reports and handoffs are written under `.cyclestone/reports/<milestone-id>/cycle-NNN/`, with a milestone summary at `.cyclestone/reports/<milestone-id>/summary.md`.
+12. Reports and handoffs are written under `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/`, with a milestone summary at `.cyclestone/reports/milestones/<milestone-id>/summary.md`.
 13. Runtime state is updated in `.cyclestone/state.json`.
 14. Repository-wide and milestone-scoped `AGENTS.md` update workflows reuse the runner/preflight screens but execute a single Agent Instructions Updater phase that produces a human-reviewable proposal instead of a normal milestone cycle.
 
@@ -97,7 +97,7 @@ Backward compatibility rules:
 - `.cyclestone/milestone.yml` remains the compact Milestone index and remains valid without any Plan or Briefing data.
 - `.cyclestone/milestones/*.md` remains the long-form Milestone spec location and remains valid without planning provenance.
 - `.cyclestone/state.json` remains keyed by Milestone runtime progress and remains valid without planning state.
-- `.cyclestone/reports/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added elsewhere in the future.
+- `.cyclestone/reports/milestones/<milestone-id>/` remains keyed by Milestone ID. Existing report directories are not migrated when planning metadata is added elsewhere in the future.
 - Existing projects require no migration for the optional planning layer.
 
 Examples:
@@ -153,13 +153,13 @@ Project config:
 Runtime output:
 
 - `.cyclestone/state.json`: active milestone, status, cycles, cycle-continuation recommendation scores, `AGENTS.md` update recommendation scores, and history.
-- `.cyclestone/reports/<milestone-id>/summary.md`: milestone summary rollup.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/report.yaml`: structured cycle report. Informational repository warnings, such as untracked embedded Git repositories, are written under `informational_warnings` for human awareness and are not recommender score drivers unless the milestone explicitly targets that repository topology.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/metadata.json`: cycle metadata, including git context and informational warnings when present.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/codex-thread.json`: Codex thread metadata when a Codex session id is available.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/input.md`: per-agent prompt input.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/output.log`: per-agent raw runner output.
-- `.cyclestone/reports/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/handoff.yaml`: structured phase handoff. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`.
+- `.cyclestone/reports/milestones/<milestone-id>/summary.md`: milestone summary rollup.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/report.yaml`: structured cycle report. Informational repository warnings, such as untracked embedded Git repositories, are written under `informational_warnings` for human awareness and are not recommender score drivers unless the milestone explicitly targets that repository topology.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/metadata.json`: cycle metadata, including git context and informational warnings when present.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/codex-thread.json`: Codex thread metadata when a Codex session id is available.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/input.md`: per-agent prompt input.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/output.log`: per-agent raw runner output.
+- `.cyclestone/reports/milestones/<milestone-id>/cycle-NNN/<phase-number>-<agent-id>/handoff.yaml`: structured phase handoff. Contracted handoffs include `output_contract`, `validation_status`, `validation_errors`, `source_log`, and the parsed contract object under `summary`.
 - `.cyclestone/temp/*handoff.yaml`: per-phase temp YAML files agents are instructed to write their structured handoff to (cleaned before each run).
 - `.cyclestone/reports/agents-update-*.yaml`: standalone AGENTS update workflow reports.
 - `.cyclestone/temp/AGENTS.md.proposed`: editable proposal draft generated by AGENTS update workflows or saved from cycle history review.
