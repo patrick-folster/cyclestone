@@ -53,7 +53,7 @@ type Plan struct {
 	SchemaVersion int        `yaml:"schema_version" json:"schema_version"`
 	ID            string     `yaml:"id" json:"id"`
 	Title         string     `yaml:"title" json:"title"`
-	Objective     string     `yaml:"objective" json:"objective"`
+	Objective     string     `yaml:"objective,omitempty" json:"objective"`
 	Status        string     `yaml:"status" json:"status"`
 	CreatedAt     string     `yaml:"created_at" json:"created_at"`
 	CreatedBy     string     `yaml:"created_by" json:"created_by"`
@@ -61,7 +61,7 @@ type Plan struct {
 	UpdatedBy     string     `yaml:"updated_by" json:"updated_by"`
 	Constraints   []string   `yaml:"constraints,omitempty" json:"constraints,omitempty"`
 	BriefingOrder []string   `yaml:"briefing_order" json:"briefing_order"`
-	Briefings     []Briefing `yaml:"briefings" json:"briefings"`
+	Briefings     []Briefing `yaml:"briefings,omitempty" json:"briefings"`
 }
 
 // PlanExecution is the optional durable coordinator state for an explicitly
@@ -90,7 +90,7 @@ func IsValidPlanExecutionMode(mode string) bool {
 type Briefing struct {
 	ID               string   `yaml:"id" json:"id"`
 	Title            string   `yaml:"title" json:"title"`
-	Objective        string   `yaml:"objective" json:"objective"`
+	Objective        string   `yaml:"objective,omitempty" json:"objective"`
 	Intent           string   `yaml:"intent" json:"intent"`
 	Status           string   `yaml:"status" json:"status"`
 	CompletionSignal string   `yaml:"completion_signal" json:"completion_signal"`
@@ -259,7 +259,11 @@ func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationO
 		return planDir, result, errors.New("plan validation failed")
 	}
 
-	data, err := yaml.Marshal(plan)
+	metaPlan := plan
+	metaPlan.Objective = ""
+	metaPlan.Briefings = nil
+
+	data, err := yaml.Marshal(metaPlan)
 	if err != nil {
 		return planDir, result, fmt.Errorf("failed to marshal plan: %w", err)
 	}
@@ -297,7 +301,9 @@ func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationO
 		bMetaPath := filepath.Join(bDir, bPrefix+"-metadata.yml")
 		bSpecPath := filepath.Join(bDir, bPrefix+"-spec.md")
 
-		bData, err := yaml.Marshal(b)
+		metaBriefing := b
+		metaBriefing.Objective = ""
+		bData, err := yaml.Marshal(metaBriefing)
 		if err == nil {
 			_ = os.WriteFile(bMetaPath, bData, 0644)
 		}
@@ -367,8 +373,20 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 		return Plan{}, false
 	}
 
-	plan, valid := loadPlanningFile(planMetaPath, result, opts)
-	if !valid {
+	data, err := os.ReadFile(planMetaPath)
+	if err != nil {
+		result.addError(planMetaPath, "", fmt.Sprintf("failed to read Plan file: %v", err))
+		return Plan{}, false
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		result.addError(planMetaPath, "", fmt.Sprintf("malformed YAML: %v", err))
+		return Plan{}, false
+	}
+	warnUnknownPlanningFields(planMetaPath, &node, result)
+	var plan Plan
+	if err := node.Decode(&plan); err != nil {
+		result.addError(planMetaPath, "", fmt.Sprintf("failed to decode Plan: %v", err))
 		return Plan{}, false
 	}
 
@@ -476,8 +494,12 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 			// are not re-added to BriefingOrder.
 			for _, b := range dirBriefings {
 				if _, remaining := bMap[b.ID]; remaining && !inlineIDs[b.ID] {
-					merged = append(merged, b)
-					plan.BriefingOrder = append(plan.BriefingOrder, b.ID)
+					if b.Status != "archived" {
+						merged = append(merged, b)
+						plan.BriefingOrder = append(plan.BriefingOrder, b.ID)
+					} else {
+						merged = append(merged, b)
+					}
 					delete(bMap, b.ID)
 				}
 			}
@@ -505,6 +527,12 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 			saveOpts = append(saveOpts, WithMilestoneSourceReferences(opts.milestoneSources))
 		}
 		_, _, _ = SavePlanToFolder(filepath.Dir(planDir), plan, saveOpts...)
+	}
+
+	beforeVal := len(result.Messages)
+	validatePlan(plan, planMetaPath, result, opts)
+	if result.hasNewErrorsSince(beforeVal) {
+		return Plan{}, false
 	}
 
 	return plan, true
