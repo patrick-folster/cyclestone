@@ -1176,12 +1176,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Rewrite generated briefing IDs from title slugs to the
 					// b-<author>-NNNN form, mirroring the CLI plan generate path.
 					authorPref := config.GetDefaultAuthorPrefix(config.LoadMergedSettings())
+					// Briefing IDs are plan-scoped, starting at 0001 for each plan.
 					existingBriefingIDs := make([]string, 0)
-					for _, p := range planning.Plans {
-						for _, b := range p.Briefings {
-							existingBriefingIDs = append(existingBriefingIDs, b.ID)
-						}
-					}
 					oldToNew := map[string]string{}
 					for i := range plan.Briefings {
 						bSlug := config.PlanningSlug(plan.Briefings[i].Title)

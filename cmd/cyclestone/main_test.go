@@ -555,6 +555,81 @@ func TestPlanGenerateRejectsExistingPlanCollision(t *testing.T) {
 	assertFilesUnchanged(t, before)
 }
 
+func TestPlanGenerateBriefingIDsArePlanScoped(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+	statePath := filepath.Join(root, ".cyclestone", "state.json")
+	writeMainTestFile(t, configPath, `milestones: []`)
+	writeMainTestFile(t, statePath, `{"active_milestone_id":"","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
+
+	// Create an existing plan p-pf-0001 with briefings that have IDs b-pf-0001 and b-pf-0002.
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "p-pf-0001", "p-pf-0001.yml"), `schema_version: 1
+id: p-pf-0001
+title: Existing Plan
+objective: Existing objective.
+status: active
+created_at: "2026-07-20T10:00:00Z"
+created_by: patrick
+updated_at: "2026-07-20T11:00:00Z"
+updated_by: patrick
+briefing_order:
+  - b-pf-0001-existing-briefing-1
+  - b-pf-0002-existing-briefing-2
+briefings:
+  - id: b-pf-0001-existing-briefing-1
+    title: Existing Briefing 1
+    objective: Obj 1.
+    intent: Intent 1.
+    status: active
+    completion_signal: Done 1.
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+  - id: b-pf-0002-existing-briefing-2
+    title: Existing Briefing 2
+    objective: Obj 2.
+    intent: Intent 2.
+    status: active
+    completion_signal: Done 2.
+    created_at: "2026-07-20T10:00:00Z"
+    created_by: patrick
+    updated_at: "2026-07-20T11:00:00Z"
+    updated_by: patrick
+`)
+
+	responsePath := filepath.Join(root, "response.json")
+	writeMainTestFile(t, responsePath, `{
+  "title": "New Plan Title",
+  "objective": "A newly generated plan.",
+  "briefings": [
+    {
+      "title": "First new briefing",
+      "objective": "Describe new work.",
+      "intent": "Verify scoping.",
+      "completion_signal": "Scoped correctly."
+    }
+  ]
+}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runPlanningCommand([]string{"plan", "generate", "--goal", "Verify scoping", "--actor", "pf", "--response-file", responsePath}, configPath, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("plan generate returned %d, stderr:\n%s", code, stderr.String())
+	}
+
+	plan := loadMainTestPlan(t, root, "p-pf-0002-new-plan-title")
+	if len(plan.Briefings) != 1 {
+		t.Fatalf("expected 1 briefing, got %d", len(plan.Briefings))
+	}
+	// The allocated briefing ID should be b-pf-0001-... because briefing counters are scoped to the plan.
+	// If it was global, it would have allocated b-pf-0003-...
+	expectedID := "b-pf-0001-first-new-briefing"
+	if plan.Briefings[0].ID != expectedID {
+		t.Fatalf("expected briefing ID to be %q, got %q (briefings are not scoped to the plan!)", expectedID, plan.Briefings[0].ID)
+	}
+}
+
 func TestPlanGenerateUsesInjectedRunnerAndBoundedPrompt(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, ".cyclestone", "milestone.yml")

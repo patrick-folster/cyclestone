@@ -586,13 +586,8 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 	}
 	newPlanID := config.AllocatePlanID(pref, existingPlanIDs) + "-" + config.PlanningSlug(plan.Title)
 	plan.ID = newPlanID
-	// Collect existing briefing IDs across all plans to avoid collisions.
+	// Briefing IDs are plan-scoped, starting at 0001 for each plan.
 	existingBriefingIDs := make([]string, 0)
-	for _, p := range ctx.state.Plans {
-		for _, b := range p.Briefings {
-			existingBriefingIDs = append(existingBriefingIDs, b.ID)
-		}
-	}
 	// Map old briefing IDs to new prefixed IDs so DependsOn can be updated.
 	oldToNew := map[string]string{}
 	for i := range plan.Briefings {
