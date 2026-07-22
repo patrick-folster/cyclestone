@@ -93,7 +93,7 @@ func TestPlanListReadOnlyOutput(t *testing.T) {
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
-		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
 	)
@@ -132,7 +132,7 @@ func TestPlanTreeCommand(t *testing.T) {
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
-		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 	)
 
@@ -507,7 +507,7 @@ func TestPlanGenerateRejectsInvalidResponsesWithoutWrites(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root, configPath, statePath := writePlanningCommandFixture(t)
-			planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+			planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 			before := snapshotFiles(t,
 				configPath,
 				statePath,
@@ -536,7 +536,7 @@ func TestPlanGenerateRejectsExistingPlanCollision(t *testing.T) {
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
-		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
 	)
@@ -563,7 +563,7 @@ func TestPlanGenerateBriefingIDsArePlanScoped(t *testing.T) {
 	writeMainTestFile(t, statePath, `{"active_milestone_id":"","milestone_statuses":{},"milestone_cycles":{},"history":{}}`)
 
 	// Create an existing plan p-pf-0001 with briefings that have IDs b-pf-0001 and b-pf-0002.
-	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "p-pf-0001", "p-pf-0001.yml"), `schema_version: 1
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "p-pf-0001", "p-pf-0001-metadata.yml"), `schema_version: 1
 id: p-pf-0001
 title: Existing Plan
 objective: Existing objective.
@@ -727,7 +727,7 @@ func TestBriefingLinkReplacementRequiresExplicitFlagAndPreservesOldMilestone(t *
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "temp", "runner-note.txt"), "temp artifact\n")
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "branch-snapshots", "existing-milestone.txt"), "snapshot artifact\n")
 	before := snapshotFiles(t,
@@ -771,13 +771,13 @@ func TestBriefingLinkReplacementRejectsMissingAndCrossPlanMilestones(t *testing.
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	writeOtherPlanWithMilestoneLink(t, root, "other-plan", "foreign-link", "standalone-milestone", "active")
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
 		planPath,
-		filepath.Join(root, ".cyclestone", "plans", "other-plan", "other-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "other-plan", "other-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
 		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
@@ -866,7 +866,7 @@ func TestBriefingGenerateMilestoneCreatesOrdinaryMilestoneAndLink(t *testing.T) 
 		t.Fatalf("expected standalone milestone to remain indexed, cfg=%+v", cfg.Milestones)
 	}
 
-	if err := os.Remove(filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")); err != nil {
+	if err := os.Remove(filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")); err != nil {
 		t.Fatalf("failed to remove source Plan: %v", err)
 	}
 	cfgAfterPlanRemoval, err := config.LoadConfig(configPath)
@@ -925,7 +925,7 @@ func TestBriefingExecuteLinkedMilestoneDoesNotRewriteArtifacts(t *testing.T) {
 	tracked := snapshotFiles(t,
 		configPath,
 		statePath,
-		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"),
 	)
@@ -946,7 +946,7 @@ func TestBriefingExecuteRejectsInvalidSelections(t *testing.T) {
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	base := snapshotFiles(t, configPath, statePath, planPath)
 	tests := []struct {
 		args []string
@@ -975,7 +975,7 @@ func TestBriefingExecuteTreatsDanglingMilestoneWarningAsFatalForSelectedBriefing
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	data, err := os.ReadFile(planPath)
 	if err != nil {
 		t.Fatal(err)
@@ -997,7 +997,7 @@ func TestBriefingExecuteRejectsMalformedPlanningBeforeLaunch(t *testing.T) {
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	writeMainTestFile(t, planPath, "schema_version: 1\nid: INVALID\n")
 	launched := false
 	var stderr bytes.Buffer
@@ -1088,7 +1088,7 @@ func TestBriefingGenerateMilestonePreviewDoesNotWrite(t *testing.T) {
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
-		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+		filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 		filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 		filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
 	)
@@ -1141,7 +1141,7 @@ func TestBriefingGenerateMilestoneRefusesInvalidInputsWithoutWrites(t *testing.T
 			name: "foreign active link to generated id",
 			prepare: func(t *testing.T, root, configPath string) {
 				assertCommandSucceeds(t, configPath, []string{"briefing", "approve", "delivery-plan", "no-milestone"}, "approved")
-				writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "other-plan", "other-plan.yml"), `schema_version: 1
+				writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "other-plan", "other-plan-metadata.yml"), `schema_version: 1
 id: other-plan
 title: Other Plan
 objective: Keep duplicate links guarded.
@@ -1188,7 +1188,7 @@ briefings:
 			before := snapshotFiles(t,
 				configPath,
 				statePath,
-				filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"),
+				filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"),
 				filepath.Join(root, ".cyclestone", "milestones", "existing-milestone.md"),
 				filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"),
 			)
@@ -1365,7 +1365,7 @@ func TestBriefingSplitLinkedSourceRequiresExplicitMilestoneChoice(t *testing.T) 
     "completion_signal": "Linked delivery ships."
   }
 ]`)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
@@ -1402,7 +1402,7 @@ func TestBriefingMergeRequiresExplicitLinkChoiceForMultipleLinks(t *testing.T) {
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
@@ -1453,7 +1453,7 @@ func TestMutatingPlanningCommandFailuresLeaveFilesUnchanged(t *testing.T) {
 	t.Parallel()
 
 	root, configPath, statePath := writePlanningCommandFixture(t)
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	before := snapshotFiles(t,
 		configPath,
 		statePath,
@@ -1511,7 +1511,7 @@ func writePlanningCommandFixture(t *testing.T) (root, configPath, statePath stri
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "milestones", "standalone-milestone.md"), "# Milestone Spec: standalone-milestone - Standalone Milestone\n\n## Goal\nStandalone.\n")
 	writeMainTestFile(t, statePath, `{"active_milestone_id":"existing-milestone","milestone_statuses":{},"milestone_cycles":{"existing-milestone":3},"history":{}}`)
 	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "reports", "existing-milestone", "summary.md"), "existing report\n")
-	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml"), `schema_version: 1
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml"), `schema_version: 1
 id: delivery-plan
 title: Delivery Plan
 objective: Navigate planning records without writes.
@@ -1580,7 +1580,8 @@ briefings:
 func writeOtherPlanWithMilestoneLink(t *testing.T, root, planID, briefingID, milestoneID, status string) {
 	t.Helper()
 
-	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", planID, planID+".yml"), fmt.Sprintf(`schema_version: 1
+	prefix := config.GetPlanPrefix(planID)
+	writeMainTestFile(t, filepath.Join(root, ".cyclestone", "plans", planID, prefix+"-metadata.yml"), fmt.Sprintf(`schema_version: 1
 id: %s
 title: Other Plan
 objective: Exercise cross-plan relations.
@@ -1734,12 +1735,18 @@ func findMilestoneSpecPath(t *testing.T, root, milestoneID string) string {
 func findPlanYAMLPath(t *testing.T, root, planID string) string {
 	t.Helper()
 	plansDir := filepath.Join(root, ".cyclestone", "plans")
+	prefix := config.GetPlanPrefix(planID)
 	if entries, err := os.ReadDir(plansDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && e.Name() == planID {
-				p := filepath.Join(plansDir, e.Name(), planID+".yml")
+				p := filepath.Join(plansDir, e.Name(), prefix+"-metadata.yml")
 				if _, err := os.Stat(p); err == nil {
 					return p
+				}
+				// legacy fallback
+				legacy := filepath.Join(plansDir, e.Name(), planID+".yml")
+				if _, err := os.Stat(legacy); err == nil {
+					return legacy
 				}
 			}
 		}
@@ -1777,10 +1784,17 @@ func milestoneSpecExists(root, milestoneID string) bool {
 
 func planYAMLExists(root, planID string) bool {
 	plansDir := filepath.Join(root, ".cyclestone", "plans")
+	prefix := config.GetPlanPrefix(planID)
 	if entries, err := os.ReadDir(plansDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && e.Name() == planID {
-				if _, err := os.Stat(filepath.Join(plansDir, e.Name(), planID+".yml")); err == nil {
+				p := filepath.Join(plansDir, e.Name(), prefix+"-metadata.yml")
+				if _, err := os.Stat(p); err == nil {
+					return true
+				}
+				// legacy fallback
+				legacy := filepath.Join(plansDir, e.Name(), planID+".yml")
+				if _, err := os.Stat(legacy); err == nil {
 					return true
 				}
 			}
@@ -1844,7 +1858,7 @@ func TestPlanReevaluateCLI(t *testing.T) {
 		t.Fatalf("failed to write proposal file: %v", err)
 	}
 
-	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan.yml")
+	planPath := filepath.Join(root, ".cyclestone", "plans", "delivery-plan", "delivery-plan-metadata.yml")
 	beforePlan := snapshotFiles(t, planPath)[planPath]
 	beforeOther := snapshotFiles(t,
 		configPath,

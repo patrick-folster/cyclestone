@@ -933,3 +933,120 @@ actual codex response:
 		t.Fatalf("expected robust parser to select 'Real Objective', got %q", parsed.Objective)
 	}
 }
+
+func TestSavePlanToFolderPrefixAndMigration(t *testing.T) {
+	plansDir := filepath.Join(t.TempDir(), "plans")
+	plan := Plan{
+		SchemaVersion: PlanningSchemaVersion,
+		ID:            "p-pf-0003-four-briefing-read-only-repository-inspection-test-plan",
+		Title:         "Four briefing plan",
+		Objective:     "Plan objective",
+		Status:        "active",
+		CreatedAt:     "2026-07-20T10:15:00Z",
+		CreatedBy:     "patrick",
+		UpdatedAt:     "2026-07-20T12:30:00Z",
+		UpdatedBy:     "developer-agent",
+		BriefingOrder: []string{"b-pf-0001-survey-repository-layout-and-planning-layer"},
+		Briefings: []Briefing{
+			{
+				ID:               "b-pf-0001-survey-repository-layout-and-planning-layer",
+				Title:            "Survey repository layout and planning layer",
+				Objective:        "Briefing objective",
+				Intent:           "Briefing intent",
+				Status:           "active",
+				CompletionSignal: "Briefing completion",
+				CreatedAt:        "2026-07-20T10:15:00Z",
+				CreatedBy:        "patrick",
+				UpdatedAt:        "2026-07-20T10:15:00Z",
+				UpdatedBy:        "patrick",
+			},
+		},
+	}
+
+	// 1. Save using SavePlanToFolder
+	planDir, result, err := SavePlanToFolder(plansDir, plan)
+	if err != nil {
+		t.Fatalf("SavePlanToFolder failed: %v, result: %+v", err, result)
+	}
+
+	// Verify plan files are named after prefix
+	expectedPlanMeta := filepath.Join(planDir, "p-pf-0003-metadata.yml")
+	expectedPlanSpec := filepath.Join(planDir, "p-pf-0003-spec.md")
+	if _, err := os.Stat(expectedPlanMeta); err != nil {
+		t.Errorf("expected plan metadata at %s, got err: %v", expectedPlanMeta, err)
+	}
+	if _, err := os.Stat(expectedPlanSpec); err != nil {
+		t.Errorf("expected plan spec at %s, got err: %v", expectedPlanSpec, err)
+	}
+
+	// Verify briefing files are named after prefix
+	briefingDir := filepath.Join(planDir, "briefings", "b-pf-0001-survey-repository-layout-and-planning-layer")
+	expectedBriefingMeta := filepath.Join(briefingDir, "b-pf-0001-metadata.yml")
+	expectedBriefingSpec := filepath.Join(briefingDir, "b-pf-0001-spec.md")
+	if _, err := os.Stat(expectedBriefingMeta); err != nil {
+		t.Errorf("expected briefing metadata at %s, got err: %v", expectedBriefingMeta, err)
+	}
+	if _, err := os.Stat(expectedBriefingSpec); err != nil {
+		t.Errorf("expected briefing spec at %s, got err: %v", expectedBriefingSpec, err)
+	}
+
+	// Verify old names do not exist
+	oldPlanMeta := filepath.Join(planDir, "p-pf-0003-four-briefing-read-only-repository-inspection-test-plan.yml")
+	oldPlanSpec := filepath.Join(planDir, "p-pf-0003-four-briefing-read-only-repository-inspection-test-plan.md")
+	if _, err := os.Stat(oldPlanMeta); !os.IsNotExist(err) {
+		t.Errorf("old plan metadata still exists: %s", oldPlanMeta)
+	}
+	if _, err := os.Stat(oldPlanSpec); !os.IsNotExist(err) {
+		t.Errorf("old plan spec still exists: %s", oldPlanSpec)
+	}
+
+	// 2. Test fallback and auto-migration
+	// Rename files back to legacy format manually
+	err = os.Rename(expectedPlanMeta, oldPlanMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Rename(expectedPlanSpec, oldPlanSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldBriefingMeta := filepath.Join(briefingDir, "b-pf-0001-survey-repository-layout-and-planning-layer.yml")
+	oldBriefingSpec := filepath.Join(briefingDir, "b-pf-0001-survey-repository-layout-and-planning-layer.md")
+	err = os.Rename(expectedBriefingMeta, oldBriefingMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = os.Rename(expectedBriefingSpec, oldBriefingSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Load should find them via fallback and auto-migrate them
+	state, loadRes := LoadPlanningState(plansDir)
+	if loadRes.HasErrors() {
+		t.Fatalf("LoadPlanningState failed during fallback check: %+v", loadRes.Messages)
+	}
+	if len(state.Plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(state.Plans))
+	}
+
+	// Check if they were auto-migrated
+	if _, err := os.Stat(expectedPlanMeta); err != nil {
+		t.Errorf("expected plan metadata to be auto-migrated back to %s, got err: %v", expectedPlanMeta, err)
+	}
+	if _, err := os.Stat(expectedPlanSpec); err != nil {
+		t.Errorf("expected plan spec to be auto-migrated back to %s, got err: %v", expectedPlanSpec, err)
+	}
+	if _, err := os.Stat(expectedBriefingMeta); err != nil {
+		t.Errorf("expected briefing metadata to be auto-migrated back to %s, got err: %v", expectedBriefingMeta, err)
+	}
+	if _, err := os.Stat(expectedBriefingSpec); err != nil {
+		t.Errorf("expected briefing spec to be auto-migrated back to %s, got err: %v", expectedBriefingSpec, err)
+	}
+
+	// And old files deleted
+	if _, err := os.Stat(oldPlanMeta); !os.IsNotExist(err) {
+		t.Errorf("old plan metadata was not deleted after migration")
+	}
+}

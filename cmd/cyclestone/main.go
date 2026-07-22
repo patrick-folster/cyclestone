@@ -2128,6 +2128,11 @@ func limitBriefingMilestoneContext(text string) string {
 }
 
 func planFilePath(plansDir, planID string) string {
+	dirPath := filepath.Join(plansDir, planID)
+	if fi, err := os.Stat(dirPath); err == nil && fi.IsDir() {
+		prefix := config.GetPlanPrefix(planID)
+		return filepath.Join(dirPath, prefix+"-metadata.yml")
+	}
 	return filepath.Join(plansDir, planID+".yml")
 }
 

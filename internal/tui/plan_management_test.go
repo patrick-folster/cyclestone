@@ -469,7 +469,7 @@ func TestPlanMutationsBlockInvalidExistingFilesAndReportReloadFailures(t *testin
 	if got.ActiveScreen != ScreenCreatePlan || !strings.Contains(got.CreatePlan.ErrorMsg, "Plan was saved") {
 		t.Fatalf("post-save reload failure was not reported truthfully: %q", got.CreatePlan.ErrorMsg)
 	}
-	if _, err := os.Stat(filepath.Join(plansDir, "saved-plan", "saved-plan.yml")); err != nil {
+	if _, err := os.Stat(filepath.Join(plansDir, "saved-plan", "saved-plan-metadata.yml")); err != nil {
 		t.Fatalf("successfully saved Plan disappeared after reload failure: %v", err)
 	}
 

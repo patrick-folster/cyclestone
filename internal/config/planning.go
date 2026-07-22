@@ -28,6 +28,24 @@ const (
 
 var planningIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+// GetPlanPrefix extracts the sequence/author prefix from a plan ID.
+func GetPlanPrefix(id string) string {
+	parts := strings.Split(id, "-")
+	if len(parts) >= 3 && strings.ToLower(parts[0]) == "p" {
+		return strings.Join(parts[:3], "-")
+	}
+	return id
+}
+
+// GetBriefingPrefix extracts the sequence/author prefix from a briefing ID.
+func GetBriefingPrefix(id string) string {
+	parts := strings.Split(id, "-")
+	if len(parts) >= 3 && strings.ToLower(parts[0]) == "b" {
+		return strings.Join(parts[:3], "-")
+	}
+	return id
+}
+
 // Plan is the persisted planning-layer record stored under .cyclestone/plans.
 // Runtime execution state is stored in state.json via State.PlanExecutions,
 // not in the Plan YAML.
@@ -232,8 +250,9 @@ func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationO
 		_ = os.Remove(legacyFlatYML)
 	}
 
-	metaPath := filepath.Join(planDir, plan.ID+".yml")
-	specPath := filepath.Join(planDir, plan.ID+".md")
+	prefix := GetPlanPrefix(plan.ID)
+	metaPath := filepath.Join(planDir, prefix+"-metadata.yml")
+	specPath := filepath.Join(planDir, prefix+"-spec.md")
 
 	result := ValidatePlan(plan, metaPath, options...)
 	if result.HasErrors() {
@@ -251,6 +270,21 @@ func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationO
 		return planDir, result, err
 	}
 
+	// Clean up any files that are not the new metaPath and specPath in planDir.
+	if entries, err := os.ReadDir(planDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if name != filepath.Base(metaPath) && name != filepath.Base(specPath) {
+				if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".md") {
+					_ = os.Remove(filepath.Join(planDir, name))
+				}
+			}
+		}
+	}
+
 	// Save individual briefings into briefings/ subfolder and clean up stale entries.
 	briefingsDir := filepath.Join(planDir, "briefings")
 	activeBriefingIDs := make(map[string]bool, len(plan.Briefings))
@@ -258,12 +292,32 @@ func SavePlanToFolder(plansDir string, plan Plan, options ...PlanningValidationO
 		activeBriefingIDs[b.ID] = true
 		bDir := filepath.Join(briefingsDir, b.ID)
 		_ = os.MkdirAll(bDir, 0755)
+
+		bPrefix := GetBriefingPrefix(b.ID)
+		bMetaPath := filepath.Join(bDir, bPrefix+"-metadata.yml")
+		bSpecPath := filepath.Join(bDir, bPrefix+"-spec.md")
+
 		bData, err := yaml.Marshal(b)
 		if err == nil {
-			_ = os.WriteFile(filepath.Join(bDir, b.ID+".yml"), bData, 0644)
+			_ = os.WriteFile(bMetaPath, bData, 0644)
 		}
 		if strings.TrimSpace(b.Objective) != "" {
-			_ = os.WriteFile(filepath.Join(bDir, b.ID+".md"), []byte(b.Objective), 0644)
+			_ = os.WriteFile(bSpecPath, []byte(b.Objective), 0644)
+		}
+
+		// Clean up any files that are not the new bMetaPath and bSpecPath in bDir.
+		if bEntries, err := os.ReadDir(bDir); err == nil {
+			for _, entry := range bEntries {
+				if entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if name != filepath.Base(bMetaPath) && name != filepath.Base(bSpecPath) {
+					if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".md") {
+						_ = os.Remove(filepath.Join(bDir, name))
+					}
+				}
+			}
 		}
 	}
 	// Remove stale briefing subdirectories for briefings no longer in the Plan.
@@ -285,16 +339,28 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 	}
 
 	var planMetaPath, planSpecPath string
+	var fallbackMeta, fallbackSpec string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+		if strings.HasSuffix(name, "-metadata.yml") || strings.HasSuffix(name, "-metadata.yaml") {
 			planMetaPath = filepath.Join(planDir, name)
-		} else if strings.HasSuffix(name, ".md") {
+		} else if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			fallbackMeta = filepath.Join(planDir, name)
+		} else if strings.HasSuffix(name, "-spec.md") {
 			planSpecPath = filepath.Join(planDir, name)
+		} else if strings.HasSuffix(name, ".md") {
+			fallbackSpec = filepath.Join(planDir, name)
 		}
+	}
+
+	if planMetaPath == "" {
+		planMetaPath = fallbackMeta
+	}
+	if planSpecPath == "" {
+		planSpecPath = fallbackSpec
 	}
 
 	if planMetaPath == "" {
@@ -312,6 +378,18 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 		}
 	}
 
+	prefix := GetPlanPrefix(plan.ID)
+	expectedMetaName := prefix + "-metadata.yml"
+	expectedSpecName := prefix + "-spec.md"
+
+	migrated := false
+	if planMetaPath != "" && filepath.Base(planMetaPath) != expectedMetaName {
+		migrated = true
+	}
+	if planSpecPath != "" && filepath.Base(planSpecPath) != expectedSpecName {
+		migrated = true
+	}
+
 	// Read briefings from briefings/ subfolder if present
 	briefingsDir := filepath.Join(planDir, "briefings")
 	if briefingEntries, err := os.ReadDir(briefingsDir); err == nil {
@@ -326,15 +404,27 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 				continue
 			}
 			var bMetaPath, bSpecPath string
+			var bFallbackMeta, bFallbackSpec string
 			for _, be := range bEntries {
 				if be.IsDir() {
 					continue
 				}
-				if strings.HasSuffix(be.Name(), ".yml") || strings.HasSuffix(be.Name(), ".yaml") {
-					bMetaPath = filepath.Join(bDir, be.Name())
-				} else if strings.HasSuffix(be.Name(), ".md") {
-					bSpecPath = filepath.Join(bDir, be.Name())
+				name := be.Name()
+				if strings.HasSuffix(name, "-metadata.yml") || strings.HasSuffix(name, "-metadata.yaml") {
+					bMetaPath = filepath.Join(bDir, name)
+				} else if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+					bFallbackMeta = filepath.Join(bDir, name)
+				} else if strings.HasSuffix(name, "-spec.md") {
+					bSpecPath = filepath.Join(bDir, name)
+				} else if strings.HasSuffix(name, ".md") {
+					bFallbackSpec = filepath.Join(bDir, name)
 				}
+			}
+			if bMetaPath == "" {
+				bMetaPath = bFallbackMeta
+			}
+			if bSpecPath == "" {
+				bSpecPath = bFallbackSpec
 			}
 			if bMetaPath != "" {
 				bData, err := os.ReadFile(bMetaPath)
@@ -347,6 +437,14 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 							}
 						}
 						dirBriefings = append(dirBriefings, b)
+
+						// Check if briefing files need migration
+						bPrefix := GetBriefingPrefix(b.ID)
+						expectedBMetaName := bPrefix + "-metadata.yml"
+						expectedBSpecName := bPrefix + "-spec.md"
+						if filepath.Base(bMetaPath) != expectedBMetaName || (bSpecPath != "" && filepath.Base(bSpecPath) != expectedBSpecName) {
+							migrated = true
+						}
 					}
 				}
 			}
@@ -392,6 +490,21 @@ func loadPlanningDir(planDir string, result *PlanningValidationResult, opts plan
 			}
 			plan.Briefings = merged
 		}
+	}
+
+	if migrated {
+		var saveOpts []PlanningValidationOption
+		if len(opts.knownMilestoneIDs) > 0 {
+			var ids []string
+			for id := range opts.knownMilestoneIDs {
+				ids = append(ids, id)
+			}
+			saveOpts = append(saveOpts, WithKnownMilestoneIDs(ids))
+		}
+		if len(opts.milestoneSources) > 0 {
+			saveOpts = append(saveOpts, WithMilestoneSourceReferences(opts.milestoneSources))
+		}
+		_, _, _ = SavePlanToFolder(filepath.Dir(planDir), plan, saveOpts...)
 	}
 
 	return plan, true
