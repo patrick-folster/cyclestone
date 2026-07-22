@@ -100,6 +100,35 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// GetMilestonePrefix extracts the sequence/author prefix from a milestone ID.
+func GetMilestonePrefix(id string) string {
+	parts := strings.Split(id, "-")
+	if len(parts) >= 3 && strings.ToLower(parts[0]) == "ms" {
+		return strings.Join(parts[:3], "-")
+	}
+	if len(parts) >= 1 {
+		isAllDigits := func(s string) bool {
+			if len(s) == 0 {
+				return false
+			}
+			for _, r := range s {
+				if r < '0' || r > '9' {
+					return false
+				}
+			}
+			return true
+		}
+		if isAllDigits(parts[0]) {
+			return parts[0]
+		}
+		if len(parts) >= 2 && isAllDigits(parts[1]) {
+			return strings.Join(parts[:2], "-")
+		}
+		return parts[0]
+	}
+	return id
+}
+
 // LoadMilestoneFromDir loads a milestone from its folder directory (.cyclestone/milestones/ms-<author>-<seq>-<slug>/).
 func LoadMilestoneFromDir(dirPath string) (*Milestone, error) {
 	entries, err := os.ReadDir(dirPath)
@@ -108,16 +137,36 @@ func LoadMilestoneFromDir(dirPath string) (*Milestone, error) {
 	}
 
 	var metaPath, specPath string
+	var fallbackMeta, fallbackSpec, fallbackOrig string
+	var origPath string
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+		if strings.HasSuffix(name, "-metadata.yml") || strings.HasSuffix(name, "-metadata.yaml") {
 			metaPath = filepath.Join(dirPath, name)
-		} else if strings.HasSuffix(name, ".md") {
+		} else if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			fallbackMeta = filepath.Join(dirPath, name)
+		} else if strings.HasSuffix(name, "-specification.md") {
 			specPath = filepath.Join(dirPath, name)
+		} else if strings.HasSuffix(name, ".md") {
+			if strings.HasSuffix(name, "-original.md") {
+				origPath = filepath.Join(dirPath, name)
+			} else if strings.HasSuffix(name, "-orig.md") {
+				fallbackOrig = filepath.Join(dirPath, name)
+			} else {
+				fallbackSpec = filepath.Join(dirPath, name)
+			}
 		}
+	}
+
+	if metaPath == "" {
+		metaPath = fallbackMeta
+	}
+	if specPath == "" {
+		specPath = fallbackSpec
 	}
 
 	if metaPath == "" {
@@ -132,6 +181,67 @@ func LoadMilestoneFromDir(dirPath string) (*Milestone, error) {
 	var ms Milestone
 	if err := yaml.Unmarshal(metaData, &ms); err != nil {
 		return nil, fmt.Errorf("failed to parse milestone metadata %s: %w", metaPath, err)
+	}
+
+	prefix := GetMilestonePrefix(ms.ID)
+	expectedMetaName := prefix + "-metadata.yml"
+	expectedSpecName := prefix + "-specification.md"
+	expectedOrigName := prefix + "-original.md"
+
+	migrated := false
+	if fallbackMeta != "" && filepath.Base(fallbackMeta) != expectedMetaName {
+		migrated = true
+	}
+	if fallbackSpec != "" && filepath.Base(fallbackSpec) != expectedSpecName {
+		migrated = true
+	}
+	if fallbackOrig != "" && filepath.Base(fallbackOrig) != expectedOrigName {
+		migrated = true
+	}
+
+	if migrated {
+		// Read existing spec content if available.
+		var specBytes []byte
+		if specPath != "" {
+			specBytes, _ = os.ReadFile(specPath)
+		}
+		// Read existing original prompt file content if available.
+		var origContent []byte
+		var origReadErr error
+		if fallbackOrig != "" {
+			origContent, origReadErr = os.ReadFile(fallbackOrig)
+		} else if origPath != "" {
+			origContent, origReadErr = os.ReadFile(origPath)
+		}
+
+		// Re-save using SaveMilestoneToFolder (this writes the new spec/metadata in the new schema)
+		baseMilestonesDir := filepath.Dir(filepath.Clean(dirPath))
+		_, err = SaveMilestoneToFolder(baseMilestonesDir, ms, string(specBytes))
+		if err == nil {
+			// Write the new original file if we have content.
+			if origReadErr == nil && len(origContent) > 0 {
+				newOrigPath := filepath.Join(dirPath, expectedOrigName)
+				_ = os.WriteFile(newOrigPath, origContent, 0644)
+			}
+			// Delete the old legacy files.
+			if fallbackMeta != "" && filepath.Base(fallbackMeta) != expectedMetaName {
+				_ = os.Remove(fallbackMeta)
+			}
+			if fallbackSpec != "" && filepath.Base(fallbackSpec) != expectedSpecName {
+				_ = os.Remove(fallbackSpec)
+			}
+			if fallbackOrig != "" && filepath.Base(fallbackOrig) != expectedOrigName {
+				_ = os.Remove(fallbackOrig)
+			}
+			// Set the correct new paths.
+			metaPath = filepath.Join(dirPath, expectedMetaName)
+			specPath = filepath.Join(dirPath, expectedSpecName)
+
+			// Reload the newly written metadata since SaveMilestoneToFolder updated ms.SpecPath.
+			if newMetaData, rErr := os.ReadFile(metaPath); rErr == nil {
+				_ = yaml.Unmarshal(newMetaData, &ms)
+			}
+		}
 	}
 
 	if specPath != "" {
@@ -153,7 +263,7 @@ func LoadMilestoneFromDir(dirPath string) (*Milestone, error) {
 
 // SaveMilestoneToFolder saves a Milestone into a folder-per-item structure
 // under baseMilestonesDir. When specContent is non-empty it is written verbatim
-// as the .md spec; otherwise formatMilestoneSpec(ms) is used.
+// as the .md spec; otherwise FormatMilestoneSpec(ms) is used.
 func SaveMilestoneToFolder(baseMilestonesDir string, ms Milestone, specContent string) (string, error) {
 	if strings.TrimSpace(ms.ID) == "" {
 		return "", fmt.Errorf("milestone ID cannot be empty")
@@ -166,9 +276,9 @@ func SaveMilestoneToFolder(baseMilestonesDir string, ms Milestone, specContent s
 		return "", fmt.Errorf("failed to create milestone directory %s: %w", dirPath, err)
 	}
 
-	shortID := ms.ID
-	metaPath := filepath.Join(dirPath, shortID+".yml")
-	specPath := filepath.Join(dirPath, shortID+".md")
+	prefix := GetMilestonePrefix(ms.ID)
+	metaPath := filepath.Join(dirPath, prefix+"-metadata.yml")
+	specPath := filepath.Join(dirPath, prefix+"-specification.md")
 
 	ms.SpecPath = specPath
 
@@ -181,7 +291,7 @@ func SaveMilestoneToFolder(baseMilestonesDir string, ms Milestone, specContent s
 	}
 
 	if strings.TrimSpace(specContent) == "" {
-		specContent = formatMilestoneSpec(ms)
+		specContent = FormatMilestoneSpec(ms)
 	}
 	if err := os.WriteFile(specPath, []byte(specContent), 0644); err != nil {
 		return "", fmt.Errorf("failed to write milestone spec %s: %w", specPath, err)
@@ -365,7 +475,7 @@ func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationRe
 			specContent = string(specBytes)
 		}
 		if specContent == "" {
-			specContent = formatMilestoneSpec(ms)
+			specContent = FormatMilestoneSpec(ms)
 		}
 		if _, err := SaveMilestoneToFolder(milestonesDir, ms, specContent); err != nil {
 			return result, fmt.Errorf("failed to migrate milestone %s: %w", ms.ID, err)
@@ -695,7 +805,7 @@ func compactMilestoneConfig(configPath string, cfg *Config) error {
 			if err := os.MkdirAll(filepath.Dir(writePath), 0755); err != nil {
 				return fmt.Errorf("failed to create milestone spec directory: %w", err)
 			}
-			if err := os.WriteFile(writePath, []byte(formatMilestoneSpec(ms)), 0644); err != nil {
+			if err := os.WriteFile(writePath, []byte(FormatMilestoneSpec(ms)), 0644); err != nil {
 				return fmt.Errorf("failed to write milestone spec: %w", err)
 			}
 		} else if err != nil {
@@ -722,7 +832,7 @@ func compactMilestoneIndex(ms Milestone, specPath string) Milestone {
 	}
 }
 
-func formatMilestoneSpec(ms Milestone) string {
+func FormatMilestoneSpec(ms Milestone) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Milestone Spec: %s - %s\n\n", ms.ID, ms.Title))
 	sb.WriteString("## Goal\n")

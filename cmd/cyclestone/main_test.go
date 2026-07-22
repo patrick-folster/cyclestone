@@ -747,7 +747,7 @@ func TestBriefingGenerateMilestoneCreatesOrdinaryMilestoneAndLink(t *testing.T) 
 		t.Fatalf("expected source Briefing to persist generated link, got %+v ok=%v", briefing, ok)
 	}
 
-	specPath := filepath.Join(root, ".cyclestone", "milestones", "ms-pf-0001-no-milestone", "ms-pf-0001-no-milestone.md")
+	specPath := filepath.Join(root, ".cyclestone", "milestones", "ms-pf-0001-no-milestone", "ms-pf-0001-specification.md")
 	specBytes, err := os.ReadFile(specPath)
 	if err != nil {
 		t.Fatalf("expected generated spec: %v", err)
@@ -981,7 +981,8 @@ func TestBriefingPreparationReportsSpecOnlyPartialSuccess(t *testing.T) {
 	addPlanningMilestoneWithSpec = func(path string, milestone config.Milestone, spec string) error {
 		specDir := filepath.Join(filepath.Dir(path), "milestones", milestone.ID)
 		_ = os.MkdirAll(specDir, 0755)
-		_ = os.WriteFile(filepath.Join(specDir, milestone.ID+".md"), []byte(spec), 0644)
+		prefix := config.GetMilestonePrefix(milestone.ID)
+		_ = os.WriteFile(filepath.Join(specDir, prefix+"-specification.md"), []byte(spec), 0644)
 		return errors.New("injected metadata write failure")
 	}
 	_, err = prepareBriefingMilestone(ctx, configPath, briefingMilestoneRequest{
@@ -990,7 +991,7 @@ func TestBriefingPreparationReportsSpecOnlyPartialSuccess(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "was written, but the compact index update failed") {
 		t.Fatalf("expected spec-only partial-success error, got %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones", "ms-pf-0001-no-milestone", "ms-pf-0001-no-milestone.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones", "ms-pf-0001-no-milestone", "ms-pf-0001-specification.md")); err != nil {
 		t.Fatalf("expected orphan spec to remain for human recovery: %v", err)
 	}
 	cfg, err := config.LoadConfig(configPath)
@@ -1639,7 +1640,8 @@ func findMilestoneSpecPath(t *testing.T, root, milestoneID string) string {
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && e.Name() == milestoneID {
-				p := filepath.Join(milestonesDir, e.Name(), milestoneID+".md")
+				prefix := config.GetMilestonePrefix(milestoneID)
+				p := filepath.Join(milestonesDir, e.Name(), prefix+"-specification.md")
 				if _, err := os.Stat(p); err == nil {
 					return p
 				}
@@ -1680,8 +1682,16 @@ func milestoneSpecExists(root, milestoneID string) bool {
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && e.Name() == milestoneID {
-				if _, err := os.Stat(filepath.Join(milestonesDir, e.Name(), milestoneID+".md")); err == nil {
+				prefix := config.GetMilestonePrefix(milestoneID)
+				targetPath := filepath.Join(milestonesDir, e.Name(), prefix+"-specification.md")
+				if _, err := os.Stat(targetPath); err == nil {
 					return true
+				} else {
+					fmt.Printf("DEBUG: Stat %s failed: %v\n", targetPath, err)
+					sub, _ := os.ReadDir(filepath.Join(milestonesDir, e.Name()))
+					for _, s := range sub {
+						fmt.Printf("  Found file: %s\n", s.Name())
+					}
 				}
 			}
 		}

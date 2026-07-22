@@ -260,7 +260,7 @@ func TestAddMilestone(t *testing.T) {
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-2") {
-				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-2.md"))
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-2-specification.md"))
 				if err == nil && stringsContains(string(specBytes), "Second goal") {
 					specFound = true
 				}
@@ -364,7 +364,7 @@ Keep generated content.
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-9") {
-				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-9.md"))
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-9-specification.md"))
 				if err == nil && stringsContains(string(specBytes), "Keep generated content.") &&
 					!stringsContains(string(specBytes), "Fallback goal should not overwrite") {
 					specFound = true
@@ -399,7 +399,7 @@ Keep long-form context.
 		t.Fatalf("AddMilestoneWithSpec failed: %v", err)
 	}
 	// Read the folder-per-item spec.
-	specBytes, err := os.ReadFile(filepath.Join(milestonesDir, "generated", "generated.md"))
+	specBytes, err := os.ReadFile(filepath.Join(milestonesDir, "generated", "generated-specification.md"))
 	if err != nil {
 		t.Fatalf("expected supplied spec to be written: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestMigrateMilestoneStorage(t *testing.T) {
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && strings.HasPrefix(e.Name(), "MS-1") {
-				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-1.md"))
+				specBytes, err := os.ReadFile(filepath.Join(milestonesDir, e.Name(), "MS-1-specification.md"))
 				if err == nil && stringsContains(string(specBytes), "Legacy goal") && stringsContains(string(specBytes), "Legacy criterion") {
 					specFound = true
 				}

@@ -1618,10 +1618,11 @@ func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req
 		actor = "planning"
 	}
 	now := planningTimestamp()
+	prefix := config.GetMilestonePrefix(targetID)
 	milestone := config.Milestone{
 		ID:               targetID,
 		Title:            briefing.Title,
-		SpecPath:         filepath.Join("milestones", targetID, targetID+".md"),
+		SpecPath:         filepath.Join("milestones", targetID, prefix+"-specification.md"),
 		CreatedBy:        actor,
 		UpdatedBy:        actor,
 		CreatedAt:        now,
@@ -1636,7 +1637,7 @@ func prepareBriefingMilestone(ctx planningCommandContext, configPath string, req
 	// Resolve the spec path, checking the folder-per-item directory first, then
 	// the legacy flat .md path for interrupted pre-folder migrations.
 	baseDir := filepath.Dir(configPath)
-	absoluteSpecPath := filepath.Join(baseDir, "milestones", targetID, targetID+".md")
+	absoluteSpecPath := filepath.Join(baseDir, "milestones", targetID, prefix+"-specification.md")
 	if _, err := os.Stat(absoluteSpecPath); err != nil {
 		// Fall back to legacy flat .md path.
 		flatPath := filepath.Join(baseDir, "milestones", targetID+".md")

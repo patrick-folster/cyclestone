@@ -1257,6 +1257,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var matchedName string
 		var matchedIsDir bool
+		var agentSpecContent string
 		milestonesDir := filepath.Join(".cyclestone", "milestones")
 		files, err := os.ReadDir(milestonesDir)
 		if err == nil {
@@ -1283,6 +1284,16 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if matchedIsDir {
 					dirPath := filepath.Join(milestonesDir, matchedName)
 					finalID = matchedName
+					subFiles, _ := os.ReadDir(dirPath)
+					for _, sf := range subFiles {
+						if !sf.IsDir() && strings.HasSuffix(sf.Name(), ".md") && sf.Name() != m.CreateMilestone.NextID+"-orig.md" && sf.Name() != m.CreateMilestone.NextID+"-original.md" {
+							data, err := os.ReadFile(filepath.Join(dirPath, sf.Name()))
+							if err == nil {
+								agentSpecContent = string(data)
+								break
+							}
+						}
+					}
 					if loadedMS, err := config.LoadMilestoneFromDir(dirPath); err == nil && loadedMS != nil {
 						if loadedMS.Title != "" {
 							title = loadedMS.Title
@@ -1291,19 +1302,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							goal = loadedMS.Goal
 						}
 					} else {
-						subFiles, _ := os.ReadDir(dirPath)
-						var specContent string
-						for _, sf := range subFiles {
-							if !sf.IsDir() && strings.HasSuffix(sf.Name(), ".md") {
-								data, err := os.ReadFile(filepath.Join(dirPath, sf.Name()))
-								if err == nil {
-									specContent = string(data)
-									break
-								}
-							}
-						}
-						if specContent != "" {
-							lines := strings.Split(specContent, "\n")
+						if agentSpecContent != "" {
+							lines := strings.Split(agentSpecContent, "\n")
 							for _, line := range lines {
 								trimmed := strings.TrimSpace(line)
 								if strings.HasPrefix(trimmed, "# ") {
@@ -1326,7 +1326,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					filePath := filepath.Join(milestonesDir, matchedName)
 					contentBytes, err := os.ReadFile(filePath)
 					if err == nil {
-						lines := strings.Split(string(contentBytes), "\n")
+						agentSpecContent = string(contentBytes)
+						lines := strings.Split(agentSpecContent, "\n")
 						var firstLine string
 						for _, line := range lines {
 							trimmed := strings.TrimSpace(line)
@@ -1353,6 +1354,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
+					// Remove flat file since it belongs inside the subdirectory
+					_ = os.Remove(filePath)
 				}
 			}
 		}
@@ -1379,12 +1382,26 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		milestonesDir2 := filepath.Join(filepath.Dir(m.ConfigPath), "milestones")
-		if _, err := config.SaveMilestoneToFolder(milestonesDir2, newMilestone, ""); err != nil {
+		if _, err := config.SaveMilestoneToFolder(milestonesDir2, newMilestone, agentSpecContent); err != nil {
 			if !strings.Contains(err.Error(), "already exists") {
 				m.CreateMilestone.ErrorMsg = fmt.Sprintf("Error adding milestone: %v", err)
 				return m, nil
 			}
 		}
+
+		// Write the orig.md file carrying the initial prompt/spec.
+		origPath := filepath.Join(milestonesDir2, finalID, m.CreateMilestone.NextID+"-original.md")
+		origMilestone := config.Milestone{
+			ID:                 finalID,
+			Title:              m.CreateMilestone.TitleInput.Value(),
+			Goal:               m.CreateMilestone.GoalInput.Value(),
+			AcceptanceCriteria: nil,
+		}
+		if origMilestone.Title == "" {
+			origMilestone.Title = title
+		}
+		origContent := config.FormatMilestoneSpec(origMilestone)
+		_ = os.WriteFile(origPath, []byte(origContent), 0644)
 
 		// Reload config and update dashboard
 		cfg, err := config.LoadConfig(m.ConfigPath)

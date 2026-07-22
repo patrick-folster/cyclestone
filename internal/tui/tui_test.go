@@ -266,9 +266,9 @@ func TestMissingConfigRoutesToSetupWizardAndConfirmCreatesProject(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(root, ".cyclestone", "milestones")); err != nil {
 		t.Fatalf("milestones directory was not created: %v", err)
 	}
-	// The first milestone is saved in folder-per-item layout: milestones/0001-first-run/0001-first-run.md
+	// The first milestone is saved in folder-per-item layout: milestones/0001-first-run/0001-specification.md
 	specDir := filepath.Join(root, ".cyclestone", "milestones", "0001-first-run")
-	specData, err := os.ReadFile(filepath.Join(specDir, "0001-first-run.md"))
+	specData, err := os.ReadFile(filepath.Join(specDir, "0001-specification.md"))
 	if err != nil {
 		// Try to find the spec by scanning the milestones directory.
 		entries, dirErr := os.ReadDir(filepath.Join(root, ".cyclestone", "milestones"))
@@ -278,7 +278,7 @@ func TestMissingConfigRoutesToSetupWizardAndConfirmCreatesProject(t *testing.T) 
 		found := false
 		for _, e := range entries {
 			if e.IsDir() && strings.HasPrefix(e.Name(), "0001") {
-				specData, err = os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", e.Name(), "0001-first-run.md"))
+				specData, err = os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", e.Name(), "0001-specification.md"))
 				if err == nil {
 					found = true
 					break
@@ -908,10 +908,10 @@ cycles: 0
 created_by: tui
 updated_by: tui
 `
-	if err := os.WriteFile(filepath.Join(targetDir, "metadata.yml"), []byte(metaData), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(targetDir, "ms-pf-0001-metadata.yml"), []byte(metaData), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "spec.md"), []byte("# Milestone Spec: Test Milestone Without Changes\n\n## Goal\nTest goal\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(targetDir, "ms-pf-0001-specification.md"), []byte("# Milestone Spec: Test Milestone Without Changes\n\n## Goal\nTest goal\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

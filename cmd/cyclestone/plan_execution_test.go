@@ -36,7 +36,7 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 			executionBriefing("reused", []string{"generated"}, "linked"),
 		},
 	})
-	standaloneBefore, err := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone.md"))
+	standaloneBefore, err := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone-specification.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestPlanExecutionGeneratesOnceContinuesAndIgnoresStandaloneMilestone(t *tes
 	if state.GetMilestoneCycles("standalone") != 2 || state.GetMilestoneStatus("standalone") != "In Progress" {
 		t.Fatalf("standalone runtime state changed: %+v", state)
 	}
-	standaloneAfter, _ := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone.md"))
+	standaloneAfter, _ := os.ReadFile(filepath.Join(root, ".cyclestone", "milestones", "standalone", "standalone-specification.md"))
 	if string(standaloneAfter) != string(standaloneBefore) {
 		t.Fatal("standalone Milestone spec was modified")
 	}
@@ -511,7 +511,7 @@ func TestPlanExecutionRecoversIndexedMilestoneAfterLinkSaveFailure(t *testing.T)
 	saves, generations := 0, 0
 	savePlanningPlan = func(dir string, plan config.Plan, options ...config.PlanningValidationOption) (string, config.PlanningValidationResult, error) {
 		saves++
-		if saves == 3 {
+		if saves == 4 {
 			return "", config.PlanningValidationResult{}, errors.New("injected link save failure")
 		}
 		return originalSave(dir, plan, options...)
