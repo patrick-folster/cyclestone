@@ -1155,7 +1155,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if (loadedPlan == nil || len(loadedPlan.Briefings) == 0) && strings.TrimSpace(msg.Output) != "" {
+		if loadedPlan != nil {
+			// Migrate legacy flat .yml files written by agent runner during creation to folder layout.
+			_, _, _ = savePlanningPlan(plansDir, *loadedPlan, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+			// Reload state to ensure TUI has folder representation loaded
+			planning, _ = loadPlanningState(plansDir, config.WithKnownMilestoneIDs(m.planningMilestoneIDs()))
+		} else if (loadedPlan == nil || len(loadedPlan.Briefings) == 0) && strings.TrimSpace(msg.Output) != "" {
 			generated, err := config.ParseGeneratedPlanResponse(msg.Output)
 			if err == nil {
 				now := time.Now().UTC().Format(time.RFC3339)

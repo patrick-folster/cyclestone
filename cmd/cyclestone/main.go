@@ -554,6 +554,24 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 		return 1
 	}
 
+	var plan config.Plan
+	existingFiles := make(map[string]bool)
+	if entries, err := os.ReadDir(ctx.plansDir); err == nil {
+		for _, entry := range entries {
+			existingFiles[entry.Name()] = true
+		}
+	}
+	defer func() {
+		if entries, err := os.ReadDir(ctx.plansDir); err == nil {
+			for _, entry := range entries {
+				name := entry.Name()
+				if !existingFiles[name] && name != plan.ID && name != plan.ID+".yml" {
+					_ = os.RemoveAll(filepath.Join(ctx.plansDir, name))
+				}
+			}
+		}
+	}()
+
 	var responseText string
 	if strings.TrimSpace(*responseFile) != "" {
 		data, err := os.ReadFile(*responseFile)
@@ -577,9 +595,10 @@ func runPlanGenerate(args []string, configPath string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", err)
 		return 1
 	}
-	plan, err := convertGeneratedPlan(*goal, generated, strings.TrimSpace(*actor), planningTimestamp())
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", err)
+	var errConvert error
+	plan, errConvert = convertGeneratedPlan(*goal, generated, strings.TrimSpace(*actor), planningTimestamp())
+	if errConvert != nil {
+		fmt.Fprintf(stderr, "Error: invalid generated Plan response: %v\n", errConvert)
 		return 1
 	}
 	// Always resolve the author prefix from merged (global+project) settings so

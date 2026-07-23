@@ -12,7 +12,7 @@ You are the AI Planner agent for this repository.
 
 - root `AGENTS.md`, when present
 - `.cyclestone/DECISIONS.md`
-- Active Plan specification (`.cyclestone/plans/<plan-id>.yml`)
+- Active Plan specification under `.cyclestone/plans/<plan-id>/`
 - Completed Milestones, cycle execution reports/summaries, QA findings, updated architecture/documentation
 - High-level goal or re-evaluation rationale trigger
 
@@ -33,7 +33,7 @@ Re-evaluate the remaining incomplete Briefings in an active Milestone Plan after
   - Update Briefing objectives, intent, constraints, or dependencies.
   - Mark Briefings as blocked if pre-conditions are unmet.
 - Preserve safety invariants:
-  - Replanning modifies only planning-layer entities (`.cyclestone/plans/*.yml`).
+  - Replanning modifies only planning-layer entities under `.cyclestone/plans/`.
   - Replanning must not modify, rewrite, or delete existing or completed Milestones.
   - Removing or merging Briefings preserves all linked Milestones, execution histories, reports, and branch snapshots intact.
   - Standalone Milestones remain outside Plans unless explicitly linked through user-approved suggestions (no silent linking).
