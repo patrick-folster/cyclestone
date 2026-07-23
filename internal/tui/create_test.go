@@ -432,3 +432,71 @@ func TestCreateMilestoneLoadingViewBoundsLiveOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateMilestoneModelOptionalBriefingContextIsBoundedAndSubmissionUnchanged(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vscode")
+	styles := DefaultStyles(true, true)
+	m := NewCreateMilestoneModel(styles)
+	m.NextID = "ms-pf-0010"
+	m.BriefingContext = strings.Join([]string{
+		"Plan: plan-alpha - Alpha Plan",
+		"Briefing ID: briefing-api",
+		"Title: API Module",
+		"Status: active",
+		"Objective: Build an API with enough detail to wrap on a narrow terminal.",
+		"Intent: Keep the existing milestone creation workflow.",
+		"Completion Signal: All tests pass.",
+		"Constraints: No external services",
+		"Dependencies: briefing-core",
+		"Milestone Link: ms-existing",
+	}, "\n")
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 18})
+
+	initial := stripANSI(m.View())
+	if !strings.Contains(initial, "Briefing Context") || !strings.Contains(initial, "Plan: plan-alpha") {
+		t.Fatalf("expected briefing context on create screen, got:\n%s", initial)
+	}
+	if width, height := renderedSize(initial); width > m.Width || height > m.Height {
+		t.Fatalf("expected bounded narrow form, got %dx%d for terminal %dx%d\n%s", width, height, m.Width, m.Height, initial)
+	}
+
+	m.FocusIndex = 1
+	for range 10 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	scrolled := stripANSI(m.View())
+	if !strings.Contains(scrolled, "Milestone Link: ms-existing") {
+		t.Fatalf("expected complete context to be reviewable by paging, got:\n%s", scrolled)
+	}
+
+	m.GoalInput.SetValue("Create the API milestone")
+	m.TitleInput.SetValue("API Milestone")
+	m.RunnerType = "codex"
+	m.CreateBranch = false
+	m.FocusIndex = 4
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected existing submit command")
+	}
+	got, ok := cmd().(CreateMilestoneMsg)
+	if !ok {
+		t.Fatalf("expected unchanged CreateMilestoneMsg, got %#v", cmd())
+	}
+	want := CreateMilestoneMsg{
+		ID:           "ms-pf-0010-api-milestone",
+		Title:        "API Milestone",
+		Goal:         "Create the API milestone",
+		RunnerType:   "codex",
+		CreateBranch: false,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected create message:\ngot  %#v\nwant %#v", got, want)
+	}
+
+	ordinary := NewCreateMilestoneModel(styles)
+	ordinary.NextID = "ms-pf-0010"
+	ordinary, _ = ordinary.Update(tea.WindowSizeMsg{Width: 40, Height: 18})
+	if ordinary.BriefingContext != "" || strings.Contains(stripANSI(ordinary.View()), "Briefing Context") {
+		t.Fatal("ordinary create-milestone entry unexpectedly requires or displays Briefing context")
+	}
+}

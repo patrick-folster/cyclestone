@@ -268,6 +268,65 @@ func TestBriefingDetailsModel_RenderingAndScrolling(t *testing.T) {
 	}
 }
 
+func TestBriefingDetailsModelCreateMilestoneActionSnapshotsCompleteContext(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "vscode")
+	styles := DefaultStyles(true, true)
+	model := NewBriefingDetailsModel(styles)
+	model.Plan = config.Plan{ID: "plan-alpha", Title: "Alpha Plan"}
+	model.Briefing = config.Briefing{
+		ID:               "briefing-api",
+		Title:            "API Module",
+		Status:           "active",
+		Objective:        "Build HTTP APIs for the frontend.",
+		Intent:           "Expose stable endpoints.",
+		CompletionSignal: "All endpoint tests pass.",
+		Constraints:      []string{"Use the standard library", "No cloud dependency"},
+		DependsOn:        []string{"briefing-core"},
+		MilestoneID:      "ms-existing",
+	}
+	model, _ = model.Update(tea.WindowSizeMsg{Width: 38, Height: 18})
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "Create Milestone") {
+		t.Fatalf("expected narrow detail help to advertise Create Milestone, got:\n%s", view)
+	}
+
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if cmd == nil {
+		t.Fatal("expected Create Milestone action command")
+	}
+	change, ok := cmd().(ChangeScreenMsg)
+	if !ok || change.Screen != ScreenCreateMilestone {
+		t.Fatalf("expected create-milestone navigation, got %#v", change)
+	}
+	data, ok := change.Data.(CreateMilestoneFromBriefingData)
+	if !ok {
+		t.Fatalf("expected typed Briefing payload, got %#v", change.Data)
+	}
+	for _, want := range []string{
+		"Plan: plan-alpha - Alpha Plan",
+		"Briefing ID: briefing-api",
+		"Title: API Module",
+		"Status: active",
+		"Objective: Build HTTP APIs for the frontend.",
+		"Intent: Expose stable endpoints.",
+		"Completion Signal: All endpoint tests pass.",
+		"Constraints: - Use the standard library",
+		"No cloud dependency",
+		"Dependencies: - briefing-core",
+		"Milestone Link: ms-existing",
+	} {
+		if !strings.Contains(data.ContextText, want) {
+			t.Errorf("expected snapshot context to contain %q, got:\n%s", want, data.ContextText)
+		}
+	}
+
+	model.Briefing.Constraints[0] = "mutated after navigation"
+	if data.Briefing.Constraints[0] != "Use the standard library" {
+		t.Fatalf("expected immutable Briefing slice snapshot, got %#v", data.Briefing.Constraints)
+	}
+}
+
 func TestMultiLevelNavigationFlow(t *testing.T) {
 	cfg := &config.Config{
 		Milestones: []config.Milestone{

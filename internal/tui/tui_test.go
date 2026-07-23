@@ -511,6 +511,41 @@ func TestDefaultStylesVSCodeFallback(t *testing.T) {
 	}
 }
 
+func TestRootModelRoutesBriefingSnapshotIntoFreshCreateMilestoneModel(t *testing.T) {
+	cfg := &config.Config{}
+	state := &config.State{
+		MilestoneStatuses:        make(map[string]string),
+		MilestoneCycles:          make(map[string]int),
+		MilestoneRecommendations: make(map[string]int),
+		History:                  make(map[string][]config.MilestoneCycleLog),
+	}
+	model := NewRootModel(cfg, state, "config.yml", "state.json", true, false, true, true)
+	model.Width = 60
+	model.Height = 24
+	data := newCreateMilestoneFromBriefingData(
+		config.Plan{ID: "plan-one", Title: "One"},
+		config.Briefing{ID: "briefing-one", Title: "First", Objective: "Ship it", Status: "active"},
+	)
+
+	updated, _ := model.Update(ChangeScreenMsg{Screen: ScreenCreateMilestone, Data: data})
+	got := updated.(RootModel)
+	if got.ActiveScreen != ScreenCreateMilestone || got.CreateMilestone.Mode != ModeCreateMilestone {
+		t.Fatalf("expected create-milestone mode, got screen=%v mode=%v", got.ActiveScreen, got.CreateMilestone.Mode)
+	}
+	if got.CreateMilestone.BriefingContext != data.ContextText {
+		t.Fatalf("expected exact immutable context transfer, got %q", got.CreateMilestone.BriefingContext)
+	}
+	if got.CreateMilestone.GoalInput.Value() != "" || got.CreateMilestone.TitleInput.Value() != "" {
+		t.Fatal("Briefing entry must not prefill existing editable inputs")
+	}
+
+	updated, _ = got.Update(ChangeScreenMsg{Screen: ScreenCreateMilestone})
+	ordinary := updated.(RootModel)
+	if ordinary.CreateMilestone.BriefingContext != "" || ordinary.CreateMilestone.Mode != ModeCreateMilestone {
+		t.Fatalf("ordinary entry retained Briefing state: %+v", ordinary.CreateMilestone)
+	}
+}
+
 func TestWindowSizeSafetyChecks(t *testing.T) {
 	cfg := &config.Config{}
 	state := &config.State{

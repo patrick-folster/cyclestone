@@ -16,6 +16,65 @@ type BriefingDetailData struct {
 	Briefing config.Briefing
 }
 
+// CreateMilestoneFromBriefingData is an immutable navigation snapshot used to
+// display the selected Briefing in the existing create-milestone workflow.
+type CreateMilestoneFromBriefingData struct {
+	Plan        config.Plan
+	Briefing    config.Briefing
+	ContextText string
+}
+
+func newCreateMilestoneFromBriefingData(plan config.Plan, briefing config.Briefing) CreateMilestoneFromBriefingData {
+	plan.Constraints = append([]string(nil), plan.Constraints...)
+	plan.BriefingOrder = append([]string(nil), plan.BriefingOrder...)
+	plan.Briefings = append([]config.Briefing(nil), plan.Briefings...)
+	for index := range plan.Briefings {
+		plan.Briefings[index] = cloneBriefingForNavigation(plan.Briefings[index])
+	}
+	briefing = cloneBriefingForNavigation(briefing)
+	return CreateMilestoneFromBriefingData{
+		Plan:        plan,
+		Briefing:    briefing,
+		ContextText: formatBriefingContext(plan, briefing),
+	}
+}
+
+func cloneBriefingForNavigation(briefing config.Briefing) config.Briefing {
+	briefing.Constraints = append([]string(nil), briefing.Constraints...)
+	briefing.DependsOn = append([]string(nil), briefing.DependsOn...)
+	return briefing
+}
+
+func formatBriefingContext(plan config.Plan, briefing config.Briefing) string {
+	valueOrNone := func(value string) string {
+		if strings.TrimSpace(value) == "" {
+			return "None"
+		}
+		return value
+	}
+	listOrNone := func(values []string) string {
+		if len(values) == 0 {
+			return "None"
+		}
+		return "- " + strings.Join(values, "\n- ")
+	}
+
+	return fmt.Sprintf(
+		"Plan: %s - %s\nBriefing ID: %s\nTitle: %s\nStatus: %s\nObjective: %s\nIntent: %s\nCompletion Signal: %s\nConstraints: %s\nDependencies: %s\nMilestone Link: %s",
+		valueOrNone(plan.ID),
+		valueOrNone(plan.Title),
+		valueOrNone(briefing.ID),
+		valueOrNone(briefing.Title),
+		valueOrNone(briefing.Status),
+		valueOrNone(briefing.Objective),
+		valueOrNone(briefing.Intent),
+		valueOrNone(briefing.CompletionSignal),
+		listOrNone(briefing.Constraints),
+		listOrNone(briefing.DependsOn),
+		valueOrNone(briefing.MilestoneID),
+	)
+}
+
 // PlansModel manages the flat table listing of all Plans in the TUI.
 type PlansModel struct {
 	Table    table.Model
@@ -592,6 +651,14 @@ func (m BriefingDetailsModel) Update(msg tea.Msg) (BriefingDetailsModel, tea.Cmd
 
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "c":
+			data := newCreateMilestoneFromBriefingData(m.Plan, m.Briefing)
+			return m, func() tea.Msg {
+				return ChangeScreenMsg{
+					Screen: ScreenCreateMilestone,
+					Data:   data,
+				}
+			}
 		case "up", "k":
 			m.ScrollOffset--
 			if m.ScrollOffset < 0 {
@@ -608,7 +675,7 @@ func (m BriefingDetailsModel) Update(msg tea.Msg) (BriefingDetailsModel, tea.Cmd
 				m.ScrollOffset = 0
 			}
 			return m, nil
-		case "pgdn", "]":
+		case "pgdn", "pgdown", "]":
 			m.ScrollOffset += 5
 			m.clampScrollOffset()
 			return m, nil
@@ -627,7 +694,7 @@ func (m BriefingDetailsModel) Update(msg tea.Msg) (BriefingDetailsModel, tea.Cmd
 func (m *BriefingDetailsModel) clampScrollOffset() {
 	content := m.renderContent()
 	lines := len(strings.Split(content, "\n"))
-	visibleHeight := m.Height - 5
+	visibleHeight := m.Height - m.helpLineCount() - 1
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
@@ -729,12 +796,7 @@ func (m BriefingDetailsModel) renderContent() string {
 }
 
 func (m BriefingDetailsModel) View() string {
-	helpCmds := []string{
-		"↑/↓ Scroll",
-		"Esc Plan Details",
-		"q Quit",
-		"Ctrl+C Quit",
-	}
+	helpCmds := m.helpCommands()
 	helpWidth := m.Width - 4
 	if helpWidth < 10 {
 		helpWidth = 10
@@ -744,7 +806,7 @@ func (m BriefingDetailsModel) View() string {
 	content := m.renderContent()
 	lines := strings.Split(content, "\n")
 
-	visibleHeight := m.Height - 5
+	visibleHeight := m.Height - (strings.Count(helpText, "\n") + 1) - 1
 	if visibleHeight < 3 {
 		visibleHeight = 3
 	}
@@ -764,4 +826,23 @@ func (m BriefingDetailsModel) View() string {
 	visibleContent := strings.Join(lines[start:end], "\n")
 
 	return lipgloss.JoinVertical(lipgloss.Left, visibleContent, helpText)
+}
+
+func (m BriefingDetailsModel) helpCommands() []string {
+	return []string{
+		"↑/↓ Scroll",
+		"c Create Milestone",
+		"Esc Plan Details",
+		"q Quit",
+		"Ctrl+C Quit",
+	}
+}
+
+func (m BriefingDetailsModel) helpLineCount() int {
+	helpWidth := m.Width - 4
+	if helpWidth < 10 {
+		helpWidth = 10
+	}
+	help := renderCommandHelp(m.Styles, m.helpCommands(), helpWidth)
+	return strings.Count(help, "\n") + 1
 }

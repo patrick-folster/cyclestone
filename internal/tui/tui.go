@@ -461,6 +461,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.CreateMilestone.GoalInput.SetValue("")
 				m.CreateMilestone.FocusIndex = 0
+			} else if briefingData, ok := msg.Data.(CreateMilestoneFromBriefingData); ok {
+				m.CreateMilestone.Mode = ModeCreateMilestone
+				m.CreateMilestone.BriefingContext = briefingData.ContextText
 			} else {
 				m.CreateMilestone.Mode = ModeCreateMilestone
 			}
