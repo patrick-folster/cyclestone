@@ -532,16 +532,16 @@ func TestRootModelRoutesBriefingSnapshotIntoFreshCreateMilestoneModel(t *testing
 	if got.ActiveScreen != ScreenCreateMilestone || got.CreateMilestone.Mode != ModeCreateMilestone {
 		t.Fatalf("expected create-milestone mode, got screen=%v mode=%v", got.ActiveScreen, got.CreateMilestone.Mode)
 	}
-	if got.CreateMilestone.BriefingContext != data.ContextText {
-		t.Fatalf("expected exact immutable context transfer, got %q", got.CreateMilestone.BriefingContext)
+	if got.CreateMilestone.GoalInput.Value() != data.ContextText {
+		t.Fatalf("expected exact editable context transfer, got %q", got.CreateMilestone.GoalInput.Value())
 	}
-	if got.CreateMilestone.GoalInput.Value() != "" || got.CreateMilestone.TitleInput.Value() != "" {
-		t.Fatal("Briefing entry must not prefill existing editable inputs")
+	if got.CreateMilestone.TitleInput.Value() != "" {
+		t.Fatal("Briefing entry must not prefill the optional title")
 	}
 
 	updated, _ = got.Update(ChangeScreenMsg{Screen: ScreenCreateMilestone})
 	ordinary := updated.(RootModel)
-	if ordinary.CreateMilestone.BriefingContext != "" || ordinary.CreateMilestone.Mode != ModeCreateMilestone {
+	if ordinary.CreateMilestone.GoalInput.Value() != "" || ordinary.CreateMilestone.Mode != ModeCreateMilestone {
 		t.Fatalf("ordinary entry retained Briefing state: %+v", ordinary.CreateMilestone)
 	}
 }

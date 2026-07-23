@@ -17,7 +17,7 @@ type BriefingDetailData struct {
 }
 
 // CreateMilestoneFromBriefingData is an immutable navigation snapshot used to
-// display the selected Briefing in the existing create-milestone workflow.
+// prefill the selected Briefing in the existing create-milestone workflow.
 type CreateMilestoneFromBriefingData struct {
 	Plan        config.Plan
 	Briefing    config.Briefing

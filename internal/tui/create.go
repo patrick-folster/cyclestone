@@ -33,31 +33,29 @@ type CreateMilestoneMsg struct {
 
 // CreateMilestoneModel handles the form for creating a new milestone.
 type CreateMilestoneModel struct {
-	Mode                  CreateScreenMode
-	RunMilestone          config.Milestone
-	RunRunnerLLM          string
-	RunRunnerMode         string
-	RunNoBranch           bool
-	RunGroup              config.AgentGroup
-	RunSingleID           string
-	RunWorkflow           WorkflowKind
-	NextID                string
-	TitleInput            textinput.Model
-	GoalInput             textarea.Model
-	Spinner               spinner.Model
-	RunnerType            string
-	DefaultLLM            string
-	CreateBranch          bool
-	Loading               bool
-	Logs                  []string
-	FocusIndex            int
-	Width                 int
-	Height                int
-	Styles                Styles
-	ErrorMsg              string
-	Form                  FormModel
-	BriefingContext       string
-	BriefingContextOffset int
+	Mode          CreateScreenMode
+	RunMilestone  config.Milestone
+	RunRunnerLLM  string
+	RunRunnerMode string
+	RunNoBranch   bool
+	RunGroup      config.AgentGroup
+	RunSingleID   string
+	RunWorkflow   WorkflowKind
+	NextID        string
+	TitleInput    textinput.Model
+	GoalInput     textarea.Model
+	Spinner       spinner.Model
+	RunnerType    string
+	DefaultLLM    string
+	CreateBranch  bool
+	Loading       bool
+	Logs          []string
+	FocusIndex    int
+	Width         int
+	Height        int
+	Styles        Styles
+	ErrorMsg      string
+	Form          FormModel
 }
 
 // NewCreateMilestoneModel instantiates the creation form model.
@@ -200,21 +198,10 @@ func (m CreateMilestoneModel) Update(msg tea.Msg) (CreateMilestoneModel, tea.Cmd
 			if m.FocusIndex == 0 {
 				return m, m.Form.ScrollTextAreaDown(&m.GoalInput)
 			}
-			if m.BriefingContext != "" {
-				m.BriefingContextOffset += 5
-				return m, nil
-			}
 
 		case "pgup", "ctrl+u":
 			if m.FocusIndex == 0 {
 				return m, m.Form.ScrollTextAreaUp(&m.GoalInput)
-			}
-			if m.BriefingContext != "" {
-				m.BriefingContextOffset -= 5
-				if m.BriefingContextOffset < 0 {
-					m.BriefingContextOffset = 0
-				}
-				return m, nil
 			}
 
 		case "down":
@@ -533,7 +520,6 @@ func (m CreateMilestoneModel) View() string {
 			stepNum = 5
 		}
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATE MILESTONE %s (Step %d/5)", m.NextID, stepNum)) + "\n" + spacing)
-		sb.WriteString(m.renderBriefingContext(boxHeight, spacing))
 
 		if m.ErrorMsg != "" {
 			m.Form.ErrorMsg = m.ErrorMsg
@@ -584,7 +570,6 @@ func (m CreateMilestoneModel) View() string {
 		}
 	} else {
 		sb.WriteString(m.Styles.DetailHeader.Render(fmt.Sprintf("CREATE NEW MILESTONE (ID: %s)", m.NextID)) + "\n" + spacing)
-		sb.WriteString(m.renderBriefingContext(boxHeight, spacing))
 
 		if m.ErrorMsg != "" {
 			m.Form.ErrorMsg = m.ErrorMsg
@@ -710,14 +695,7 @@ func (m CreateMilestoneModel) View() string {
 			boxHeight = 2
 		}
 
-		bodyHeight := boxHeight
-		if m.BriefingContext != "" {
-			bodyHeight -= strings.Count(sb.String(), "\n")
-			if bodyHeight < 2 {
-				bodyHeight = 2
-			}
-		}
-		body := RenderBoundedBlocks(allBlocks, m.FocusIndex, bodyHeight, spacing, helpText, m.ErrorMsg)
+		body := RenderBoundedBlocks(allBlocks, m.FocusIndex, boxHeight, spacing, helpText, m.ErrorMsg)
 		sb.WriteString(body)
 	}
 
@@ -727,56 +705,6 @@ func (m CreateMilestoneModel) View() string {
 		Render(truncateLines(sb.String(), boxHeight))
 
 	return formBox
-}
-
-func (m CreateMilestoneModel) renderBriefingContext(boxHeight int, spacing string) string {
-	if m.BriefingContext == "" {
-		return ""
-	}
-
-	maxLines := 7
-	if m.Height < 18 {
-		maxLines = 3
-	} else if boxHeight < 16 {
-		maxLines = 4
-	}
-	if available := boxHeight - 7; maxLines > available {
-		maxLines = available
-	}
-	if maxLines < 2 {
-		maxLines = 2
-	}
-
-	width := m.Width - 8
-	if width < 15 {
-		width = 15
-	}
-	wrapped := strings.Split(wrapText(m.BriefingContext, width), "\n")
-	contentLines := maxLines - 1
-	offset := m.BriefingContextOffset
-	maxOffset := len(wrapped) - contentLines
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
-	if offset > maxOffset {
-		offset = maxOffset
-	}
-	end := offset + contentLines
-	if end > len(wrapped) {
-		end = len(wrapped)
-	}
-
-	label := "Briefing Context"
-	if len(wrapped) > contentLines {
-		if width < 55 {
-			label = fmt.Sprintf("Briefing Context %d-%d/%d", offset+1, end, len(wrapped))
-		} else {
-			label = fmt.Sprintf("Briefing Context (lines %d-%d of %d; Page Up/Page Down)", offset+1, end, len(wrapped))
-		}
-	}
-	content := strings.Join(wrapped[offset:end], "\n")
-	return m.Styles.SectionTitle.Render(label) + "\n" +
-		m.Styles.DetailValue.Render(content) + spacing
 }
 
 // cleanAutoTitle strips leading politeness/filler phrases from a goal first
@@ -1026,27 +954,6 @@ func (m *CreateMilestoneModel) recalcHeights() {
 			h = 2
 		}
 		m.GoalInput.SetHeight(h)
-	}
-
-	if m.BriefingContext != "" && m.Mode == ModeCreateMilestone {
-		contextLines := 7
-		if m.Height < 18 {
-			contextLines = 3
-		} else if boxHeight < 16 {
-			contextLines = 4
-		}
-		if available := boxHeight - 7; contextLines > available {
-			contextLines = available
-		}
-		if contextLines < 2 {
-			contextLines = 2
-		}
-		currentHeight := m.GoalInput.Height()
-		currentHeight -= contextLines + spacingLen
-		if currentHeight < 2 {
-			currentHeight = 2
-		}
-		m.GoalInput.SetHeight(currentHeight)
 	}
 
 	inputWidth := m.Width - 8

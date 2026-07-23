@@ -433,12 +433,12 @@ func TestCreateMilestoneLoadingViewBoundsLiveOutput(t *testing.T) {
 	}
 }
 
-func TestCreateMilestoneModelOptionalBriefingContextIsBoundedAndSubmissionUnchanged(t *testing.T) {
+func TestCreateMilestoneModelPrefilledGoalIsEditableBoundedAndSubmissionUnchanged(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "vscode")
 	styles := DefaultStyles(true, true)
 	m := NewCreateMilestoneModel(styles)
 	m.NextID = "ms-pf-0010"
-	m.BriefingContext = strings.Join([]string{
+	briefingText := strings.Join([]string{
 		"Plan: plan-alpha - Alpha Plan",
 		"Briefing ID: briefing-api",
 		"Title: API Module",
@@ -450,30 +450,42 @@ func TestCreateMilestoneModelOptionalBriefingContextIsBoundedAndSubmissionUnchan
 		"Dependencies: briefing-core",
 		"Milestone Link: ms-existing",
 	}, "\n")
+	m.GoalInput.SetValue(briefingText)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 18})
 
 	initial := stripANSI(m.View())
-	if !strings.Contains(initial, "Briefing Context") || !strings.Contains(initial, "Plan: plan-alpha") {
-		t.Fatalf("expected briefing context on create screen, got:\n%s", initial)
+	if strings.Contains(initial, "Briefing Context") || !strings.Contains(initial, "Plan: plan-alpha") {
+		t.Fatalf("expected briefing text only in the editable Goal textarea, got:\n%s", initial)
 	}
 	if width, height := renderedSize(initial); width > m.Width || height > m.Height {
 		t.Fatalf("expected bounded narrow form, got %dx%d for terminal %dx%d\n%s", width, height, m.Width, m.Height, initial)
 	}
 
-	m.FocusIndex = 1
+	if !m.GoalInput.Focused() {
+		t.Fatal("expected the prefilled Goal textarea to remain focused")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" editable")})
+	if !strings.Contains(m.GoalInput.Value(), " editable") {
+		t.Fatalf("expected focused prefilled Goal textarea to accept edits, got %q", m.GoalInput.Value())
+	}
 	for range 10 {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	}
 	scrolled := stripANSI(m.View())
 	if !strings.Contains(scrolled, "Milestone Link: ms-existing") {
-		t.Fatalf("expected complete context to be reviewable by paging, got:\n%s", scrolled)
+		t.Fatalf("expected complete editable text to be reviewable by textarea paging, got:\n%s", scrolled)
 	}
 
 	m.GoalInput.SetValue("Create the API milestone")
 	m.TitleInput.SetValue("API Milestone")
 	m.RunnerType = "codex"
 	m.CreateBranch = false
-	m.FocusIndex = 4
+	for range 4 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
+	if m.FocusIndex != 4 {
+		t.Fatalf("expected normal focus traversal to reach Submit, got index %d", m.FocusIndex)
+	}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected existing submit command")
@@ -496,7 +508,9 @@ func TestCreateMilestoneModelOptionalBriefingContextIsBoundedAndSubmissionUnchan
 	ordinary := NewCreateMilestoneModel(styles)
 	ordinary.NextID = "ms-pf-0010"
 	ordinary, _ = ordinary.Update(tea.WindowSizeMsg{Width: 40, Height: 18})
-	if ordinary.BriefingContext != "" || strings.Contains(stripANSI(ordinary.View()), "Briefing Context") {
-		t.Fatal("ordinary create-milestone entry unexpectedly requires or displays Briefing context")
+	if ordinary.GoalInput.Value() != "" ||
+		ordinary.GoalInput.Placeholder != "Enter the description / goal of the milestone..." ||
+		strings.Contains(stripANSI(ordinary.View()), "Briefing Context") {
+		t.Fatal("ordinary create-milestone entry unexpectedly prefills the Goal textarea")
 	}
 }
