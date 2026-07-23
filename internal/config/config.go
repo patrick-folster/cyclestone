@@ -38,14 +38,7 @@ type Config struct {
 	Repositories []string    `yaml:"repositories,omitempty"`
 }
 
-// MilestoneMigrationResult summarizes a legacy milestone storage migration.
-type MilestoneMigrationResult struct {
-	Milestones     int
-	SpecsCreated   int
-	StatusesCopied int
-	CyclesCopied   int
-	Changed        bool
-}
+
 
 // Agent represents a dynamic agent loaded from prompts.
 type Agent struct {
@@ -420,108 +413,6 @@ func InitializeMilestonesConfig(path string) error {
 	return os.MkdirAll(filepath.Join(baseDir, "plans"), 0755)
 }
 
-// MigrateMilestoneStorage migrates legacy milestone.yml index entries and flat
-// .md specs into the folder-per-item layout. It reads any legacy milestone
-// definitions from milestone.yml, writes them as folder-per-item
-// <id>/<id>.yml + <id>.md pairs, copies runtime state, and then removes the
-// milestone.yml index. Milestones already present as folder-per-item
-// directories are left untouched.
-func MigrateMilestoneStorage(configPath, statePath string) (MilestoneMigrationResult, error) {
-	var result MilestoneMigrationResult
-
-	baseDir := filepath.Dir(configPath)
-	milestonesDir := filepath.Join(baseDir, "milestones")
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return result, nil
-		}
-		return result, fmt.Errorf("failed to read config file: %w", err)
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return result, fmt.Errorf("failed to parse config file: %w", err)
-	}
-	result.Milestones = len(cfg.Milestones)
-
-	state, err := LoadState(statePath)
-	if err != nil {
-		return result, err
-	}
-
-	// Determine which IDs already exist as folder-per-item directories.
-	existing, _ := LoadAllMilestonesFromDir(milestonesDir)
-	existingIDs := make(map[string]bool, len(existing))
-	for _, m := range existing {
-		existingIDs[m.ID] = true
-	}
-
-	for _, ms := range cfg.Milestones {
-		if existingIDs[ms.ID] {
-			continue
-		}
-		// Read the legacy flat .md spec if it exists.
-		specContent := ""
-		specPath := ms.SpecPath
-		if specPath == "" {
-			specPath = filepath.Join("milestones", ms.ID+".md")
-		}
-		absSpec := specPath
-		if !filepath.IsAbs(absSpec) {
-			absSpec = filepath.Join(baseDir, specPath)
-		}
-		if specBytes, err := os.ReadFile(absSpec); err == nil {
-			specContent = string(specBytes)
-		}
-		if specContent == "" {
-			specContent = FormatMilestoneSpec(ms)
-		}
-		if _, err := SaveMilestoneToFolder(milestonesDir, ms, specContent); err != nil {
-			return result, fmt.Errorf("failed to migrate milestone %s: %w", ms.ID, err)
-		}
-		result.SpecsCreated++
-		result.Changed = true
-
-		if ms.Status != "" {
-			if _, exists := state.MilestoneStatuses[ms.ID]; !exists {
-				state.MilestoneStatuses[ms.ID] = ms.Status
-				result.StatusesCopied++
-				result.Changed = true
-			}
-		}
-		if ms.Cycles != 0 {
-			if _, exists := state.MilestoneCycles[ms.ID]; !exists {
-				state.MilestoneCycles[ms.ID] = ms.Cycles
-				result.CyclesCopied++
-				result.Changed = true
-			}
-		}
-	}
-
-	if !result.Changed {
-		return result, nil
-	}
-	if err := SaveState(statePath, state); err != nil {
-		return result, err
-	}
-	// Remove the legacy milestone.yml index now that all entries are in the
-	// folder-per-item layout. Preserve a milestone.yml that only contains
-	// repositories by rewriting it without the milestones key.
-	if repoData, rerr := os.ReadFile(configPath); rerr == nil {
-		var rcfg Config
-		if yaml.Unmarshal(repoData, &rcfg) == nil {
-			rcfg.Milestones = nil
-			if len(rcfg.Repositories) > 0 {
-				compactData, _ := yaml.Marshal(&rcfg)
-				_ = os.WriteFile(configPath, compactData, 0644)
-			} else {
-				_ = os.Remove(configPath)
-			}
-		}
-	}
-	return result, nil
-}
 
 // GetGlobalConfigDir returns the default directory path for global configurations.
 func GetGlobalConfigDir() string {

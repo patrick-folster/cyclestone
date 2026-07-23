@@ -438,9 +438,7 @@ func TestMilestoneStorageIndependentFromPlanning(t *testing.T) {
 	if err := AddMilestone(configPath, Milestone{ID: "second", Title: "Second"}); err != nil {
 		t.Fatalf("AddMilestone should not require planning: %v", err)
 	}
-	if _, err := MigrateMilestoneStorage(configPath, statePath); err != nil {
-		t.Fatalf("MigrateMilestoneStorage should not require planning: %v", err)
-	}
+
 	state, err := LoadState(statePath)
 	if err != nil {
 		t.Fatalf("LoadState should not require planning: %v", err)
