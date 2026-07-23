@@ -57,6 +57,43 @@ func TestIsConfigMissing(t *testing.T) {
 		}
 	})
 
+	t.Run("missing config, but settings.yml exists", func(t *testing.T) {
+		root := t.TempDir()
+		configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+		baseDir := filepath.Dir(configPath)
+		if err := os.MkdirAll(baseDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(baseDir, "settings.yml"), []byte("default_llm: codex\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		missing, err := isConfigMissing(configPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if missing {
+			t.Fatal("expected missing to be false since settings.yml exists")
+		}
+	})
+
+	t.Run("missing config, but milestones directory exists", func(t *testing.T) {
+		root := t.TempDir()
+		configPath := filepath.Join(root, ".cyclestone", "milestone.yml")
+		baseDir := filepath.Dir(configPath)
+		if err := os.MkdirAll(filepath.Join(baseDir, "milestones"), 0755); err != nil {
+			t.Fatal(err)
+		}
+
+		missing, err := isConfigMissing(configPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if missing {
+			t.Fatal("expected missing to be false since milestones directory exists")
+		}
+	})
+
 	t.Run("missing config", func(t *testing.T) {
 		root := t.TempDir()
 		configPath := filepath.Join(root, ".cyclestone", "milestone.yml")

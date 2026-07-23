@@ -343,16 +343,32 @@ func appendScopedMilestoneContextToBuilder(sb *strings.Builder, milestone config
 }
 
 func appendMilestoneSpecToBuilder(sb *strings.Builder, milestone config.Milestone) {
-	// Try folder-per-item layout first: .cyclestone/milestones/<id>-<slug>/<id>.md
+	if milestone.SpecPath != "" {
+		specPath := milestone.SpecPath
+		if !filepath.IsAbs(specPath) && !strings.HasPrefix(specPath, ".cyclestone/") && !strings.HasPrefix(specPath, "_old/") {
+			specPath = filepath.Join(".cyclestone", specPath)
+		}
+		if _, err := os.Stat(specPath); err == nil {
+			appendFileContentToBuilder(sb, "Active Milestone Specs", specPath)
+			return
+		}
+	}
+
+	prefix := config.GetMilestonePrefix(milestone.ID)
 	milestonesDir := filepath.Join(".cyclestone", "milestones")
 	if entries, err := os.ReadDir(milestonesDir); err == nil {
 		for _, entry := range entries {
 			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), milestone.ID) {
 				continue
 			}
-			candidate := filepath.Join(milestonesDir, entry.Name(), milestone.ID+".md")
+			candidate := filepath.Join(milestonesDir, entry.Name(), prefix+"-specification.md")
 			if _, err := os.Stat(candidate); err == nil {
 				appendFileContentToBuilder(sb, "Active Milestone Specs", candidate)
+				return
+			}
+			candidateLegacy := filepath.Join(milestonesDir, entry.Name(), milestone.ID+".md")
+			if _, err := os.Stat(candidateLegacy); err == nil {
+				appendFileContentToBuilder(sb, "Active Milestone Specs", candidateLegacy)
 				return
 			}
 		}

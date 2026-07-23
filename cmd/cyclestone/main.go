@@ -205,13 +205,24 @@ func missingConfigNonInteractiveError() string {
 }
 
 func isConfigMissing(configPath string) (bool, error) {
-	if _, err := os.Stat(configPath); err != nil {
-		if os.IsNotExist(err) {
-			return true, nil
-		}
+	if _, err := os.Stat(configPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-	return false, nil
+
+	// In the folder-per-item layout, milestone.yml is optional and might not exist.
+	// We check if settings.yml or the milestones/ directory exists in the same folder
+	// to determine if the project has already been initialized.
+	baseDir := filepath.Dir(configPath)
+	if _, err := os.Stat(filepath.Join(baseDir, "settings.yml")); err == nil {
+		return false, nil
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "milestones")); err == nil {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 var Version = "development"
