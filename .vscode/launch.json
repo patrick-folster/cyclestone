@@ -5,11 +5,20 @@
             "name": "Launch Cyclestone TUI",
             "type": "go",
             "request": "launch",
-            "mode": "auto",
+            "mode": "debug",
             "program": "${workspaceFolder}/cmd/cyclestone",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "args": []
+        },
+        {
+            "name": "Debug Test (Active File)",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${fileDirname}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
         }
     ]
 }
