@@ -130,10 +130,7 @@ func assembleInputWithSettings(milestone config.Milestone, agent config.Agent, c
 		appendFileContent("Decisions Log", "DECISIONS.md")
 	}
 
-	appendFileContent("QA Checklist", ".cyclestone/QA_CHECKLIST.md")
-	if _, err := os.Stat(".cyclestone/QA_CHECKLIST.md"); os.IsNotExist(err) {
-		appendFileContent("QA Checklist", "QA_CHECKLIST.md")
-	}
+
 
 	appendMilestoneSpecToBuilder(&sb, milestone)
 
@@ -215,10 +212,7 @@ func assemblePhaseInput(milestone config.Milestone, agent config.Agent, cycleNum
 		appendHandoffToBuilder(&sb, "PM Handoff", milestone.ID, cyclePadded, "pm", settings.MaxHandoffChars, pipeline)
 		appendHandoffToBuilder(&sb, "Developer Handoff", milestone.ID, cyclePadded, "developer", settings.MaxHandoffChars, pipeline)
 		appendChangedFilesToBuilder(&sb)
-		appendFileContentToBuilder(&sb, "QA Checklist", ".cyclestone/QA_CHECKLIST.md")
-		if _, err := os.Stat(".cyclestone/QA_CHECKLIST.md"); os.IsNotExist(err) {
-			appendFileContentToBuilder(&sb, "QA Checklist", "QA_CHECKLIST.md")
-		}
+
 	default:
 		appendScopedMilestoneContextToBuilder(&sb, milestone, opts)
 		appendMilestoneSpecToBuilder(&sb, milestone)
